@@ -363,7 +363,7 @@ def check_selection_changed(bm):
 
 def apply_texture_from_file_browser():
     """Apply texture to selected faces when file browser selection changes."""
-    global _last_file_browser_path, _suppress_file_browser_sync
+    global _last_file_browser_path, _suppress_file_browser_sync, _last_active_face_material
 
     # Skip if we're currently applying a texture (to avoid loops)
     if _suppress_file_browser_sync:
@@ -386,8 +386,9 @@ def apply_texture_from_file_browser():
 
         _last_file_browser_path = current_path
 
-        # If no valid image path, nothing to do
+        # If no valid image path, reset material cache so next face selection updates file browser
         if not current_path:
+            _last_active_face_material = None
             return 0.2
 
         # Check if there are selected faces
@@ -396,6 +397,9 @@ def apply_texture_from_file_browser():
         selected_faces = [f for f in bm.faces if f.select]
 
         if not selected_faces:
+            # File browser changed but no faces selected - reset material cache
+            # so next face selection will properly update the file browser
+            _last_active_face_material = None
             return 0.2
 
         # Load the image
@@ -461,7 +465,6 @@ def apply_texture_from_file_browser():
                     )
 
             # Update the material cache so subsequent face clicks don't get skipped
-            global _last_active_face_material
             _last_active_face_material = mat
         finally:
             _suppress_file_browser_sync = False
