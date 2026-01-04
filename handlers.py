@@ -26,10 +26,10 @@ _last_selected_face_indices = set()
 _last_active_face_index = -1
 # Track which object we're editing to detect fresh edit sessions
 _last_edit_object_name = None
-# Cache for detecting file browser selection changes
-_last_file_browser_path = None
 # Track modal operators for UV world-scale baseline
 _tracked_modal_operators = set()
+# Track the file browser watcher modal operator
+_file_browser_watcher_running = False
 
 # The currently active image for texture operations.
 # Updated by: file browser selection, user clicking a face
@@ -386,47 +386,38 @@ def update_active_image_from_face(context):
 
 
 def apply_texture_from_file_browser():
-    """Apply texture to selected faces when file browser selection changes."""
-    global _last_file_browser_path, _last_edit_object_name
+    """Apply texture from current file browser selection to selected faces.
 
+    Called when user clicks in the file browser. Loads the selected image,
+    sets it as active, and applies it to any selected faces in edit mode.
+    """
     try:
         context = bpy.context
         obj = context.object
 
-        # Reset edit session tracking when not in edit mode
-        # This ensures re-entering edit mode is detected as a fresh start
-        if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
-            _last_edit_object_name = None
-
         # Get current file browser selection
         current_path = get_selected_image_path(context)
 
-        # Check if path has changed
-        if current_path == _last_file_browser_path:
-            return 0.2
-
-        _last_file_browser_path = current_path
-
         if not current_path:
-            return 0.2
+            return
 
         # Load the image and set as active
         try:
             image = bpy.data.images.load(current_path, check_existing=True)
             set_active_image(image)
         except RuntimeError:
-            return 0.2
+            return
 
         # Only apply to faces if in edit mode on a mesh with selected faces
         if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
-            return 0.2
+            return
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
         selected_faces = [f for f in bm.faces if f.select]
 
         if not selected_faces:
-            return 0.2
+            return
 
         uv_layer = bm.loops.layers.uv.verify()
 
@@ -486,7 +477,61 @@ def apply_texture_from_file_browser():
     except Exception as e:
         print(f"Level Design Tools: Error applying texture from file browser: {e}")
 
-    return 0.2
+
+class LEVELDESIGN_OT_file_browser_watcher(bpy.types.Operator):
+    """Watch for clicks in the file browser and apply textures"""
+    bl_idname = "leveldesign.file_browser_watcher"
+    bl_label = "File Browser Watcher"
+    bl_options = {'INTERNAL'}
+
+    def modal(self, context, event):
+        global _file_browser_watcher_running
+
+        # Check if we should stop (addon being unregistered)
+        if not _file_browser_watcher_running:
+            return {'CANCELLED'}
+
+        # Detect left-click release in file browser area
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            # Check if mouse is over a file browser area
+            for area in context.screen.areas:
+                if area.type == 'FILE_BROWSER':
+                    if (area.x <= event.mouse_x <= area.x + area.width and
+                            area.y <= event.mouse_y <= area.y + area.height):
+                        # Small delay to let file browser update its selection
+                        # bpy.app.timers.register(
+                        #    apply_texture_from_file_browser,
+                        #    first_interval=0.05
+                        # )
+                        apply_texture_from_file_browser()
+                        break
+
+        return {'PASS_THROUGH'}
+
+    def invoke(self, context, event):
+        global _file_browser_watcher_running
+
+        # Don't start if already running
+        if _file_browser_watcher_running:
+            return {'CANCELLED'}
+
+        _file_browser_watcher_running = True
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+
+def start_file_browser_watcher():
+    """Start the file browser watcher modal."""
+    global _file_browser_watcher_running
+
+    if _file_browser_watcher_running:
+        return
+
+    try:
+        bpy.ops.leveldesign.file_browser_watcher('INVOKE_DEFAULT')
+    except RuntimeError:
+        # Context may not be ready yet
+        pass
 
 
 def consolidate_duplicate_materials():
@@ -575,10 +620,13 @@ def set_all_grid_scales_to_default():
 @persistent
 def on_load_post(dummy):
     """Handler called after a .blend file is loaded."""
+    global _file_browser_watcher_running
+    # Reset watcher state on file load (modal was killed when file loaded)
+    _file_browser_watcher_running = False
     # Use a timer to ensure all UI is ready
     bpy.app.timers.register(set_all_grid_scales_to_default, first_interval=0.1)
-    # Re-register file browser timer after file load
-    bpy.app.timers.register(apply_texture_from_file_browser, first_interval=0.2)
+    # Restart the file browser watcher
+    bpy.app.timers.register(start_file_browser_watcher, first_interval=0.2)
 
 
 @persistent
@@ -660,25 +708,29 @@ def on_depsgraph_update(scene, depsgraph):
 
 
 def register():
+    bpy.utils.register_class(LEVELDESIGN_OT_file_browser_watcher)
     if on_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update)
     if on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(on_load_post)
     # Also set grid on addon enable
     bpy.app.timers.register(set_all_grid_scales_to_default, first_interval=0.1)
-    # Register timer to check for file browser selection changes
-    bpy.app.timers.register(apply_texture_from_file_browser, first_interval=0.2)
+    # Start file browser watcher
+    bpy.app.timers.register(start_file_browser_watcher, first_interval=0.2)
 
 
 def unregister():
-    global last_face_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_file_browser_path, _last_material_count, _active_image
+    global last_face_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running
+
+    # Stop the file browser watcher modal
+    _file_browser_watcher_running = False
 
     if on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph_update)
     if on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post)
-    if bpy.app.timers.is_registered(apply_texture_from_file_browser):
-        bpy.app.timers.unregister(apply_texture_from_file_browser)
+
+    bpy.utils.unregister_class(LEVELDESIGN_OT_file_browser_watcher)
 
     face_data_cache.clear()
     last_face_count = 0
@@ -686,5 +738,4 @@ def unregister():
     _last_selected_face_indices = set()
     _last_active_face_index = -1
     _last_edit_object_name = None
-    _last_file_browser_path = None
     _active_image = None
