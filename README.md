@@ -8,6 +8,12 @@ Anvil LD is particularly inspired by Trenchbroom.
 
 Anvil LD is a hobby project. It is likely buggy.
 
+# Installation
+
+Create a zip file of this repo (README.md should be at the root; the zip from github should be appropriate).
+
+Edit -> Preferences -> v arrow -> Install From Disk -> Select the zip file
+
 ## Features
 
 ### Material and UV Management
