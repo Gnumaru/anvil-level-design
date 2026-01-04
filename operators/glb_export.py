@@ -56,6 +56,11 @@ class LEVELDESIGN_OT_export_glb_scaled(bpy.types.Operator, ExportHelper):
 
     def execute(self, context):
         import bmesh
+        import math
+
+        # Check if scale is effectively 1.0 (no scaling needed)
+        if math.isclose(self.export_scale, 1.0, rel_tol=1e-6):
+            return self._export_without_scaling(context)
 
         # Get all mesh and curve objects to export
         original_objects = [obj for obj in bpy.data.objects if obj.type in ('MESH', 'CURVE')]
@@ -219,6 +224,33 @@ class LEVELDESIGN_OT_export_glb_scaled(bpy.types.Operator, ExportHelper):
                     obj.select_set(True)
             if original_active and original_active.name in bpy.data.objects:
                 context.view_layer.objects.active = original_active
+
+        return {'FINISHED'}
+
+    def _export_without_scaling(self, context):
+        """Optimized export path when scale is 1.0 - skips geometry manipulation."""
+        # Export using Blender's built-in GLTF exporter directly
+        bpy.ops.export_scene.gltf(
+            filepath=self.filepath,
+            export_format=self.export_format,
+            export_texcoords=True,
+            export_normals=self.export_normals,
+            export_materials='EXPORT' if self.export_textures else 'NONE',
+            export_apply=self.export_apply_modifiers,
+            use_selection=False,
+            use_visible=True,
+        )
+
+        self.report({'INFO'}, f"Exported to {self.filepath} (scale 1.0, no geometry transformation)")
+
+        # Save last export settings
+        props = context.scene.level_design_props
+        props.last_export_filepath = self.filepath
+        props.last_export_scale = self.export_scale
+        props.last_export_format = self.export_format
+        props.last_export_textures = self.export_textures
+        props.last_export_normals = self.export_normals
+        props.last_export_apply_modifiers = self.export_apply_modifiers
 
         return {'FINISHED'}
 
