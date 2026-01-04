@@ -16,6 +16,8 @@ Select a face and Alt Left Mouse button to apply the same material to another fa
 
 Select an image file in the file browser and Alt Left Mouse button to apply the image as a material to a face.
 
+Pick a material from a face without selecting it (including from different objects) using Alt Right Mouse
+
 Anvil LD manages materials to prevent duplicates. Use the Cleanup Unused Materials buttons if unused materials become bothersome.
 
 The currently selected image is previewed in the side panel; here the texture transparency channel can be linked to the shader, and roughness can be adjusted. 
