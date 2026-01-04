@@ -2,12 +2,12 @@ import bpy
 from bpy.types import Operator
 
 from ..utils import (
-    get_file_browser_image,
     find_material_with_image,
     get_texture_node_from_material,
     get_principled_bsdf_from_material,
     is_texture_alpha_connected,
 )
+from ..handlers import get_active_image
 
 
 def get_used_material_indices(obj):
@@ -50,14 +50,14 @@ class LEVELDESIGN_OT_toggle_texture_alpha(Operator):
 
     @classmethod
     def poll(cls, context):
-        image = get_file_browser_image(context)
+        image = get_active_image()
         if not image:
             return False
         mat = find_material_with_image(image)
         return mat is not None
 
     def execute(self, context):
-        image = get_file_browser_image(context)
+        image = get_active_image()
         mat = find_material_with_image(image)
         tex = get_texture_node_from_material(mat)
         bsdf = get_principled_bsdf_from_material(mat)
@@ -106,14 +106,14 @@ class LEVELDESIGN_OT_fix_alpha_bleed(Operator):
 
     @classmethod
     def poll(cls, context):
-        image = get_file_browser_image(context)
+        image = get_active_image()
         return image is not None
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
-        image = get_file_browser_image(context)
+        image = get_active_image()
 
         if image.packed_file:
             image.unpack(method='USE_ORIGINAL')

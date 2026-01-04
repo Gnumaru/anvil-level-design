@@ -7,7 +7,6 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 from ..utils import (
-    get_selected_image_path,
     find_material_with_image,
     create_material_with_image,
     get_texture_dimensions_from_material,
@@ -15,7 +14,7 @@ from ..utils import (
     derive_transform_from_uvs,
 )
 from ..properties import apply_uv_to_face
-from ..handlers import cache_single_face
+from ..handlers import cache_single_face, get_active_image
 
 
 def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me):
@@ -215,15 +214,9 @@ class apply_image_to_face(Operator):
         if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
             return {'CANCELLED'}
 
-        image_path = get_selected_image_path(context)
-        if not image_path:
-            self.report({'WARNING'}, "No image selected in File Browser")
-            return {'CANCELLED'}
-
-        try:
-            image = bpy.data.images.load(image_path, check_existing=True)
-        except RuntimeError:
-            self.report({'ERROR'}, "Failed to load image")
+        image = get_active_image()
+        if not image:
+            self.report({'WARNING'}, "No active texture (select a face or image in File Browser)")
             return {'CANCELLED'}
 
         # Raycast using BVHTree on the bmesh (scene.ray_cast returns wrong face indices in edit mode)

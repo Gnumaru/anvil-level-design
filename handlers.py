@@ -24,10 +24,28 @@ _last_material_count = 0
 # Cache for detecting selection changes
 _last_selected_face_indices = set()
 _last_active_face_index = -1
+# Track which object we're editing to detect fresh edit sessions
+_last_edit_object_name = None
 # Cache for detecting file browser selection changes
 _last_file_browser_path = None
 # Track modal operators for UV world-scale baseline
 _tracked_modal_operators = set()
+
+# The currently active image for texture operations.
+# Updated by: file browser selection, user clicking a face
+# Used by: Alt+Click apply, UI panel preview
+_active_image = None
+
+
+def get_active_image():
+    """Get the currently active image for texture operations."""
+    return _active_image
+
+
+def set_active_image(image):
+    """Set the currently active image for texture operations."""
+    global _active_image
+    _active_image = image
 
 
 def cache_single_face(face, uv_layer, ppm=None, me=None):
@@ -328,7 +346,7 @@ def redraw_ui_panels(context):
 
 
 def check_selection_changed(bm):
-    """Check if face selection has changed. Returns True if changed."""
+    """Check if face selection has changed. Returns True if selection changed."""
     global _last_selected_face_indices, _last_active_face_index
 
     current_selected = {f.index for f in bm.faces if f.select}
@@ -341,17 +359,44 @@ def check_selection_changed(bm):
     return False
 
 
+def update_active_image_from_face(context):
+    """Update the active image based on the active face's material."""
+    try:
+        obj = context.object
+        if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
+            return
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+
+        active_face = bm.faces.active
+        if not active_face:
+            return
+
+        # Get the material on this face
+        mat_index = active_face.material_index
+        mat = obj.data.materials[mat_index] if mat_index < len(obj.data.materials) else None
+
+        if mat:
+            image = get_image_from_material(mat)
+            if image:
+                set_active_image(image)
+    except Exception:
+        pass  # Silently fail to avoid disrupting user workflow
+
+
 def apply_texture_from_file_browser():
     """Apply texture to selected faces when file browser selection changes."""
-    global _last_file_browser_path
+    global _last_file_browser_path, _last_edit_object_name
 
     try:
         context = bpy.context
         obj = context.object
 
-        # Only work in edit mode on a mesh
+        # Reset edit session tracking when not in edit mode
+        # This ensures re-entering edit mode is detected as a fresh start
         if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
-            return 0.2
+            _last_edit_object_name = None
 
         # Get current file browser selection
         current_path = get_selected_image_path(context)
@@ -365,18 +410,22 @@ def apply_texture_from_file_browser():
         if not current_path:
             return 0.2
 
-        # Check if there are selected faces
+        # Load the image and set as active
+        try:
+            image = bpy.data.images.load(current_path, check_existing=True)
+            set_active_image(image)
+        except RuntimeError:
+            return 0.2
+
+        # Only apply to faces if in edit mode on a mesh with selected faces
+        if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
+            return 0.2
+
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
         selected_faces = [f for f in bm.faces if f.select]
 
         if not selected_faces:
-            return 0.2
-
-        # Load the image
-        try:
-            image = bpy.data.images.load(current_path, check_existing=True)
-        except RuntimeError:
             return 0.2
 
         uv_layer = bm.loops.layers.uv.verify()
@@ -572,16 +621,29 @@ def on_depsgraph_update(scene, depsgraph):
 
                     current_face_count = len(bm.faces)
 
+                    # Detect fresh edit session (entering edit mode or switching objects)
+                    # This must happen before topology/selection checks to prevent
+                    # updating active image when user didn't explicitly click a face
+                    global _last_edit_object_name
+                    is_fresh_start = (obj.name != _last_edit_object_name)
+                    _last_edit_object_name = obj.name
+
                     # Check if topology changed (subdivision, extrusion, etc.)
                     if current_face_count != last_face_count:
                         # Topology changed - refresh cache
                         cache_face_data(context)
                         update_ui_from_selection(context)
+                        # Only update active image if not a fresh start
+                        if not is_fresh_start:
+                            update_active_image_from_face(context)
                         return
 
                     # Check if selection changed
                     if check_selection_changed(bm):
                         update_ui_from_selection(context)
+                        # Only update active image if not a fresh start
+                        if not is_fresh_start:
+                            update_active_image_from_face(context)
 
                     # Store data before any transform if cache is empty
                     if not face_data_cache and context.mode == 'EDIT_MESH':
@@ -609,7 +671,7 @@ def register():
 
 
 def unregister():
-    global last_face_count, _last_selected_face_indices, _last_active_face_index, _last_file_browser_path, _last_material_count
+    global last_face_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_file_browser_path, _last_material_count, _active_image
 
     if on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph_update)
@@ -623,4 +685,6 @@ def unregister():
     _last_material_count = 0
     _last_selected_face_indices = set()
     _last_active_face_index = -1
+    _last_edit_object_name = None
     _last_file_browser_path = None
+    _active_image = None

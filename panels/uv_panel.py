@@ -1,7 +1,8 @@
 import bpy
 from bpy.types import Panel
 
-from ..utils import get_selected_face_count, get_file_browser_image, get_viewport_grid_settings, find_material_with_image, get_principled_bsdf_from_material, is_texture_alpha_connected
+from ..utils import get_selected_face_count, get_viewport_grid_settings, find_material_with_image, get_principled_bsdf_from_material, is_texture_alpha_connected
+from ..handlers import get_active_image
 
 
 class LEVELDESIGN_PT_grid_panel(Panel):
@@ -163,7 +164,7 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
     def draw(self, context):
         layout = self.layout
 
-        image = get_file_browser_image(context)
+        image = get_active_image()
 
         if image:
             layout.label(text=image.name)
