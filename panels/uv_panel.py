@@ -1,12 +1,19 @@
 import bpy
 from bpy.types import Panel
 
-from ..utils import get_selected_face_count, get_viewport_grid_settings, find_material_with_image, get_principled_bsdf_from_material, is_texture_alpha_connected
+from ..utils import (
+    get_selected_face_count,
+    get_viewport_grid_settings,
+    find_material_with_image,
+    get_principled_bsdf_from_material,
+    is_texture_alpha_connected,
+)
 from ..handlers import get_active_image
 
 
 class LEVELDESIGN_PT_grid_panel(Panel):
     """Grid Settings Panel"""
+
     bl_label = "Grid"
     bl_idname = "LEVELDESIGN_PT_grid_panel"
     bl_space_type = 'VIEW_3D'
@@ -19,11 +26,14 @@ class LEVELDESIGN_PT_grid_panel(Panel):
         overlay = get_viewport_grid_settings(context)
         if overlay:
             box = layout.box()
-            box.label(text=f"Grid Size: {overlay.grid_scale}  [ / ]", icon='GRID')
+            box.label(
+                text=f"Grid Size: {overlay.grid_scale}  [ / ]", icon='GRID'
+            )
 
 
 class LEVELDESIGN_PT_uv_lock_panel(Panel):
     """UV Lock Settings"""
+
     bl_label = "UV Lock"
     bl_idname = "LEVELDESIGN_PT_uv_lock_panel"
     bl_space_type = 'VIEW_3D'
@@ -35,8 +45,13 @@ class LEVELDESIGN_PT_uv_lock_panel(Panel):
         props = context.scene.level_design_props
 
         row = layout.row()
-        row.prop(props, "uv_lock", text="UV Lock", toggle=True,
-                 icon='LOCKED' if props.uv_lock else 'UNLOCKED')
+        row.prop(
+            props,
+            "uv_lock",
+            text="UV Lock",
+            toggle=True,
+            icon='LOCKED' if props.uv_lock else 'UNLOCKED',
+        )
 
         if props.uv_lock:
             layout.label(text="Texture locked to geometry", icon='INFO')
@@ -46,6 +61,7 @@ class LEVELDESIGN_PT_uv_lock_panel(Panel):
 
 class LEVELDESIGN_PT_uv_settings_panel(Panel):
     """UV Settings (Scale, Rotation, Offset)"""
+
     bl_label = "UV Settings"
     bl_idname = "LEVELDESIGN_PT_uv_settings_panel"
     bl_space_type = 'VIEW_3D'
@@ -64,7 +80,12 @@ class LEVELDESIGN_PT_uv_settings_panel(Panel):
         row = col.row(align=True)
         row.prop(props, "texture_scale_u")
         row.prop(props, "texture_scale_v")
-        row.prop(props, "texture_scale_linked", text="", icon='LINKED' if props.texture_scale_linked else 'UNLINKED')
+        row.prop(
+            props,
+            "texture_scale_linked",
+            text="",
+            icon='LINKED' if props.texture_scale_linked else 'UNLINKED',
+        )
 
         col.prop(props, "texture_rotation")
 
@@ -76,6 +97,7 @@ class LEVELDESIGN_PT_uv_settings_panel(Panel):
 
 class LEVELDESIGN_PT_uv_shortcuts_panel(Panel):
     """UV Shortcuts (Projection and Alignment)"""
+
     bl_label = "UV Shortcuts"
     bl_idname = "LEVELDESIGN_PT_uv_shortcuts_panel"
     bl_space_type = 'VIEW_3D'
@@ -86,16 +108,27 @@ class LEVELDESIGN_PT_uv_shortcuts_panel(Panel):
         layout = self.layout
 
         # Projection
-        layout.operator("leveldesign.face_aligned_project", text="Face-Aligned Project", icon='MOD_UVPROJECT')
+        layout.operator(
+            "leveldesign.face_aligned_project",
+            text="Face-Aligned Project",
+            icon='MOD_UVPROJECT',
+        )
 
         # Alignment
         row = layout.row(align=True)
-        row.operator("leveldesign.align_uv", text="Center", icon='ALIGN_CENTER').direction = 'CENTER'
-        row.operator("leveldesign.fit_to_face", text="Fit to Face", icon='FULLSCREEN_ENTER')
+        row.operator(
+            "leveldesign.align_uv", text="Center", icon='ALIGN_CENTER'
+        ).direction = 'CENTER'
+        row.operator(
+            "leveldesign.fit_to_face",
+            text="Fit to Face",
+            icon='FULLSCREEN_ENTER',
+        )
 
 
 class LEVELDESIGN_PT_rotation_panel(Panel):
     """Rotation Controls"""
+
     bl_label = "Rotation"
     bl_idname = "LEVELDESIGN_PT_rotation_panel"
     bl_space_type = 'VIEW_3D'
@@ -155,6 +188,7 @@ class LEVELDESIGN_PT_rotation_panel(Panel):
 
 class LEVELDESIGN_PT_texture_preview_panel(Panel):
     """Texture Preview"""
+
     bl_label = "Texture Preview"
     bl_idname = "LEVELDESIGN_PT_texture_preview_panel"
     bl_space_type = 'VIEW_3D'
@@ -185,6 +219,20 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
 
             layout.separator()
 
+            row = layout.row(align=True)
+            if image:
+                row.operator(
+                    "leveldesign.set_interpolation_closest", text="Closest"
+                )
+                row.operator(
+                    "leveldesign.set_interpolation_linear", text="Linear"
+                )
+            else:
+                row.enabled = False
+                row.label(text="Closest / Linear")
+
+            layout.separator()
+
             # Texture alpha checkbox
             row = layout.row()
             if mat:
@@ -192,8 +240,10 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
                 row.operator(
                     "leveldesign.toggle_texture_alpha",
                     text="Texture as Alpha",
-                    icon='CHECKBOX_HLT' if alpha_connected else 'CHECKBOX_DEHLT',
-                    depress=alpha_connected
+                    icon=(
+                        'CHECKBOX_HLT' if alpha_connected else 'CHECKBOX_DEHLT'
+                    ),
+                    depress=alpha_connected,
                 )
             else:
                 row.enabled = False
@@ -202,20 +252,25 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
             # Roughness slider
             row = layout.row()
             if bsdf:
-                row.prop(bsdf.inputs["Roughness"], "default_value", text="Roughness")
+                row.prop(
+                    bsdf.inputs["Roughness"], "default_value", text="Roughness"
+                )
             else:
                 row.enabled = False
                 row.label(text="Roughness: No material")
 
             # Fix alpha bleed button
             layout.separator()
-            layout.operator("leveldesign.fix_alpha_bleed", icon='IMAGE_RGB_ALPHA')
+            layout.operator(
+                "leveldesign.fix_alpha_bleed", icon='IMAGE_RGB_ALPHA'
+            )
         else:
             layout.label(text="No texture selected")
 
 
 class LEVELDESIGN_PT_texture_settings_panel(Panel):
     """Texture Settings (Pixels per Meter)"""
+
     bl_label = "Texture Settings"
     bl_idname = "LEVELDESIGN_PT_texture_settings_panel"
     bl_space_type = 'VIEW_3D'
@@ -227,6 +282,11 @@ class LEVELDESIGN_PT_texture_settings_panel(Panel):
         props = context.scene.level_design_props
 
         layout.prop(props, "pixels_per_meter")
+
+        row = layout.row(align=True)
+        row.operator("leveldesign.halve_pixels", text="/2")
+        row.operator("leveldesign.double_pixels", text="x2")
+
         layout.separator()
 
         in_object_mode = context.mode == 'OBJECT'
@@ -239,6 +299,7 @@ class LEVELDESIGN_PT_texture_settings_panel(Panel):
 
 class LEVELDESIGN_PT_export_panel(Panel):
     """Export Panel"""
+
     bl_label = "Export"
     bl_idname = "LEVELDESIGN_PT_export_panel"
     bl_space_type = 'VIEW_3D'
@@ -257,6 +318,7 @@ class LEVELDESIGN_PT_export_panel(Panel):
 
         if has_last_export:
             import os
+
             filename = os.path.basename(props.last_export_filepath)
             layout.label(text=f"File: {filename}", icon='FILE')
             layout.label(text=f"Scale: {props.last_export_scale}")
