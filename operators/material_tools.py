@@ -42,8 +42,39 @@ def cleanup_unused_material_slots(obj):
     return removed
 
 
+class LEVELDESIGN_OT_set_interpolation_closest(Operator):
+    """Setting interpolation of image texture to closest"""
+
+    bl_idname = "leveldesign.set_interpolation_closest"
+    bl_label = "Set interpolation to closest"
+
+    def execute(self, context):
+        image = get_active_image()
+        mat = find_material_with_image(image)
+        tex = get_texture_node_from_material(mat)
+        if tex:
+            tex.interpolation = 'Closest'
+        return {'FINISHED'}
+
+
+class LEVELDESIGN_OT_set_interpolation_linear(Operator):
+    """Setting interpolation of image texture to linear"""
+
+    bl_idname = "leveldesign.set_interpolation_linear"
+    bl_label = "Set interpolation to linear"
+
+    def execute(self, context):
+        image = get_active_image()
+        mat = find_material_with_image(image)
+        tex = get_texture_node_from_material(mat)
+        if tex:
+            tex.interpolation = 'Linear'
+        return {'FINISHED'}
+
+
 class LEVELDESIGN_OT_toggle_texture_alpha(Operator):
     """Toggle connecting texture alpha to material alpha"""
+
     bl_idname = "leveldesign.toggle_texture_alpha"
     bl_label = "Toggle Texture Alpha"
     bl_options = {'REGISTER', 'UNDO'}
@@ -71,8 +102,12 @@ class LEVELDESIGN_OT_toggle_texture_alpha(Operator):
         if is_texture_alpha_connected(mat):
             # Disconnect alpha
             for link in list(nt.links):
-                if (link.from_node == tex and link.from_socket.name == "Alpha" and
-                    link.to_node == bsdf and link.to_socket.name == "Alpha"):
+                if (
+                    link.from_node == tex
+                    and link.from_socket.name == "Alpha"
+                    and link.to_node == bsdf
+                    and link.to_socket.name == "Alpha"
+                ):
                     nt.links.remove(link)
             mat.blend_method = 'OPAQUE'
         else:
@@ -85,6 +120,7 @@ class LEVELDESIGN_OT_toggle_texture_alpha(Operator):
 
 class LEVELDESIGN_OT_fix_alpha_bleed(Operator):
     """Set RGB of transparent pixels to a color to fix edge bleeding"""
+
     bl_idname = "leveldesign.fix_alpha_bleed"
     bl_label = "Fix Alpha Bleed"
     bl_options = {'REGISTER', 'UNDO'}
@@ -93,15 +129,17 @@ class LEVELDESIGN_OT_fix_alpha_bleed(Operator):
         name="Fill Color",
         subtype='COLOR',
         default=(0.0, 0.0, 0.0),
-        min=0.0, max=1.0,
-        description="Color to set transparent pixels to"
+        min=0.0,
+        max=1.0,
+        description="Color to set transparent pixels to",
     )
 
     alpha_threshold: bpy.props.FloatProperty(
         name="Alpha Threshold",
         default=0.01,
-        min=0.0, max=1.0,
-        description="Pixels with alpha below this value will be modified"
+        min=0.0,
+        max=1.0,
+        description="Pixels with alpha below this value will be modified",
     )
 
     @classmethod
@@ -125,7 +163,7 @@ class LEVELDESIGN_OT_fix_alpha_bleed(Operator):
         for i in range(0, len(pixels), 4):
             alpha = pixels[i + 3]
             if alpha < self.alpha_threshold:
-                pixels[i] = self.color[0]      # R
+                pixels[i] = self.color[0]  # R
                 pixels[i + 1] = self.color[1]  # G
                 pixels[i + 2] = self.color[2]  # B
                 modified_count += 1
@@ -135,15 +173,22 @@ class LEVELDESIGN_OT_fix_alpha_bleed(Operator):
 
         if image.filepath:
             image.save()
-            self.report({'INFO'}, f"Fixed {modified_count} pixels and saved to {image.filepath}")
+            self.report(
+                {'INFO'},
+                f"Fixed {modified_count} pixels and saved to {image.filepath}",
+            )
         else:
-            self.report({'WARNING'}, f"Fixed {modified_count} pixels but image has no filepath - pack or save manually")
+            self.report(
+                {'WARNING'},
+                f"Fixed {modified_count} pixels but image has no filepath - pack or save manually",
+            )
 
         return {'FINISHED'}
 
 
 class LEVELDESIGN_OT_cleanup_unused_materials(Operator):
     """Remove unused materials created by the addon (IMG_ prefix)"""
+
     bl_idname = "leveldesign.cleanup_unused_materials"
     bl_label = "Cleanup Unused Materials"
     bl_options = {'REGISTER', 'UNDO'}
@@ -164,7 +209,10 @@ class LEVELDESIGN_OT_cleanup_unused_materials(Operator):
                 materials_removed += 1
 
         if slots_removed > 0 or materials_removed > 0:
-            self.report({'INFO'}, f"Removed {slots_removed} slot(s), {materials_removed} material(s)")
+            self.report(
+                {'INFO'},
+                f"Removed {slots_removed} slot(s), {materials_removed} material(s)",
+            )
         else:
             self.report({'INFO'}, "No unused materials to remove")
 
@@ -172,6 +220,8 @@ class LEVELDESIGN_OT_cleanup_unused_materials(Operator):
 
 
 classes = (
+    LEVELDESIGN_OT_set_interpolation_closest,
+    LEVELDESIGN_OT_set_interpolation_linear,
     LEVELDESIGN_OT_toggle_texture_alpha,
     LEVELDESIGN_OT_fix_alpha_bleed,
     LEVELDESIGN_OT_cleanup_unused_materials,
