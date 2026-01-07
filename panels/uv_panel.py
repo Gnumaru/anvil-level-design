@@ -287,8 +287,6 @@ class LEVELDESIGN_PT_texture_settings_panel(Panel):
         layout = self.layout
         props = context.scene.level_design_props
 
-        # layout.prop(props, "pixels_per_meter")
-
         row = layout.row(align=True)
 
         # halve button
