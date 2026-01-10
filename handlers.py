@@ -562,12 +562,14 @@ def _file_browser_watcher_timer():
 
 def start_file_browser_watcher():
     """Start the file browser watcher timer."""
-    global _file_browser_watcher_running
+    global _file_browser_watcher_running, _last_file_browser_path
 
     if _file_browser_watcher_running:
         return
 
     _file_browser_watcher_running = True
+    # Initialize to current state so we only react to changes after startup
+    _last_file_browser_path = get_selected_image_path(bpy.context)
     bpy.app.timers.register(_file_browser_watcher_timer, first_interval=0.1)
 
 
