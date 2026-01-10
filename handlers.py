@@ -514,64 +514,72 @@ def apply_texture_from_file_browser():
         print(f"Level Design Tools: Error applying texture from file browser: {e}")
 
 
-class LEVELDESIGN_OT_file_browser_watcher(bpy.types.Operator):
-    """Watch for clicks in the file browser and apply textures"""
-    bl_idname = "leveldesign.file_browser_watcher"
-    bl_label = "File Browser Watcher"
-    bl_options = {'INTERNAL'}
+def _file_browser_watcher_timer():
+    """Timer-based file browser watcher. Polls for selection changes.
 
-    def modal(self, context, event):
-        global _file_browser_watcher_running, _last_file_browser_path
+    Returns the interval to keep running, or None to stop.
+    """
+    global _file_browser_watcher_running, _last_file_browser_path
 
-        # Check if we should stop (addon being unregistered)
-        if not _file_browser_watcher_running:
-            return {'CANCELLED'}
+    # Stop if addon is being unregistered
+    if not _file_browser_watcher_running:
+        return None
 
-        # Detect left-click release in file browser area
-        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
-            # Check if mouse is over a file browser area
-            for area in context.screen.areas:
+    try:
+        context = bpy.context
+
+        # Check if any file browser exists
+        has_file_browser = False
+        if context.window and context.window.screen:
+            for area in context.window.screen.areas:
                 if area.type == 'FILE_BROWSER':
-                    if (area.x <= event.mouse_x <= area.x + area.width and
-                            area.y <= event.mouse_y <= area.y + area.height):
-                        # Get current file browser selection
-                        current_path = get_selected_image_path(context)
+                    has_file_browser = True
+                    break
 
-                        # Alt+click forces apply regardless of previous selection
-                        force_apply = event.alt
+        if not has_file_browser:
+            # No file browser open, keep polling but less frequently
+            return 0.5
 
-                        # Only apply if path changed or force apply (Alt held)
-                        if force_apply or current_path != _last_file_browser_path:
-                            apply_texture_from_file_browser()
-                            _last_file_browser_path = current_path
-                        break
+        # Get current selection
+        current_path = get_selected_image_path(context)
 
-        return {'PASS_THROUGH'}
+        # Apply if selection changed
+        if current_path and current_path != _last_file_browser_path:
+            apply_texture_from_file_browser()
+            _last_file_browser_path = current_path
 
-    def invoke(self, context, event):
-        global _file_browser_watcher_running
+    except Exception:
+        # Context may not be ready, keep trying
+        pass
 
-        # Don't start if already running
-        if _file_browser_watcher_running:
-            return {'CANCELLED'}
-
-        _file_browser_watcher_running = True
-        context.window_manager.modal_handler_add(self)
-        return {'RUNNING_MODAL'}
+    # Poll every 100ms when file browser is open
+    return 0.1
 
 
 def start_file_browser_watcher():
-    """Start the file browser watcher modal."""
+    """Start the file browser watcher timer."""
     global _file_browser_watcher_running
 
     if _file_browser_watcher_running:
         return
 
-    try:
-        bpy.ops.leveldesign.file_browser_watcher('INVOKE_DEFAULT')
-    except RuntimeError:
-        # Context may not be ready yet
-        pass
+    _file_browser_watcher_running = True
+    bpy.app.timers.register(_file_browser_watcher_timer, first_interval=0.1)
+
+
+class LEVELDESIGN_OT_force_apply_texture(bpy.types.Operator):
+    """Force apply texture from file browser (Alt+Click)"""
+    bl_idname = "leveldesign.force_apply_texture"
+    bl_label = "Force Apply Texture"
+    bl_options = {'INTERNAL'}
+
+    def execute(self, context):
+        apply_texture_from_file_browser()
+        return {'FINISHED'}
+
+
+# Store keymap items for cleanup
+_addon_keymaps = []
 
 
 def consolidate_duplicate_materials():
@@ -750,7 +758,8 @@ def on_depsgraph_update(scene, depsgraph):
 
 
 def register():
-    bpy.utils.register_class(LEVELDESIGN_OT_file_browser_watcher)
+    bpy.utils.register_class(LEVELDESIGN_OT_force_apply_texture)
+
     if on_depsgraph_update not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update)
     if on_load_post not in bpy.app.handlers.load_post:
@@ -760,20 +769,37 @@ def register():
     # Start file browser watcher
     bpy.app.timers.register(start_file_browser_watcher, first_interval=0.2)
 
+    # Register Alt+Click keymap in file browser
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    if kc:
+        km = kc.keymaps.new(name='File Browser', space_type='FILE_BROWSER')
+        kmi = km.keymap_items.new(
+            'leveldesign.force_apply_texture',
+            'LEFTMOUSE', 'CLICK',
+            alt=True
+        )
+        _addon_keymaps.append((km, kmi))
+
 
 def unregister():
     global last_face_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path
 
-    # Stop the file browser watcher modal
+    # Stop the file browser watcher timer
     _file_browser_watcher_running = False
     _last_file_browser_path = None
+
+    # Remove keymaps
+    for km, kmi in _addon_keymaps:
+        km.keymap_items.remove(kmi)
+    _addon_keymaps.clear()
 
     if on_depsgraph_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph_update)
     if on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post)
 
-    bpy.utils.unregister_class(LEVELDESIGN_OT_file_browser_watcher)
+    bpy.utils.unregister_class(LEVELDESIGN_OT_force_apply_texture)
 
     face_data_cache.clear()
     last_face_count = 0
