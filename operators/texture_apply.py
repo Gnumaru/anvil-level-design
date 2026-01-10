@@ -16,7 +16,7 @@ from ..utils import (
     get_image_from_material,
 )
 from ..properties import apply_uv_to_face
-from ..handlers import cache_single_face, get_active_image, set_active_image
+from ..handlers import cache_single_face, get_active_image, set_active_image, redraw_ui_panels
 
 
 def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me):
@@ -368,6 +368,7 @@ class pick_image_from_face(Operator):
 
         # Set as active image
         set_active_image(image)
+        redraw_ui_panels(context)
         self.report({'INFO'}, f"Active image: {image.name}")
 
         return {'FINISHED'}

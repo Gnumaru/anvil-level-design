@@ -46,7 +46,11 @@ def get_active_image():
 
 
 def set_active_image(image):
-    """Set the currently active image for texture operations."""
+    """Set the currently active image for texture operations.
+
+    Note: Does not call redraw_ui_panels here to avoid requiring a context parameter.
+    Callers should call redraw_ui_panels(context) if an immediate UI update is needed.
+    """
     global _active_image
     _active_image = image
 
