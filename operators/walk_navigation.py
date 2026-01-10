@@ -15,7 +15,7 @@ def get_addon_prefs(context):
 class LEVELDESIGN_OT_walk_navigation_hold(Operator):
     """First-person camera navigation while holding right mouse button."""
     bl_idname = "leveldesign.walk_navigation_hold"
-    bl_label = "First Person Camera (Hold RMB)"
+    bl_label = "First Person Camera (Hold)"
     bl_options = {'REGISTER'}
 
     def invoke(self, context, event):

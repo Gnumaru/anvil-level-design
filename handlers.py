@@ -574,7 +574,7 @@ def start_file_browser_watcher():
 class LEVELDESIGN_OT_force_apply_texture(bpy.types.Operator):
     """Force apply texture from file browser (Alt+Click)"""
     bl_idname = "leveldesign.force_apply_texture"
-    bl_label = "Force Apply Texture"
+    bl_label = "Repick File Browser Selected Texture"
     bl_options = {'INTERNAL'}
 
     def execute(self, context):

@@ -61,7 +61,7 @@ class LEVELDESIGN_OT_ortho_view(Operator):
 class LEVELDESIGN_OT_ortho_pan(Operator):
     """Pan view with MMB in orthographic views, orbit in perspective views."""
     bl_idname = "leveldesign.ortho_pan"
-    bl_label = "Ortho Pan / Perspective Orbit"
+    bl_label = "Ortho Pan"
     bl_options = {'REGISTER'}
 
     def invoke(self, context, event):
