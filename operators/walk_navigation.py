@@ -26,6 +26,10 @@ class LEVELDESIGN_OT_walk_navigation_hold(Operator):
         if rv3d is None:
             return {'CANCELLED'}
 
+        # Don't activate freecam in orthographic mode
+        if not rv3d.is_perspective:
+            return {'PASS_THROUGH'}
+
         self.region_3d = rv3d
 
         # Save original settings to restore on exit
