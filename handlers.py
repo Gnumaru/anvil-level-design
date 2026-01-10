@@ -71,10 +71,12 @@ def cache_single_face(face, uv_layer, ppm=None, me=None):
         'center': face.calc_center_median().copy()
     }
 
-    # Cache the derived transform (rotation, offset) if we have the required data
+    # Cache the derived transform (scale, rotation, offset) if we have the required data
     if ppm is not None and me is not None:
         transform = derive_transform_from_uvs(face, uv_layer, ppm, me)
         if transform:
+            cache_entry['scale_u'] = transform['scale_u']
+            cache_entry['scale_v'] = transform['scale_v']
             cache_entry['rotation'] = transform['rotation']
             cache_entry['offset_x'] = transform['offset_x']
             cache_entry['offset_y'] = transform['offset_y']
@@ -211,8 +213,6 @@ def apply_world_scale_uvs(obj, scene):
 
     uv_layer = bm.loops.layers.uv.verify()
     props = scene.level_design_props
-    scale_u = props.texture_scale_u
-    scale_v = props.texture_scale_v
     ppm = props.pixels_per_meter
 
     # Iterate using indices to be more resilient during topology changes
@@ -247,7 +247,9 @@ def apply_world_scale_uvs(obj, scene):
             if not has_moved:
                 continue
 
-            # Get cached rotation (default to 0 if not cached)
+            # Get cached transform (defaults if not cached)
+            scale_u = cached.get('scale_u', 1.0)
+            scale_v = cached.get('scale_v', 1.0)
             rotation = cached.get('rotation', 0.0)
             offset_x = cached.get('offset_x', 0.0)
             offset_y = cached.get('offset_y', 0.0)
