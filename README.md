@@ -1,4 +1,4 @@
-# Anvil Level Design
+# Anvil Level Design Readme
 
 ## Intro
 
@@ -10,9 +10,11 @@ Anvil LD is a hobby project. It is likely buggy.
 
 ## Installation
 
-Create a zip file of this repo (README.md should be at the root; the zip from github should be appropriate).
+Download the zip from Github.
 
 Edit -> Preferences -> v arrow -> Install From Disk -> Select the zip file
+
+(For the avoidance of doubt, the zip should contain \_\_init.py\_\_ at the root.)
 
 ## Features
 
