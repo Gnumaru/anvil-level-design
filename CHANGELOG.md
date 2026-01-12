@@ -1,5 +1,9 @@
 # Anvil Level Design Changelog
 
+## 1.0.2
+
+- Fix vertex and edge sliding garbling UVs by disabling 'correct uv' by default (HACK - see etc in Readme for details)
+
 ## 1.0.1
 
 - Appropriately scoped keybindings so enabling / disabling the addon doesn't permanently break you keybindings (sorry for any inconvenience caused)

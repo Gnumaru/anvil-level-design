@@ -105,9 +105,10 @@ For a more convenient experience I strongly recommend you adjust the following (
 * Lock camera rotation for orthographic grid views
 * Change Focal Length (it helps with interiors)
 
-## Limitations / Known Issues
+## Limitations / Known Issues / Notes on Blender / Hacks / etc
 
 * Changing grid size does not work during an operation
 * Grid snapping does not work when zoomed out far in orthographic mode (blender bug: https://projects.blender.org/blender/blender/issues/137957)
 * Due to file browser API restrictions, you must hold alt-click to pick an image if it is already selected
-
+* Blender has built in UV correct: correct face attributes. It defaults to off. It doesn't work well when extruding faces orthoganally
+* Blender has built in UV correct: correct UV (vertex and edge slide). It defaults to on. It mostly works well but has a few annoyances (sometimes just doesn't work; base UV is affected by initial move when using the G hotkey). It also (guess) causes face data to move in memory, causing crashes when Anvil UV is working. UV correct is not exposed via Python, so we disable it by directly accessing blender memory. Brittle!

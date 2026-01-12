@@ -1,11 +1,37 @@
 import os
 import re
+import ctypes
 
 import bpy
 import bmesh
 import math
 from mathutils import Vector
 from bpy.app.handlers import persistent
+
+# Memory offset of uvcalc_flag in ToolSettings struct (found experimentally for Blender 5.0)
+_UVCALC_FLAG_OFFSET = 100
+_UVCALC_TRANSFORM_CORRECT_SLIDE = 4  # 1 << 2
+
+# HACK of the century. We need to turn off correct_uv slide but blender doesn't expose it
+# So we do direct memory management. See /scripts for how to find the offset
+# This is brittle as anything :)
+def set_correct_uv_slide(enabled: bool):
+    """Directly set the UVCALC_TRANSFORM_CORRECT_SLIDE flag in tool settings.
+
+    This flag controls whether edge/vertex slide operations correct UVs.
+    Blender's Python API doesn't expose this flag, so we modify it directly in memory.
+    """
+    try:
+        ts = bpy.context.scene.tool_settings
+        ts_ptr = ts.as_pointer()
+        flag_ptr = ctypes.cast(ts_ptr + _UVCALC_FLAG_OFFSET, ctypes.POINTER(ctypes.c_ushort))
+
+        if enabled:
+            flag_ptr.contents.value |= _UVCALC_TRANSFORM_CORRECT_SLIDE
+        else:
+            flag_ptr.contents.value &= ~_UVCALC_TRANSFORM_CORRECT_SLIDE
+    except Exception as e:
+        print(f"Level Design Tools: Failed to set correct_uv_slide (see method comments): {e}")
 
 from .utils import (
     get_image_from_material, derive_transform_from_uvs,
@@ -225,14 +251,17 @@ def apply_world_scale_uvs(obj, scene):
                 continue
 
             cached = face_data_cache[face.index]
+            cached_verts = cached['verts']
 
+            # HACK - premature optimisation? This cuts down a lot of faces but means we need to deal with Blender's own
+            # UV correction on other faces which is diffciult!
             # Skip faces not relevant to current operation
             # A face is relevant if any of its vertices are selected
             if not any(v.select for v in face.verts):
                 continue
 
             current_verts = [v.co.copy() for v in face.verts]
-            if len(current_verts) != len(cached['verts']):
+            if len(current_verts) != len(cached_verts):
                 continue
 
             # Get cached transform (defaults if not cached)
@@ -245,8 +274,8 @@ def apply_world_scale_uvs(obj, scene):
             # Compensate for first edge rotation to keep texture fixed in world space
             # The local coordinate system is based on the first edge, so if the face
             # rotates, we need to counter-rotate the texture rotation
-            if len(cached['verts']) >= 2 and len(current_verts) >= 2:
-                old_edge = (cached['verts'][1] - cached['verts'][0]).normalized()
+            if len(cached_verts) >= 2 and len(current_verts) >= 2:
+                old_edge = (cached_verts[1] - cached_verts[0]).normalized()
                 new_edge = (current_verts[1] - current_verts[0]).normalized()
 
                 # Compute signed angle between old and new edge directions
@@ -262,7 +291,7 @@ def apply_world_scale_uvs(obj, scene):
                 # Compensate offset for translation of first vertex
                 # The texture should stay fixed in world space, so when the first
                 # vertex moves, the offset must change to keep the same world position
-                translation = current_verts[0] - cached['verts'][0]
+                translation = current_verts[0] - cached_verts[0]
 
                 # Get the world-aligned projection axes (after rotation compensation)
                 face_axes = get_face_local_axes(face)
@@ -667,6 +696,11 @@ def set_all_grid_scales_to_default():
                         space.overlay.grid_scale = 1.0
 
 
+def disable_correct_uv_slide():
+    """Disable the correct_uv flag for slide operations via direct memory access."""
+    set_correct_uv_slide(False)
+
+
 @persistent
 def on_load_post(dummy):
     """Handler called after a .blend file is loaded."""
@@ -679,6 +713,8 @@ def on_load_post(dummy):
     bpy.app.timers.register(set_all_grid_scales_to_default, first_interval=0.1)
     # Restart the file browser watcher
     bpy.app.timers.register(start_file_browser_watcher, first_interval=0.2)
+    # Disable correct_uv for slide operations
+    bpy.app.timers.register(disable_correct_uv_slide, first_interval=0.1)
 
 
 @persistent
@@ -691,13 +727,6 @@ def on_depsgraph_update(scene, depsgraph):
         consolidate_duplicate_materials()
 
         context = bpy.context
-
-        # Disable correct_uv on any active loop cut operator
-        window = context.window
-        if window:
-            for op in window.modal_operators:
-                if op.bl_idname == 'MESH_OT_loopcut_slide':
-                    op.correct_uv = False
 
         # Safety check - ensure properties are registered
         if not hasattr(scene, 'level_design_props'):
@@ -778,10 +807,11 @@ def register():
     # Start file browser watcher
     bpy.app.timers.register(start_file_browser_watcher, first_interval=0.2)
 
-    # Register Alt+Click keymap in file browser
+    # Register keymaps
     wm = bpy.context.window_manager
     kc = wm.keyconfigs.addon
     if kc:
+        # Alt+Click in file browser
         km = kc.keymaps.new(name='File Browser', space_type='FILE_BROWSER')
         kmi = km.keymap_items.new(
             'leveldesign.force_apply_texture',
@@ -789,6 +819,9 @@ def register():
             alt=True
         )
         _addon_keymaps.append((km, kmi))
+
+    # Disable correct_uv for slide operations via direct memory access
+    bpy.app.timers.register(disable_correct_uv_slide, first_interval=0.1)
 
 
 def unregister():
