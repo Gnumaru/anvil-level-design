@@ -45,6 +45,7 @@ from .properties import set_updating_from_selection, sync_scale_tracking, apply_
 # Cache for face data (UV lock functionality)
 face_data_cache = {}
 last_face_count = 0
+last_vertex_count = 0
 
 # Cache for material deduplication
 _last_material_count = 0
@@ -117,7 +118,7 @@ def cache_face_data(context):
     Clears and rebuilds the entire face_data_cache. Used when UV lock is toggled
     or when the mesh topology changes.
     """
-    global last_face_count
+    global last_face_count, last_vertex_count
 
     if context.mode != 'EDIT_MESH':
         return
@@ -142,6 +143,7 @@ def cache_face_data(context):
         cache_single_face(face, uv_layer, ppm, me)
 
     last_face_count = len(bm.faces)
+    last_vertex_count = len(bm.verts)
 
 
 def update_ui_from_selection(context):
@@ -757,6 +759,7 @@ def on_depsgraph_update(scene, depsgraph):
                         continue
 
                     current_face_count = len(bm.faces)
+                    current_vertex_count = len(bm.verts)
 
                     # Detect fresh edit session (entering edit mode or switching objects)
                     # This must happen before topology/selection checks to prevent
@@ -766,7 +769,7 @@ def on_depsgraph_update(scene, depsgraph):
                     _last_edit_object_name = obj.name
 
                     # Check if topology changed (subdivision, extrusion, etc.)
-                    if current_face_count != last_face_count:
+                    if current_face_count != last_face_count or current_vertex_count != last_vertex_count:
                         # Topology changed - refresh cache
                         cache_face_data(context)
                         update_ui_from_selection(context)
@@ -826,7 +829,7 @@ def register():
 
 
 def unregister():
-    global last_face_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path
+    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path
 
     # Stop the file browser watcher timer
     _file_browser_watcher_running = False
@@ -846,6 +849,7 @@ def unregister():
 
     face_data_cache.clear()
     last_face_count = 0
+    last_vertex_count = 0
     _last_material_count = 0
     _last_selected_face_indices = set()
     _last_active_face_index = -1

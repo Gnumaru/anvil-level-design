@@ -4,6 +4,7 @@
 
 - Fix vertex and edge sliding garbling UVs by disabling 'correct uv' by default (HACK - see etc in Readme for details)
 - Improve face local axis calculations to handle 0 length edges
+- Fix UVs no longer working when vertex count on object changes (e.g. merged vertices)
 
 ## 1.0.1
 
