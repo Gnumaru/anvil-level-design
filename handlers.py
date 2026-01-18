@@ -36,7 +36,8 @@ def set_correct_uv_slide(enabled: bool):
 from .utils import (
     get_image_from_material, derive_transform_from_uvs,
     get_selected_image_path, find_material_with_image, create_material_with_image,
-    get_texture_dimensions_from_material, get_face_local_axes, normalize_offset
+    get_texture_dimensions_from_material, get_face_local_axes, normalize_offset,
+    get_local_x_from_verts_3d
 )
 from .properties import set_updating_from_selection, sync_scale_tracking, apply_uv_to_face
 
@@ -272,11 +273,11 @@ def apply_world_scale_uvs(obj, scene):
             offset_y = cached.get('offset_y', 0.0)
 
             # Compensate for first edge rotation to keep texture fixed in world space
-            # The local coordinate system is based on the first edge, so if the face
+            # The local coordinate system is based on the first non-zero edge, so if the face
             # rotates, we need to counter-rotate the texture rotation
-            if len(cached_verts) >= 2 and len(current_verts) >= 2:
-                old_edge = (cached_verts[1] - cached_verts[0]).normalized()
-                new_edge = (current_verts[1] - current_verts[0]).normalized()
+            old_edge = get_local_x_from_verts_3d(cached_verts)
+            new_edge = get_local_x_from_verts_3d(current_verts)
+            if old_edge is not None and new_edge is not None:
 
                 # Compute signed angle between old and new edge directions
                 # using the face normal as the rotation axis

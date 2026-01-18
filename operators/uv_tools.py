@@ -4,7 +4,7 @@ import math
 from bpy.types import Operator
 from mathutils import Vector
 
-from ..utils import align_2d_shape_to_square, derive_transform_from_uvs, get_texture_dimensions_from_material, get_selected_faces_or_report
+from ..utils import align_2d_shape_to_square, derive_transform_from_uvs, get_texture_dimensions_from_material, get_selected_faces_or_report, get_local_x_from_verts_2d
 from ..handlers import cache_face_data, cache_single_face
 from ..properties import set_updating_from_selection, sync_scale_tracking
 
@@ -257,10 +257,9 @@ class LEVELDESIGN_OT_rotate_uv(Operator):
         # Update rotation property to reflect new rotation
         if selected_faces:
             uvs = [loop[uv_layer].uv.copy() for loop in selected_faces[0].loops]
-            if len(uvs) >= 2:
-                edge_u = uvs[1].x - uvs[0].x
-                edge_v = uvs[1].y - uvs[0].y
-                current_angle = math.degrees(math.atan2(edge_v, edge_u))
+            local_x = get_local_x_from_verts_2d(uvs)
+            if local_x is not None:
+                current_angle = math.degrees(math.atan2(local_x[1], local_x[0]))
                 props.texture_rotation = current_angle
 
         return {'FINISHED'}

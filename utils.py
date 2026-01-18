@@ -5,6 +5,75 @@ import math
 from mathutils import Vector, Matrix
 
 
+def get_local_x_from_verts_3d(verts):
+    """Get the first non-zero edge direction from a list of 3D vertices.
+
+    Iterates through consecutive vertex pairs until finding an edge with
+    non-zero length. This handles cases where vertices may be coincident
+    (e.g., after moving a vertex on top of another).
+
+    Args:
+        verts: List of Vector3 vertex positions (at least 2 elements)
+
+    Returns:
+        Normalized Vector3 direction of the first valid edge, or None if
+        no valid edge exists (all vertices coincident or < 2 vertices).
+    """
+    if len(verts) < 2:
+        return None
+
+    for i in range(len(verts)):
+        p0 = verts[i]
+        p1 = verts[(i + 1) % len(verts)]
+        edge = p1 - p0
+        if edge.length > 0.0001:
+            return edge.normalized()
+
+    return None
+
+
+def get_local_x_from_verts_2d(verts):
+    """Get the first non-zero edge direction from a list of 2D vertices.
+
+    Iterates through consecutive vertex pairs until finding an edge with
+    non-zero length. This handles cases where UV vertices may be coincident.
+
+    Args:
+        verts: List of 2D coordinates as Vector2, tuples, or objects with x/y attributes
+               (at least 2 elements)
+
+    Returns:
+        Tuple (dx, dy) normalized direction of the first valid edge, or None if
+        no valid edge exists (all vertices coincident or < 2 vertices).
+    """
+    if len(verts) < 2:
+        return None
+
+    for i in range(len(verts)):
+        v0 = verts[i]
+        v1 = verts[(i + 1) % len(verts)]
+
+        # Handle different input types
+        if isinstance(v0, (tuple, list)):
+            x0, y0 = v0[0], v0[1]
+        else:
+            x0, y0 = v0.x, v0.y
+
+        if isinstance(v1, (tuple, list)):
+            x1, y1 = v1[0], v1[1]
+        else:
+            x1, y1 = v1.x, v1.y
+
+        dx = x1 - x0
+        dy = y1 - y0
+        length = math.sqrt(dx * dx + dy * dy)
+
+        if length > 0.0001:
+            return (dx / length, dy / length)
+
+    return None
+
+
 def normalize_offset(offset):
     """Normalize a UV offset value to the 0-1 range.
 
@@ -61,10 +130,11 @@ def get_texture_dimensions_from_material(mat, ppm, default_size=128):
 def get_face_local_axes(face):
     """Compute local X and Y axes for a face.
 
-    X-axis: Along the first edge (vertex 0 -> vertex 1), normalized
-    Y-axis: Perpendicular to X, in the plane of the first 3 vertices
+    X-axis: Along the first non-zero edge, normalized
+    Y-axis: Perpendicular to X, in the face plane
 
-    Returns (local_x, local_y) as Vector3, or None if face has < 2 vertices or face is invalid.
+    Returns (local_x, local_y) as Vector3, or None if face has < 2 vertices,
+    face is invalid, or no valid edge exists.
     """
     if face is None or not face.is_valid:
         return None
@@ -73,10 +143,11 @@ def get_face_local_axes(face):
     if len(loops) < 2:
         return None
 
-    # Get first edge direction as local X
-    p0 = loops[0].vert.co
-    p1 = loops[1].vert.co
-    local_x = (p1 - p0).normalized()
+    # Get first non-zero edge direction as local X
+    verts = [loop.vert.co for loop in loops]
+    local_x = get_local_x_from_verts_3d(verts)
+    if local_x is None:
+        return None
 
     if len(loops) < 3:
         # For 2 vertices, create arbitrary perpendicular
@@ -85,11 +156,8 @@ def get_face_local_axes(face):
         else:
             local_y = local_x.cross(Vector((1, 0, 0))).normalized()
     else:
-        # Get face normal from first 3 vertices
-        p2 = loops[2].vert.co
-        edge1 = p1 - p0
-        edge2 = p2 - p0
-        face_normal = edge1.cross(edge2).normalized()
+        # Use Blender's computed face normal (handles degenerate cases)
+        face_normal = face.normal
 
         # Local Y is perpendicular to X, in the face plane
         local_y = face_normal.cross(local_x).normalized()
@@ -100,29 +168,23 @@ def get_face_local_axes(face):
 def get_uv_local_axes(uvs):
     """Compute local X and Y axes for a UV shape.
 
-    X-axis: Along the first UV edge (uv[0] -> uv[1]), normalized
+    X-axis: Along the first non-zero UV edge, normalized
     Y-axis: Perpendicular to X in 2D space
 
     Args:
         uvs: List of Vector2 or tuples representing UV coordinates
 
-    Returns (local_x, local_y) as 2D vectors (tuples), or None if < 2 UVs.
+    Returns (local_x, local_y) as 2D vectors (tuples), or None if < 2 UVs
+    or no valid edge exists.
     """
     if len(uvs) < 2:
         return None
 
-    # Get first UV edge as local X
-    uv0 = uvs[0] if isinstance(uvs[0], (tuple, list)) else (uvs[0].x, uvs[0].y)
-    uv1 = uvs[1] if isinstance(uvs[1], (tuple, list)) else (uvs[1].x, uvs[1].y)
-
-    dx = uv1[0] - uv0[0]
-    dy = uv1[1] - uv0[1]
-    length = math.sqrt(dx * dx + dy * dy)
-
-    if length < 0.0001:
+    # Get first non-zero UV edge as local X
+    local_x = get_local_x_from_verts_2d(uvs)
+    if local_x is None:
         return None
 
-    local_x = (dx / length, dy / length)
     # Perpendicular in 2D: rotate 90 degrees counter-clockwise
     local_y = (-local_x[1], local_x[0])
 

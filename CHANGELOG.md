@@ -3,6 +3,7 @@
 ## 1.0.2
 
 - Fix vertex and edge sliding garbling UVs by disabling 'correct uv' by default (HACK - see etc in Readme for details)
+- Improve face local axis calculations to handle 0 length edges
 
 ## 1.0.1
 
