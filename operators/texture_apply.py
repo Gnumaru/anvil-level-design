@@ -19,16 +19,8 @@ from ..properties import apply_uv_to_face
 from ..handlers import cache_single_face, get_active_image, set_active_image, redraw_ui_panels
 
 
-def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me):
+def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me, obj_matrix):
     """Copy UV settings from source face to target face with proper rotation/offset handling.
-
-    - Scale is copied directly from source
-    - Rotation uses plane intersection logic:
-      - If planes intersect: rotation is relative to the intersection axis
-      - If planes are parallel: rotation adjusted for different first-edge directions
-    - Offset uses face intersection:
-      - If faces share an edge: offset relative to shared edge midpoint
-      - Otherwise: offset copied directly
 
     Args:
         source_face: BMesh face to copy UV settings from
@@ -36,8 +28,8 @@ def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me):
         uv_layer: BMesh UV layer
         ppm: Pixels per meter setting
         me: Mesh data (for bmesh.update_edit_mesh)
+        obj_matrix: Object world matrix (needed for parallel plane reference calculation)
     """
-    # Get source transform
     source_transform = derive_transform_from_uvs(source_face, uv_layer, ppm, me)
     if not source_transform:
         return False
@@ -48,7 +40,6 @@ def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me):
     source_offset_x = source_transform['offset_x']
     source_offset_y = source_transform['offset_y']
 
-    # Get face normals and local axes
     source_normal = source_face.normal.normalized()
     target_normal = target_face.normal.normalized()
 
@@ -57,104 +48,59 @@ def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me):
     if not source_axes or not target_axes:
         return False
 
-    source_u, source_v = source_axes  # source_u is first edge direction
-    target_u, target_v = target_axes  # target_u is first edge direction
+    source_u, source_v = source_axes
+    target_u, target_v = target_axes
 
-    # Compute plane intersection axis
+    # Compute reference axis for rotation calculation
+    # For intersecting planes: use the intersection line
+    # For parallel planes: use "most upward" direction on the plane
     intersection = source_normal.cross(target_normal)
-    intersection_length = intersection.length
-
-    if intersection_length < 0.0001:
-        # Planes are parallel - adjust rotation for different first-edge directions
-        # Find angle between source_u and target_u projected onto the same plane
-        dot = source_u.dot(target_u)
-        cross = source_u.cross(target_u)
-        # Sign of angle determined by which way cross points relative to normal
-        angle_diff = math.atan2(cross.dot(source_normal), dot)
-
-        # Check if faces are opposite-facing (parallel but normals point opposite directions)
-        if source_normal.dot(target_normal) < 0:
-            # Opposite faces
-            target_rotation = source_rotation + math.degrees(angle_diff) + 180
-            if (target_rotation > 360):
-                target_rotation = target_rotation - 360
-        else:
-            target_rotation = source_rotation + math.degrees(angle_diff)
+    if intersection.length < 0.0001:
+        # Parallel planes - compute "most upward" vector on plane as reference
+        local_up = (obj_matrix.inverted().to_3x3() @ Vector((0, 0, 1))).normalized()
+        reference = local_up - source_normal.dot(local_up) * source_normal
+        if reference.length < 0.0001:
+            # Plane is horizontal, use texture V direction as reference
+            rot_rad = math.radians(source_rotation)
+            reference = source_u * math.sin(rot_rad) + source_v * math.cos(rot_rad)
+        reference = reference.normalized()
     else:
-        # Planes intersect - use intersection axis as reference
-        intersection = intersection.normalized()
+        reference = intersection.normalized()
 
-        # Angle from intersection axis to source's first edge (source_u), in source's plane
-        # Using signed angle with source_normal as reference
-        dot_source = intersection.dot(source_u)
-        cross_source = intersection.cross(source_u)
-        angle_intersection_to_source_u = math.atan2(cross_source.dot(source_normal), dot_source)
+    # Compute angle from reference to each face's U direction
+    angle_ref_to_source_u = math.atan2(
+        reference.cross(source_u).dot(source_normal),
+        reference.dot(source_u)
+    )
+    angle_ref_to_target_u = math.atan2(
+        reference.cross(target_u).dot(target_normal),
+        reference.dot(target_u)
+    )
 
-        # Angle from intersection axis to target's first edge (target_u), in target's plane
-        dot_target = intersection.dot(target_u)
-        cross_target = intersection.cross(target_u)
-        angle_intersection_to_target_u = math.atan2(cross_target.dot(target_normal), dot_target)
+    # Source's texture U direction relative to reference
+    texture_angle_from_ref = angle_ref_to_source_u - math.radians(source_rotation)
 
-        # Source's texture U direction relative to intersection:
-        # texture_u is source_u rotated by -source_rotation in the face plane
-        # So angle from intersection to texture_u = angle_intersection_to_source_u - source_rotation
-        texture_angle_from_intersection = angle_intersection_to_source_u - math.radians(source_rotation)
+    # For anti-parallel faces (opposite normals), mirror the rotation
+    # This makes the texture "decline" on the back face if it "inclines" on the front
+    if source_normal.dot(target_normal) < -0.9999:
+        texture_angle_from_ref = -texture_angle_from_ref + math.radians(180)
 
-        # On target, we want the same angle from intersection to texture_u
-        # angle_intersection_to_target_u - target_rotation = texture_angle_from_intersection
-        target_rotation = math.degrees(angle_intersection_to_target_u - texture_angle_from_intersection)
+    # Target rotation needed to achieve the same texture angle from reference
+    target_rotation = math.degrees(angle_ref_to_target_u - texture_angle_from_ref)
 
-    # Handle offset based on face intersection
+    # Check for opposite winding (u→v rotation direction differs between faces)
+    source_handedness = source_u.cross(source_v).dot(source_normal)
+    target_handedness = target_u.cross(target_v).dot(target_normal)
+    if source_handedness * target_handedness < 0:
+        target_rotation += 180
+
+    # Handle offset based on shared vertices
     source_verts = set(source_face.verts)
     target_verts = set(target_face.verts)
     shared_verts = source_verts & target_verts
 
-    if len(shared_verts) >= 2:
-        # Faces share an edge - compute offset so shared edge midpoint has same UV
-        shared_list = list(shared_verts)[:2]
-        midpoint = (shared_list[0].co + shared_list[1].co) / 2
-
-        # Find UV of midpoint in source face (interpolate between the two shared verts)
-        source_uv1 = source_uv2 = None
-        for loop in source_face.loops:
-            if loop.vert == shared_list[0]:
-                source_uv1 = loop[uv_layer].uv.copy()
-            elif loop.vert == shared_list[1]:
-                source_uv2 = loop[uv_layer].uv.copy()
-
-        if source_uv1 and source_uv2:
-            source_midpoint_uv_x = (source_uv1.x + source_uv2.x) / 2
-            source_midpoint_uv_y = (source_uv1.y + source_uv2.y) / 2
-
-            # Compute what UV the midpoint would have on target with offset=0
-            target_mat = me.materials[target_face.material_index] if target_face.material_index < len(me.materials) else None
-            tex_meters_u, tex_meters_v = get_texture_dimensions_from_material(target_mat, ppm)
-
-            # Rotate projection axes in face space
-            rot_rad = math.radians(target_rotation)
-            cos_r = math.cos(rot_rad)
-            sin_r = math.sin(rot_rad)
-            proj_x = target_u * cos_r - target_v * sin_r
-            proj_y = target_u * sin_r + target_v * cos_r
-
-            # Project midpoint onto rotated axes
-            first_vert_target = list(target_face.loops)[0].vert.co
-            delta = midpoint - first_vert_target
-            x = delta.dot(proj_x)
-            y = delta.dot(proj_y)
-
-            # Apply scale
-            u = x / (scale_u * tex_meters_u)
-            v = y / (scale_v * tex_meters_v)
-
-            # Offset needed so midpoint UV matches source
-            target_offset_x = normalize_offset(source_midpoint_uv_x - u)
-            target_offset_y = normalize_offset(source_midpoint_uv_y - v)
-        else:
-            target_offset_x = normalize_offset(source_offset_x)
-            target_offset_y = normalize_offset(source_offset_y)
-    elif len(shared_verts) == 1:
-        # Faces share a single vertex - use that vertex as reference
+    if len(shared_verts) >= 1:
+        # Use any shared vertex as reference point
         shared_vert = list(shared_verts)[0]
 
         # Find UV of shared vert in source
@@ -192,9 +138,35 @@ def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me):
             target_offset_x = normalize_offset(source_offset_x)
             target_offset_y = normalize_offset(source_offset_y)
     else:
-        # No shared vertices - just copy offset
-        target_offset_x = normalize_offset(source_offset_x)
-        target_offset_y = normalize_offset(source_offset_y)
+        # No shared vertices - project a source vertex onto target plane
+        source_loop = list(source_face.loops)[0]
+        source_vert_co = source_loop.vert.co
+        source_vert_uv = source_loop[uv_layer].uv.copy()
+
+        # Project source vertex onto target plane
+        target_plane_point = list(target_face.loops)[0].vert.co
+        dist_to_plane = (source_vert_co - target_plane_point).dot(target_normal)
+        projected_point = source_vert_co - dist_to_plane * target_normal
+
+        # Compute what UV the projected point would have on target with offset=0
+        target_mat = me.materials[target_face.material_index] if target_face.material_index < len(me.materials) else None
+        tex_meters_u, tex_meters_v = get_texture_dimensions_from_material(target_mat, ppm)
+
+        rot_rad = math.radians(target_rotation)
+        cos_r = math.cos(rot_rad)
+        sin_r = math.sin(rot_rad)
+        proj_x = target_u * cos_r - target_v * sin_r
+        proj_y = target_u * sin_r + target_v * cos_r
+
+        delta = projected_point - target_plane_point
+        x = delta.dot(proj_x)
+        y = delta.dot(proj_y)
+
+        u = x / (scale_u * tex_meters_u)
+        v = y / (scale_v * tex_meters_v)
+
+        target_offset_x = normalize_offset(source_vert_uv.x - u)
+        target_offset_y = normalize_offset(source_vert_uv.y - v)
 
     # Apply to target face
     target_mat = me.materials[target_face.material_index] if target_face.material_index < len(me.materials) else None
@@ -264,7 +236,7 @@ class apply_image_to_face(Operator):
         mat_index = obj.data.materials.find(mat.name)
         target_face.material_index = mat_index
 
-        set_uv_from_other_face(source_face, target_face, uv_layer, ppm, obj.data)
+        set_uv_from_other_face(source_face, target_face, uv_layer, ppm, obj.data, obj.matrix_world)
 
         bmesh.update_edit_mesh(obj.data)
         return {'FINISHED'}

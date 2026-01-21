@@ -1,5 +1,12 @@
 # Anvil Level Design Changelog
 
+## 1.0.3
+
+- Fix applied textures sometimes being rotated 180 degrees extra
+- Speculative fix for applying UVs to faces with opposite windings
+- Applying textures to opposite faces mirrors the rotation over the reference axis
+- Applying UVs to non-connected faces applies offset more intelligently
+
 ## 1.0.2
 
 - Fix vertex and edge sliding garbling UVs by disabling 'correct uv' by default (HACK - see etc in Readme for details)
