@@ -7,6 +7,7 @@
 - Applying textures to opposite faces mirrors the rotation over the reference axis
 - Applying UVs to non-connected faces applies offset more intelligently
 - If file is loaded into edit mode with face selected, that face is used to set active image
+- Default material is always scale 1 (initial texturing makes more sense)
 
 ## 1.0.2
 

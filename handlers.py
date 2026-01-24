@@ -176,16 +176,29 @@ def update_ui_from_selection(context):
             # Get values from first selected face
             face = selected_faces[0]
 
-            # Derive all transform values from current UVs
-            ppm = props.pixels_per_meter
-            transform = derive_transform_from_uvs(face, uv_layer, ppm, me)
+            # Check if face has a material with an image texture
+            mat_index = face.material_index
+            mat = obj.data.materials[mat_index] if mat_index < len(obj.data.materials) else None
+            has_image = get_image_from_material(mat) is not None
 
-            if transform:
-                props.texture_scale_u = transform['scale_u']
-                props.texture_scale_v = transform['scale_v']
-                props.texture_rotation = transform['rotation']
-                props.texture_offset_x = transform['offset_x']
-                props.texture_offset_y = transform['offset_y']
+            if has_image:
+                # Derive all transform values from current UVs
+                ppm = props.pixels_per_meter
+                transform = derive_transform_from_uvs(face, uv_layer, ppm, me)
+
+                if transform:
+                    props.texture_scale_u = transform['scale_u']
+                    props.texture_scale_v = transform['scale_v']
+                    props.texture_rotation = transform['rotation']
+                    props.texture_offset_x = transform['offset_x']
+                    props.texture_offset_y = transform['offset_y']
+            else:
+                # Default material - show neutral values
+                props.texture_scale_u = 1.0
+                props.texture_scale_v = 1.0
+                props.texture_rotation = 0.0
+                props.texture_offset_x = 0.0
+                props.texture_offset_y = 0.0
     finally:
         set_updating_from_selection(False)
         # Sync scale tracking after properties are updated from selection
