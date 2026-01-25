@@ -10,6 +10,7 @@
 - Default material is always scale 1 (initial texturing makes more sense)
 - Fix grid hotkeys not working in object mode when file first loaded (they worked once toggled in and out of edit mode)
 - Face UV Mode (Press T to snap texture to edge based on mouse position)
+- Fix UV shortcut buttons
 
 ## 1.0.2
 

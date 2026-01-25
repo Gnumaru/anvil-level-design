@@ -83,9 +83,8 @@ class LEVELDESIGN_OT_face_aligned_project(Operator):
             set_updating_from_selection(False)
             sync_scale_tracking(context)
 
-        # Store data for UV lock if enabled
-        if props.uv_lock:
-            cache_face_data(context)
+        # Update face cache so depsgraph handler doesn't overwrite our changes
+        cache_face_data(context)
 
         return {'FINISHED'}
 
@@ -157,6 +156,10 @@ class LEVELDESIGN_OT_align_uv(Operator):
                 loop[uv_layer].uv.y += offset_v
 
         bmesh.update_edit_mesh(me)
+
+        # Update face cache so depsgraph handler doesn't overwrite our changes
+        cache_face_data(context)
+
         return {'FINISHED'}
 
 
@@ -205,6 +208,10 @@ class LEVELDESIGN_OT_fit_to_face(Operator):
                 loop[uv_layer].uv = (u, v)
 
         bmesh.update_edit_mesh(me)
+
+        # Update face cache so depsgraph handler doesn't overwrite our changes
+        cache_face_data(context)
+
         return {'FINISHED'}
 
 
@@ -263,6 +270,9 @@ class LEVELDESIGN_OT_rotate_uv(Operator):
             if local_x is not None:
                 current_angle = math.degrees(math.atan2(local_x[1], local_x[0]))
                 props.texture_rotation = current_angle
+
+        # Update face cache so depsgraph handler doesn't overwrite our changes
+        cache_face_data(context)
 
         return {'FINISHED'}
 

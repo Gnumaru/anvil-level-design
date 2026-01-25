@@ -282,6 +282,19 @@ def apply_world_scale_uvs(obj, scene):
             if len(current_verts) != len(cached_verts):
                 continue
 
+            # Check if vertices actually moved - skip if geometry unchanged
+            # In general my preference is to always update selected + adjacent faces just to keep code simple
+            # This logic is here because face aligned project does a different type of projection than the one in this method
+            # consider revising?
+            has_moved = False
+            for current, cached in zip(current_verts, cached_verts):
+                if (current - cached).length > 0.0001:
+                    has_moved = True
+                    break
+
+            if not has_moved:
+                continue
+
             # Get cached transform (defaults if not cached)
             scale_u = cached.get('scale_u', 1.0)
             scale_v = cached.get('scale_v', 1.0)
