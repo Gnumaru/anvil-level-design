@@ -112,12 +112,8 @@ def apply_uv_to_face(face, uv_layer, scale_u, scale_v, rotation_deg, offset_x, o
     bmesh.update_edit_mesh(me)
 
 
-def apply_panel_uv_to_selected_faces(context):
-    """Apply UV coordinates to selected faces using current panel property values.
-
-    Reads scale, rotation, and offset from the scene properties and applies them
-    to all selected faces by calling apply_uv_to_face for each.
-    """
+def apply_scale_to_selected_faces(context):
+    """Apply scale from panel to selected faces, preserving each face's rotation and offset."""
     if get_updating_from_selection() or context.mode != 'EDIT_MESH':
         return
 
@@ -130,56 +126,116 @@ def apply_panel_uv_to_selected_faces(context):
     uv_layer = bm.loops.layers.uv.verify()
 
     props = context.scene.level_design_props
-    scale_u = props.texture_scale_u
-    scale_v = props.texture_scale_v
-    rotation_deg = props.texture_rotation
-    offset_x = props.texture_offset_x
-    offset_y = props.texture_offset_y
+    new_scale_u = props.texture_scale_u
+    new_scale_v = props.texture_scale_v
     ppm = props.pixels_per_meter
 
     selected_faces = [f for f in bm.faces if f.select]
-
     if not selected_faces:
         return
 
     from .handlers import cache_single_face
+    from .utils import derive_transform_from_uvs
 
     for face in selected_faces:
+        # Get current transform from this face's UVs
+        current = derive_transform_from_uvs(face, uv_layer, ppm, me)
+        if current is None:
+            continue
+
         mat = me.materials[face.material_index] if face.material_index < len(me.materials) else None
-        apply_uv_to_face(face, uv_layer, scale_u, scale_v, rotation_deg,
-                         offset_x, offset_y, mat, ppm, me)
+        # Apply new scale, but keep this face's rotation and offset
+        apply_uv_to_face(face, uv_layer, new_scale_u, new_scale_v,
+                         current['rotation'], current['offset_x'], current['offset_y'],
+                         mat, ppm, me)
         cache_single_face(face, uv_layer, ppm, me)
 
 
-def update_texture_transform(self, context):
-    """Called when any texture transform property changes (scale, rotation, offset)"""
-    global _updating_linked_scale, _last_scale_u, _last_scale_v, _normalizing_offset, _normalizing_rotation
+def apply_rotation_to_selected_faces(context):
+    """Apply rotation from panel to selected faces, preserving each face's scale and offset."""
+    if get_updating_from_selection() or context.mode != 'EDIT_MESH':
+        return
 
-    if _updating_linked_scale or get_updating_from_selection() or _normalizing_offset or _normalizing_rotation:
+    obj = context.object
+    if not obj or obj.type != 'MESH':
+        return
+
+    me = obj.data
+    bm = bmesh.from_edit_mesh(me)
+    uv_layer = bm.loops.layers.uv.verify()
+
+    props = context.scene.level_design_props
+    new_rotation = props.texture_rotation
+    ppm = props.pixels_per_meter
+
+    selected_faces = [f for f in bm.faces if f.select]
+    if not selected_faces:
+        return
+
+    from .handlers import cache_single_face
+    from .utils import derive_transform_from_uvs
+
+    for face in selected_faces:
+        # Get current transform from this face's UVs
+        current = derive_transform_from_uvs(face, uv_layer, ppm, me)
+        if current is None:
+            continue
+
+        mat = me.materials[face.material_index] if face.material_index < len(me.materials) else None
+        # Apply new rotation, but keep this face's scale and offset
+        apply_uv_to_face(face, uv_layer, current['scale_u'], current['scale_v'],
+                         new_rotation, current['offset_x'], current['offset_y'],
+                         mat, ppm, me)
+        cache_single_face(face, uv_layer, ppm, me)
+
+
+def apply_offset_to_selected_faces(context):
+    """Apply offset from panel to selected faces, preserving each face's scale and rotation."""
+    if get_updating_from_selection() or context.mode != 'EDIT_MESH':
+        return
+
+    obj = context.object
+    if not obj or obj.type != 'MESH':
+        return
+
+    me = obj.data
+    bm = bmesh.from_edit_mesh(me)
+    uv_layer = bm.loops.layers.uv.verify()
+
+    props = context.scene.level_design_props
+    new_offset_x = props.texture_offset_x
+    new_offset_y = props.texture_offset_y
+    ppm = props.pixels_per_meter
+
+    selected_faces = [f for f in bm.faces if f.select]
+    if not selected_faces:
+        return
+
+    from .handlers import cache_single_face
+    from .utils import derive_transform_from_uvs
+
+    for face in selected_faces:
+        # Get current transform from this face's UVs
+        current = derive_transform_from_uvs(face, uv_layer, ppm, me)
+        if current is None:
+            continue
+
+        mat = me.materials[face.material_index] if face.material_index < len(me.materials) else None
+        # Apply new offset, but keep this face's scale and rotation
+        apply_uv_to_face(face, uv_layer, current['scale_u'], current['scale_v'],
+                         current['rotation'], new_offset_x, new_offset_y,
+                         mat, ppm, me)
+        cache_single_face(face, uv_layer, ppm, me)
+
+
+def update_texture_scale(self, context):
+    """Called when scale_u or scale_v changes"""
+    global _updating_linked_scale, _last_scale_u, _last_scale_v
+
+    if _updating_linked_scale or get_updating_from_selection():
         return
 
     props = context.scene.level_design_props
-
-    # Normalize rotation to 0-360 range
-    if props.texture_rotation < 0 or props.texture_rotation >= 360:
-        _normalizing_rotation = True
-        try:
-            props.texture_rotation = props.texture_rotation % 360.0
-        finally:
-            _normalizing_rotation = False
-
-    # Normalize offset values if they're outside 0-1 range
-    needs_normalize_x = props.texture_offset_x < 0 or props.texture_offset_x >= 1
-    needs_normalize_y = props.texture_offset_y < 0 or props.texture_offset_y >= 1
-    if needs_normalize_x or needs_normalize_y:
-        _normalizing_offset = True
-        try:
-            if needs_normalize_x:
-                props.texture_offset_x = props.texture_offset_x % 1.0
-            if needs_normalize_y:
-                props.texture_offset_y = props.texture_offset_y % 1.0
-        finally:
-            _normalizing_offset = False
 
     # Handle linked scale - detect which value changed and sync the other
     if props.texture_scale_linked and props.texture_scale_u != props.texture_scale_v:
@@ -199,7 +255,52 @@ def update_texture_transform(self, context):
     _last_scale_u = props.texture_scale_u
     _last_scale_v = props.texture_scale_v
 
-    apply_panel_uv_to_selected_faces(context)
+    apply_scale_to_selected_faces(context)
+
+
+def update_texture_rotation(self, context):
+    """Called when rotation changes"""
+    global _normalizing_rotation
+
+    if _normalizing_rotation or get_updating_from_selection():
+        return
+
+    props = context.scene.level_design_props
+
+    # Normalize rotation to 0-360 range
+    if props.texture_rotation < 0 or props.texture_rotation >= 360:
+        _normalizing_rotation = True
+        try:
+            props.texture_rotation = props.texture_rotation % 360.0
+        finally:
+            _normalizing_rotation = False
+
+    apply_rotation_to_selected_faces(context)
+
+
+def update_texture_offset(self, context):
+    """Called when offset_x or offset_y changes"""
+    global _normalizing_offset
+
+    if _normalizing_offset or get_updating_from_selection():
+        return
+
+    props = context.scene.level_design_props
+
+    # Normalize offset values if they're outside 0-1 range
+    needs_normalize_x = props.texture_offset_x < 0 or props.texture_offset_x >= 1
+    needs_normalize_y = props.texture_offset_y < 0 or props.texture_offset_y >= 1
+    if needs_normalize_x or needs_normalize_y:
+        _normalizing_offset = True
+        try:
+            if needs_normalize_x:
+                props.texture_offset_x = props.texture_offset_x % 1.0
+            if needs_normalize_y:
+                props.texture_offset_y = props.texture_offset_y % 1.0
+        finally:
+            _normalizing_offset = False
+
+    apply_offset_to_selected_faces(context)
 
 
 class LevelDesignProperties(bpy.types.PropertyGroup):
@@ -227,7 +328,7 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         default=1.0,
         min=0.001,
         max=100.0,
-        update=update_texture_transform,
+        update=update_texture_scale,
     )
 
     texture_scale_v: FloatProperty(
@@ -236,7 +337,7 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         default=1.0,
         min=0.001,
         max=100.0,
-        update=update_texture_transform,
+        update=update_texture_scale,
     )
 
     texture_scale_linked: BoolProperty(
@@ -249,21 +350,21 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         name="Rotation",
         description="Texture rotation in degrees",
         default=0.0,
-        update=update_texture_transform,
+        update=update_texture_rotation,
     )
 
     texture_offset_x: FloatProperty(
         name="Offset X",
         description="Horizontal texture offset in texture tiles",
         default=0.0,
-        update=update_texture_transform,
+        update=update_texture_offset,
     )
 
     texture_offset_y: FloatProperty(
         name="Offset Y",
         description="Vertical texture offset in texture tiles",
         default=0.0,
-        update=update_texture_transform,
+        update=update_texture_offset,
     )
 
     edge_index: IntProperty(
