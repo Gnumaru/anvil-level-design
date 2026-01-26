@@ -39,7 +39,9 @@ Manual UV adjustments are possible via the Anvil LD panel:
 * UV shapes that do not match the 3d face are not strongly support but:
 * When UV lock is turned on, adjusting a face will cause the applied material to warp along with the face
 * When UV lock is turned off, adjust a face will not affect the material in world space e.g. when extending a wall, the applied wall material will remain natural looking (bricks won't stretch)
-* Shortcuts are provided to reset scale, rotation, and offset (Face-Aligned project); centre and fit materials to faces; and snap the edge of a material to face edges
+* Shortcuts are provided to reset scale, rotation, and offset (Face-Aligned project); centre and fit materials to faces
+
+Select a face and press T to enter Face UV Mode. In this mode by default the bottom of the texture will snap to the edge *closest to the mouse cusor*. Use WASD to select different texture edges. Use Q and E to set FIT modes.
 
 ### Camera and Viewport Tools
 
