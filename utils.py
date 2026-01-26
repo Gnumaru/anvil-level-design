@@ -692,58 +692,76 @@ def compute_uv_projection_from_face(face, uv_layer):
     if len(face.loops) < 3:
         return None
 
-    # Get 3 vertices and their UVs
     loops = list(face.loops)
+    n = len(loops)
+
+    # Search for 3 non-collinear vertices
+    # Use loop 0 as origin, then find two other loops that form a valid basis
     p0 = loops[0].vert.co.copy()
-    p1 = loops[1].vert.co.copy()
-    p2 = loops[2].vert.co.copy()
-
     uv0 = loops[0][uv_layer].uv.copy()
-    uv1 = loops[1][uv_layer].uv.copy()
-    uv2 = loops[2][uv_layer].uv.copy()
 
-    # Compute edge vectors in 3D and UV space
-    e1 = p1 - p0
-    e2 = p2 - p0
+    for i in range(1, n):
+        p1 = loops[i].vert.co.copy()
+        e1 = p1 - p0
+        e1e1 = e1.dot(e1)
 
-    duv1 = uv1 - uv0
-    duv2 = uv2 - uv0
+        # Skip if e1 is too short
+        if e1e1 < 1e-10:
+            continue
 
-    # We want to find u_axis and v_axis (3D vectors in face plane) such that:
-    # e1 · u_axis = duv1.x
-    # e2 · u_axis = duv2.x
-    # e1 · v_axis = duv1.y
-    # e2 · v_axis = duv2.y
-    #
-    # The axes lie in the plane spanned by e1 and e2.
-    # u_axis = a * e1 + b * e2
-    # v_axis = c * e1 + d * e2
-    #
-    # Substituting:
-    # a * (e1·e1) + b * (e1·e2) = duv1.x
-    # a * (e1·e2) + b * (e2·e2) = duv2.x
+        for j in range(i + 1, n):
+            p2 = loops[j].vert.co.copy()
+            e2 = p2 - p0
+            e2e2 = e2.dot(e2)
 
-    e1e1 = e1.dot(e1)
-    e2e2 = e2.dot(e2)
-    e1e2 = e1.dot(e2)
+            # Skip if e2 is too short
+            if e2e2 < 1e-10:
+                continue
 
-    det = e1e1 * e2e2 - e1e2 * e1e2
-    if abs(det) < 1e-10:
-        return None
+            e1e2 = e1.dot(e2)
+            det = e1e1 * e2e2 - e1e2 * e1e2
 
-    inv_det = 1.0 / det
+            # Check if vertices are non-collinear (det is non-zero)
+            if abs(det) < 1e-10:
+                continue
 
-    # Solve for u_axis coefficients
-    a = inv_det * (e2e2 * duv1.x - e1e2 * duv2.x)
-    b = inv_det * (e1e1 * duv2.x - e1e2 * duv1.x)
-    u_axis = e1 * a + e2 * b
+            # Found valid triplet (0, i, j)
+            uv1 = loops[i][uv_layer].uv.copy()
+            uv2 = loops[j][uv_layer].uv.copy()
 
-    # Solve for v_axis coefficients
-    c = inv_det * (e2e2 * duv1.y - e1e2 * duv2.y)
-    d = inv_det * (e1e1 * duv2.y - e1e2 * duv1.y)
-    v_axis = e1 * c + e2 * d
+            duv1 = uv1 - uv0
+            duv2 = uv2 - uv0
 
-    return (u_axis, v_axis, uv0, p0, face.normal.copy())
+            # We want to find u_axis and v_axis (3D vectors in face plane) such that:
+            # e1 · u_axis = duv1.x
+            # e2 · u_axis = duv2.x
+            # e1 · v_axis = duv1.y
+            # e2 · v_axis = duv2.y
+            #
+            # The axes lie in the plane spanned by e1 and e2.
+            # u_axis = a * e1 + b * e2
+            # v_axis = c * e1 + d * e2
+            #
+            # Substituting:
+            # a * (e1·e1) + b * (e1·e2) = duv1.x
+            # a * (e1·e2) + b * (e2·e2) = duv2.x
+
+            inv_det = 1.0 / det
+
+            # Solve for u_axis coefficients
+            a = inv_det * (e2e2 * duv1.x - e1e2 * duv2.x)
+            b = inv_det * (e1e1 * duv2.x - e1e2 * duv1.x)
+            u_axis = e1 * a + e2 * b
+
+            # Solve for v_axis coefficients
+            c = inv_det * (e2e2 * duv1.y - e1e2 * duv2.y)
+            d = inv_det * (e1e1 * duv2.y - e1e2 * duv1.y)
+            v_axis = e1 * c + e2 * d
+
+            return (u_axis, v_axis, uv0, p0, face.normal.copy())
+
+    # No valid triplet found
+    return None
 
 
 def apply_uv_projection_to_face(target_face, uv_layer, u_axis, v_axis, origin_uv, origin_pos, source_normal):
