@@ -10,7 +10,7 @@ Anvil LD is a hobby project. It is likely buggy.
 
 ## Installation
 
-Download the zip from Github.
+Download the zip from github: on the main github screen click code -> Download zip.
 
 Edit -> Preferences -> v arrow -> Install From Disk -> Select the zip file
 
