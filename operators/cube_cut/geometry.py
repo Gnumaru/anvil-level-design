@@ -213,11 +213,26 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
     # Create vertices at interior intersection points and track them per face
     # Store actual face references (not indices) since indices become invalid after modifications
+    # NOTE: Only cut faces that are SELECTED - unselected faces with split edges will be re-quadrilated
+    # If NO faces are selected, cut all faces (standard Blender convention)
+    any_faces_selected = any(f.select for f in bm.faces if f.is_valid)
+    if any_faces_selected:
+        print(f"[CubeCut] Selection mode: only cutting selected faces")
+    else:
+        print(f"[CubeCut] No faces selected: cutting all intersecting faces")
+
     face_interior_verts = []  # List of (face, interior_verts) tuples
     faces_to_be_cut = set()  # Track which faces will be cut
+    skipped_unselected_count = 0
     for face_idx, points in face_interior_points.items():
         face = bm.faces[face_idx] if face_idx < len(bm.faces) else None
         if face is None or not face.is_valid:
+            continue
+
+        # Only cut selected faces (unless no faces are selected, then cut all)
+        if any_faces_selected and not face.select:
+            skipped_unselected_count += 1
+            print(f"[CubeCut] Face {face_idx} skipped (not selected)")
             continue
 
         interior_verts = []
@@ -232,6 +247,8 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
             faces_to_be_cut.add(face)
 
     print(f"[CubeCut] Total interior vertices created: {sum(len(v) for _, v in face_interior_verts)}")
+    if skipped_unselected_count > 0:
+        print(f"[CubeCut] Skipped {skipped_unselected_count} unselected faces (will be re-quadrilated if needed)")
 
 
     # === STEP 3: Connect interior vertices to face boundaries ===
