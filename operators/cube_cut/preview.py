@@ -13,7 +13,7 @@ from . import utils
 
 
 # Colors for visual feedback
-COLOR_SNAP_POINT = (0.0, 1.0, 1.0, 1.0)      # Cyan - snap indicator
+COLOR_SNAP_POINT = (1.0, 1.0, 1.0, 1.0)      # White - snap indicator
 COLOR_RECTANGLE = (1.0, 0.5, 0.0, 0.9)        # Orange - rectangle preview
 COLOR_CUBOID = (1.0, 0.5, 0.0, 0.9)           # Orange - cuboid preview
 COLOR_DEPTH_INDICATOR = (0.0, 1.0, 0.5, 0.9)  # Green - depth direction

@@ -5,7 +5,6 @@ import ctypes
 import bpy
 import bmesh
 import math
-from mathutils import Vector
 from bpy.app.handlers import persistent
 
 # Memory offset of uvcalc_flag in ToolSettings struct (found experimentally for Blender 5.0)
@@ -37,9 +36,148 @@ from .utils import (
     get_image_from_material, derive_transform_from_uvs,
     get_selected_image_path, find_material_with_image, create_material_with_image,
     get_texture_dimensions_from_material, get_face_local_axes, normalize_offset,
-    get_local_x_from_verts_3d, debug_log
+    get_local_x_from_verts_3d, debug_log, face_has_hotspot_material,
+    any_connected_face_has_hotspot, get_all_hotspot_faces
 )
 from .properties import set_updating_from_selection, sync_scale_tracking, apply_uv_to_face
+
+
+_auto_hotspot_pending = False
+_force_auto_hotspot = False
+
+# Track undo operations to skip depsgraph handling during undo
+_undo_in_progress = False
+
+
+def _any_hotspot_geometry_changed(bm, me):
+    """Check if any hotspot face has geometry that differs from cache.
+
+    Returns True if any hotspot face is new or has moved vertices.
+    Returns False if all hotspot faces match their cached geometry (e.g., after undo).
+    """
+    for face in bm.faces:
+        if not face.is_valid or not face_has_hotspot_material(face, me):
+            continue
+
+        if face.index not in face_data_cache:
+            # New face - geometry changed
+            return True
+
+        cached = face_data_cache[face.index]
+        cached_verts = cached.get('verts', [])
+        current_verts = [v.co.copy() for v in face.verts]
+
+        if len(current_verts) != len(cached_verts):
+            return True
+
+        for current, cached_v in zip(current_verts, cached_verts):
+            if (current - cached_v).length > 0.0001:
+                return True
+
+    return False
+
+
+def _apply_auto_hotspots_deferred():
+    """Deferred auto-hotspot application (runs from timer for proper context).
+
+    Applies hotspots to ALL faces with hotspot materials, treating the entire
+    object shape as relevant for island detection.
+    """
+    global _auto_hotspot_pending, _force_auto_hotspot
+
+    # Early return if cancelled (e.g., by undo)
+    if not _auto_hotspot_pending:
+        return None
+
+    from .operators.uv_tools import apply_hotspots_to_mesh
+
+    try:
+        context = bpy.context
+        if context.mode != 'EDIT_MESH':
+            _auto_hotspot_pending = False
+            _force_auto_hotspot = False
+            return None
+
+        # Skip if modal operator is running (e.g., extrude, grab)
+        # Keep pending so we re-check after modal ends
+        window = context.window
+        if window and window.modal_operators:
+            return 0.1  # Re-check in 0.1s
+
+        force = _force_auto_hotspot
+        _auto_hotspot_pending = False
+        _force_auto_hotspot = False
+
+        obj = context.object
+        if not obj or obj.type != 'MESH':
+            return None
+
+        me = obj.data
+        bm = bmesh.from_edit_mesh(me)
+
+        if not bm.is_valid:
+            return None
+
+        bm.faces.ensure_lookup_table()
+
+        # Check if any hotspot geometry actually changed (skip if undo restored to cached state)
+        # Topology changes (new faces) force re-application since cache_face_data runs first
+        if not force and not _any_hotspot_geometry_changed(bm, me):
+            return None
+
+        # Get ALL faces with hotspot materials
+        all_hotspot_faces = [f for f in bm.faces if f.is_valid and face_has_hotspot_material(f, me)]
+
+        if not all_hotspot_faces:
+            return None
+
+        # Save selection state
+        selected_face_indices = {f.index for f in bm.faces if f.select}
+        active_face_index = bm.faces.active.index if bm.faces.active else None
+
+        props = context.scene.level_design_props
+        seam_mode = props.hotspot_seam_mode
+        allow_combined_faces = obj.anvil_allow_combined_faces
+        size_weight = obj.anvil_hotspot_size_weight
+
+        debug_log(f"[AutoHotspot] Processing {len(all_hotspot_faces)} hotspot faces")
+        result = apply_hotspots_to_mesh(
+            bm, me, all_hotspot_faces, seam_mode, allow_combined_faces,
+            obj.matrix_world, props.pixels_per_meter, size_weight
+        )
+        debug_log(f"[AutoHotspot] Applied: {result}")
+
+        # Restore selection state
+        bm.faces.ensure_lookup_table()
+        for face in bm.faces:
+            face.select = face.index in selected_face_indices
+        if active_face_index is not None and active_face_index < len(bm.faces):
+            bm.faces.active = bm.faces[active_face_index]
+
+        # Update cache for processed faces
+        uv_layer = bm.loops.layers.uv.verify()
+        ppm = props.pixels_per_meter
+        for face in all_hotspot_faces:
+            if face.is_valid:
+                cache_single_face(face, uv_layer, ppm, me)
+
+        bmesh.update_edit_mesh(me)
+
+    except Exception as e:
+        print(f"Anvil Level Design: Auto-hotspot error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    return None
+
+
+def _apply_auto_hotspots():
+    """Schedule auto-hotspot application via timer for proper operator context."""
+    global _auto_hotspot_pending
+    if _auto_hotspot_pending:
+        return
+    _auto_hotspot_pending = True
+    bpy.app.timers.register(_apply_auto_hotspots_deferred, first_interval=0.1)
 
 
 def _get_best_neighbor_face(face, selected_faces_set):
@@ -75,10 +213,11 @@ def _get_best_neighbor_face(face, selected_faces_set):
 
 
 def _project_selected_faces_on_topology_change(context, bm):
-    """Apply UV projection to selected faces after topology change.
+    """Apply UV projection to selected non-hotspot faces after topology change.
 
     Operations like Bridge Edge Loops, Fill, Grid Fill select the newly created faces.
     Uses neighboring faces as UV source for seamless tiling (like alt-click).
+    Hotspot faces are handled by the deferred auto-hotspot system.
     """
     from .operators.texture_apply import set_uv_from_other_face
 
@@ -94,8 +233,12 @@ def _project_selected_faces_on_topology_change(context, bm):
     if not selected_faces:
         return
 
+    # Only process non-hotspot faces - hotspot faces handled by deferred system
+    normal_faces = [f for f in selected_faces if not face_has_hotspot_material(f, me)]
+
+    # Apply normal UVs (world-space projection from neighbors)
     projected_count = 0
-    for face in selected_faces:
+    for face in normal_faces:
         # Find best neighboring face to use as UV source
         source_face = _get_best_neighbor_face(face, selected_faces_set)
 
@@ -345,6 +488,10 @@ def apply_world_scale_uvs(obj, scene):
             if face.index not in face_data_cache:
                 continue
 
+            # Skip faces with hotspottable materials
+            if face_has_hotspot_material(face, me):
+                continue
+
             cached = face_data_cache[face.index]
             cached_verts = cached['verts']
 
@@ -569,7 +716,11 @@ def apply_texture_from_file_browser():
 
     Called when user clicks in the file browser. Loads the selected image,
     sets it as active, and applies it to any selected faces in edit mode.
+    For hotspottable textures, applies hotspot UVs instead of regular projection.
     """
+    from .hotspot_mapping.json_storage import is_texture_hotspottable
+    from .operators.uv_tools import apply_hotspots_to_mesh
+
     try:
         context = bpy.context
         obj = context.object
@@ -603,20 +754,19 @@ def apply_texture_from_file_browser():
             return
 
         uv_layer = bm.loops.layers.uv.verify()
-        ppm = context.scene.level_design_props.pixels_per_meter
+        props = context.scene.level_design_props
+        ppm = props.pixels_per_meter
 
-        # Capture old material info for each face BEFORE we modify the material list
-        # This is critical because appending a new material can change what materials[0] points to
-        face_old_info = {}
+        # Check which selected faces previously had hotspottable textures (before changing material)
+        faces_with_previous_hotspot = [f for f in selected_faces if face_has_hotspot_material(f, obj.data)]
+        any_previous_was_hotspottable = len(faces_with_previous_hotspot) > 0
+
+        # Check if any selected face has connected faces with hotspot textures
+        any_connected_has_hotspot = False
         for f in selected_faces:
-            f_mat_idx = f.material_index
-            f_mat = obj.data.materials[f_mat_idx] if f_mat_idx < len(obj.data.materials) else None
-            f_img = get_image_from_material(f_mat)
-            face_old_info[f.index] = {
-                'mat': f_mat,
-                'has_image': f_img is not None,
-                'tex_dims': get_texture_dimensions_from_material(f_mat, ppm),
-            }
+            if any_connected_face_has_hotspot(f, obj.data):
+                any_connected_has_hotspot = True
+                break
 
         # Get or create material
         mat = find_material_with_image(image)
@@ -629,54 +779,155 @@ def apply_texture_from_file_browser():
 
         mat_index = obj.data.materials.find(mat.name)
 
+        # Assign material to all selected faces first
         for target_face in selected_faces:
-            # Get current transform to preserve it
-            current_transform = derive_transform_from_uvs(target_face, uv_layer, ppm, obj.data)
-
-            # Get old material info that we captured before modifying the material list
-            old_info = face_old_info[target_face.index]
-            old_has_image = old_info['has_image']
-            old_tex_dims = old_info['tex_dims']
-
             target_face.material_index = mat_index
 
-            # Get new texture dimensions
-            new_tex_dims = get_texture_dimensions_from_material(mat, ppm)
+        new_is_hotspottable = is_texture_hotspottable(image.name)
 
-            # Reapply the preserved transform with the new texture
-            if current_transform:
-                # Reset scale to 1,1 if old material had no image (default material)
-                # or if texture dimensions changed
-                if not old_has_image or old_tex_dims != new_tex_dims:
-                    scale_u, scale_v = 1.0, 1.0
-                else:
-                    scale_u = current_transform['scale_u']
-                    scale_v = current_transform['scale_v']
+        # Determine if we should apply hotspot logic
+        # Only apply hotspots if auto_hotspot is enabled
+        if props.auto_hotspot and new_is_hotspottable:
+            # New texture is hotspottable - apply hotspots to ALL faces with hotspot materials
+            # (entire object shape is relevant when finding hotspot islands)
+            all_hotspot_faces = get_all_hotspot_faces(bm, obj.data)
 
-                apply_uv_to_face(
-                    target_face, uv_layer,
-                    scale_u, scale_v,
-                    current_transform['rotation'],
-                    current_transform['offset_x'], current_transform['offset_y'],
-                    mat, ppm, obj.data
+            if all_hotspot_faces:
+                # Save selection state (apply_hotspots_to_mesh modifies selection)
+                selected_face_indices = {f.index for f in bm.faces if f.select}
+                active_face_index = bm.faces.active.index if bm.faces.active else None
+
+                seam_mode = props.hotspot_seam_mode
+                allow_combined_faces = obj.anvil_allow_combined_faces
+                size_weight = obj.anvil_hotspot_size_weight
+
+                debug_log(f"[FileBrowser] Applying hotspots to {len(all_hotspot_faces)} faces (all hotspot faces)")
+                apply_hotspots_to_mesh(
+                    bm, obj.data, all_hotspot_faces, seam_mode, allow_combined_faces,
+                    obj.matrix_world, ppm, size_weight
                 )
-                cache_single_face(target_face, uv_layer, ppm, obj.data)
-            else:
-                # Use default values when transform can't be derived
-                apply_uv_to_face(
-                    target_face, uv_layer,
-                    1.0, 1.0,  # scale
-                    0.0,       # rotation
-                    0.0, 0.0,  # offset
-                    mat, ppm, obj.data
+
+                # Restore selection state
+                bm.faces.ensure_lookup_table()
+                for face in bm.faces:
+                    face.select = face.index in selected_face_indices
+                if active_face_index is not None and active_face_index < len(bm.faces):
+                    bm.faces.active = bm.faces[active_face_index]
+
+                # Cache all hotspot faces after application
+                for face in all_hotspot_faces:
+                    if face.is_valid:
+                        cache_single_face(face, uv_layer, ppm, obj.data)
+        elif props.auto_hotspot and not new_is_hotspottable and any_previous_was_hotspottable and any_connected_has_hotspot:
+            # New texture is NOT hotspottable, but some selected faces previously had hotspot
+            # AND some connected faces have hotspot textures - re-hotspot all to recalculate islands
+            all_hotspot_faces = get_all_hotspot_faces(bm, obj.data)
+
+            if all_hotspot_faces:
+                # Save selection state
+                selected_face_indices = {f.index for f in bm.faces if f.select}
+                active_face_index = bm.faces.active.index if bm.faces.active else None
+
+                seam_mode = props.hotspot_seam_mode
+                allow_combined_faces = obj.anvil_allow_combined_faces
+                size_weight = obj.anvil_hotspot_size_weight
+
+                debug_log(f"[FileBrowser] Re-hotspotting {len(all_hotspot_faces)} faces (island structure changed)")
+                apply_hotspots_to_mesh(
+                    bm, obj.data, all_hotspot_faces, seam_mode, allow_combined_faces,
+                    obj.matrix_world, ppm, size_weight
                 )
-                cache_single_face(target_face, uv_layer, ppm, obj.data)
+
+                # Restore selection state
+                bm.faces.ensure_lookup_table()
+                for face in bm.faces:
+                    face.select = face.index in selected_face_indices
+                if active_face_index is not None and active_face_index < len(bm.faces):
+                    bm.faces.active = bm.faces[active_face_index]
+
+                # Cache all hotspot faces
+                for face in all_hotspot_faces:
+                    if face.is_valid:
+                        cache_single_face(face, uv_layer, ppm, obj.data)
+
+            # Apply regular UV projection to the selected faces (non-hotspot texture)
+            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, obj.data)
+        else:
+            # Either auto_hotspot is off, or it's a non-hotspot texture without hotspot neighbors
+            # Regular UV projection
+            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, obj.data)
+
+        bmesh.update_edit_mesh(obj.data)
 
         # Update UI to reflect the new UVs
         update_ui_from_selection(context)
 
     except Exception as e:
         print(f"Anvil Level Design: Error applying texture from file browser: {e}")
+
+
+def _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me):
+    """Apply regular UV projection to selected faces, preserving transform where possible.
+
+    Args:
+        selected_faces: List of BMesh faces to apply UVs to
+        uv_layer: BMesh UV layer
+        mat: Material to use for texture dimensions
+        ppm: Pixels per meter setting
+        me: Mesh data
+    """
+    # Capture old material info for transform preservation
+    face_old_info = {}
+    for f in selected_faces:
+        f_mat_idx = f.material_index
+        f_mat = me.materials[f_mat_idx] if f_mat_idx < len(me.materials) else None
+        f_img = get_image_from_material(f_mat)
+        face_old_info[f.index] = {
+            'mat': f_mat,
+            'has_image': f_img is not None,
+            'tex_dims': get_texture_dimensions_from_material(f_mat, ppm),
+        }
+
+    for target_face in selected_faces:
+        # Get current transform to preserve it
+        current_transform = derive_transform_from_uvs(target_face, uv_layer, ppm, me)
+
+        # Get old material info
+        old_info = face_old_info[target_face.index]
+        old_has_image = old_info['has_image']
+        old_tex_dims = old_info['tex_dims']
+
+        # Get new texture dimensions
+        new_tex_dims = get_texture_dimensions_from_material(mat, ppm)
+
+        # Reapply the preserved transform with the new texture
+        if current_transform:
+            # Reset scale to 1,1 if old material had no image (default material)
+            # or if texture dimensions changed
+            if not old_has_image or old_tex_dims != new_tex_dims:
+                scale_u, scale_v = 1.0, 1.0
+            else:
+                scale_u = current_transform['scale_u']
+                scale_v = current_transform['scale_v']
+
+            apply_uv_to_face(
+                target_face, uv_layer,
+                scale_u, scale_v,
+                current_transform['rotation'],
+                current_transform['offset_x'], current_transform['offset_y'],
+                mat, ppm, me
+            )
+            cache_single_face(target_face, uv_layer, ppm, me)
+        else:
+            # Use default values when transform can't be derived
+            apply_uv_to_face(
+                target_face, uv_layer,
+                1.0, 1.0,  # scale
+                0.0,       # rotation
+                0.0, 0.0,  # offset
+                mat, ppm, me
+            )
+            cache_single_face(target_face, uv_layer, ppm, me)
 
 
 def _file_browser_watcher_timer():
@@ -843,6 +1094,60 @@ def _clear_file_loaded_flag():
     _file_loaded_into_edit_depsgraph = False
 
 
+def _clear_undo_flag():
+    """Clear the undo flag after depsgraph has processed."""
+    global _undo_in_progress
+    _undo_in_progress = False
+
+
+@persistent
+def on_undo_pre(scene):
+    """Handler called before an undo operation."""
+    global _undo_in_progress, _auto_hotspot_pending
+    _undo_in_progress = True
+    _auto_hotspot_pending = False
+
+
+@persistent
+def on_undo_post(scene):
+    """Handler called after an undo operation.
+
+    Clears the undo flag via timer to ensure depsgraph update has completed.
+    Invalidates face caches since geometry state has changed.
+    """
+    global last_face_count, last_vertex_count
+    # Invalidate face caches - geometry state has changed
+    face_data_cache.clear()
+    last_face_count = 0
+    last_vertex_count = 0
+    # Use a short timer to ensure the depsgraph update triggered by undo
+    # has completed before we clear the flag
+    bpy.app.timers.register(_clear_undo_flag, first_interval=0.05)
+
+
+@persistent
+def on_redo_pre(scene):
+    """Handler called before a redo operation."""
+    global _undo_in_progress, _auto_hotspot_pending
+    _undo_in_progress = True
+    _auto_hotspot_pending = False
+
+
+@persistent
+def on_redo_post(scene):
+    """Handler called after a redo operation.
+
+    Clears the undo flag via timer to ensure depsgraph update has completed.
+    Invalidates face caches since geometry state has changed.
+    """
+    global last_face_count, last_vertex_count
+    # Invalidate face caches - geometry state has changed
+    face_data_cache.clear()
+    last_face_count = 0
+    last_vertex_count = 0
+    bpy.app.timers.register(_clear_undo_flag, first_interval=0.05)
+
+
 @persistent
 def on_save_pre(dummy):
     """Handler called before saving a .blend file.
@@ -897,7 +1202,11 @@ def on_load_post(dummy):
 @persistent
 def on_depsgraph_update(scene, depsgraph):
     """Consolidated depsgraph update handler"""
-    global last_face_count, _file_loaded_into_edit_depsgraph
+    global last_face_count, _file_loaded_into_edit_depsgraph, _force_auto_hotspot
+
+    # Skip all depsgraph handling during undo operations
+    if _undo_in_progress:
+        return
 
     try:
         # Check for duplicate materials (from copy/paste operations)
@@ -921,6 +1230,9 @@ def on_depsgraph_update(scene, depsgraph):
                     # Skip if mesh data is not available
                     if me is None or not me.is_editmode:
                         continue
+
+                    # Track if this is an actual geometry update (not just tab switch, etc.)
+                    is_geometry_update = update.is_updated_geometry
 
                     try:
                         bm = bmesh.from_edit_mesh(me)
@@ -957,6 +1269,12 @@ def on_depsgraph_update(scene, depsgraph):
                         if allow_active_image_update:
                             update_active_image_from_face(context)
                         _file_loaded_into_edit_depsgraph = False
+                        # Apply auto-hotspotting if enabled (after cache is updated)
+                        # Force because cache_face_data already cached the new faces,
+                        # so the geometry-changed check would incorrectly skip them
+                        if not is_fresh_start and props.auto_hotspot:
+                            _force_auto_hotspot = True
+                            _apply_auto_hotspots()
                         return
 
                     # Check if selection changed
@@ -975,6 +1293,9 @@ def on_depsgraph_update(scene, depsgraph):
                     else:
                         apply_world_scale_uvs(obj, scene)
 
+                    if not is_fresh_start and props.auto_hotspot:
+                        _apply_auto_hotspots()
+
                     _file_loaded_into_edit_depsgraph = False
                     break
     except Exception as e:
@@ -992,6 +1313,14 @@ def register():
         bpy.app.handlers.save_pre.append(on_save_pre)
     if on_save_post not in bpy.app.handlers.save_post:
         bpy.app.handlers.save_post.append(on_save_post)
+    if on_undo_pre not in bpy.app.handlers.undo_pre:
+        bpy.app.handlers.undo_pre.append(on_undo_pre)
+    if on_undo_post not in bpy.app.handlers.undo_post:
+        bpy.app.handlers.undo_post.append(on_undo_post)
+    if on_redo_pre not in bpy.app.handlers.redo_pre:
+        bpy.app.handlers.redo_pre.append(on_redo_pre)
+    if on_redo_post not in bpy.app.handlers.redo_post:
+        bpy.app.handlers.redo_post.append(on_redo_post)
     # Also set grid on addon enable
     bpy.app.timers.register(set_all_grid_scales_to_default, first_interval=0.1)
     # Start file browser watcher
@@ -1015,11 +1344,13 @@ def register():
 
 
 def unregister():
-    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph, _was_first_save
+    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph, _was_first_save, _auto_hotspot_pending, _undo_in_progress
 
     # Stop the file browser watcher timer
     _file_browser_watcher_running = False
     _last_file_browser_path = None
+    _auto_hotspot_pending = False
+    _undo_in_progress = False
 
     # Remove keymaps
     for km, kmi in _addon_keymaps:
@@ -1034,6 +1365,14 @@ def unregister():
         bpy.app.handlers.save_pre.remove(on_save_pre)
     if on_save_post in bpy.app.handlers.save_post:
         bpy.app.handlers.save_post.remove(on_save_post)
+    if on_undo_pre in bpy.app.handlers.undo_pre:
+        bpy.app.handlers.undo_pre.remove(on_undo_pre)
+    if on_undo_post in bpy.app.handlers.undo_post:
+        bpy.app.handlers.undo_post.remove(on_undo_post)
+    if on_redo_pre in bpy.app.handlers.redo_pre:
+        bpy.app.handlers.redo_pre.remove(on_redo_pre)
+    if on_redo_post in bpy.app.handlers.redo_post:
+        bpy.app.handlers.redo_post.remove(on_redo_post)
 
     bpy.utils.unregister_class(LEVELDESIGN_OT_force_apply_texture)
 

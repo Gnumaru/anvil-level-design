@@ -16,6 +16,7 @@ from . import handlers
 from . import operators
 from . import panels
 from . import workspace
+from . import hotspot_mapping
 
 
 # Default movement keys
@@ -218,6 +219,7 @@ def register():
     operators.register()
     panels.register()
     workspace.register()
+    hotspot_mapping.register()
 
     # Register movement key keymaps
     wm = bpy.context.window_manager
@@ -242,6 +244,7 @@ def unregister():
             pass
     freelook_movement_keymaps.clear()
 
+    hotspot_mapping.unregister()
     workspace.unregister()
     panels.unregister()
     operators.unregister()

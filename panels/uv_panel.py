@@ -141,6 +141,51 @@ class LEVELDESIGN_PT_uv_shortcuts_panel(Panel):
         )
 
 
+class LEVELDESIGN_PT_hotspotting_panel(Panel):
+    """Hotspotting Controls"""
+
+    bl_label = "Hotspotting"
+    bl_idname = "LEVELDESIGN_PT_hotspotting_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Anvil'
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.level_design_props
+        obj = context.object
+
+        # Auto hotspot checkbox
+        layout.prop(props, "auto_hotspot")
+
+        # Hotspot seam mode dropdown
+        layout.prop(props, "hotspot_seam_mode", text="")
+
+        # Allow combined faces checkbox (per-object)
+        row = layout.row()
+        if obj and obj.type == 'MESH':
+            row.prop(obj, "anvil_allow_combined_faces")
+        else:
+            row.enabled = False
+            row.label(text="Allow Combined Faces")
+
+        # Hotspot size weight (per-object)
+        row = layout.row()
+        if obj and obj.type == 'MESH':
+            row.prop(obj, "anvil_hotspot_size_weight")
+        else:
+            row.enabled = False
+            row.label(text="Size Weight")
+
+        # Apply Hotspot button (works in both edit and object mode)
+        row = layout.row()
+        row.operator(
+            "leveldesign.apply_hotspot",
+            text="Apply Hotspot",
+            icon='UV_DATA',
+        )
+
+
 class LEVELDESIGN_PT_texture_preview_panel(Panel):
     """Texture Preview"""
 
@@ -301,6 +346,7 @@ classes = (
     LEVELDESIGN_PT_uv_lock_panel,
     LEVELDESIGN_PT_uv_settings_panel,
     LEVELDESIGN_PT_uv_shortcuts_panel,
+    LEVELDESIGN_PT_hotspotting_panel,
     LEVELDESIGN_PT_texture_preview_panel,
     LEVELDESIGN_PT_texture_settings_panel,
     LEVELDESIGN_PT_export_panel,

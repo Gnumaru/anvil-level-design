@@ -47,6 +47,7 @@ class LEVELDESIGN_OT_set_interpolation_closest(Operator):
 
     bl_idname = "leveldesign.set_interpolation_closest"
     bl_label = "Set interpolation to closest"
+    bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         image = get_active_image()
@@ -62,6 +63,7 @@ class LEVELDESIGN_OT_set_interpolation_linear(Operator):
 
     bl_idname = "leveldesign.set_interpolation_linear"
     bl_label = "Set interpolation to linear"
+    bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         image = get_active_image()

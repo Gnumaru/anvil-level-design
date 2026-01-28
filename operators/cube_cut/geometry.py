@@ -12,7 +12,7 @@ import bmesh
 from mathutils import Vector
 from mathutils.geometry import intersect_line_plane
 
-from ...utils import compute_uv_projection_from_face, apply_uv_projection_to_face, debug_log
+from ...utils import compute_uv_projection_from_face, apply_uv_projection_to_face, debug_log, compute_normal_from_verts
 
 
 # Epsilon for floating point comparisons
@@ -177,22 +177,48 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
         local_x_trans, local_y_trans, local_z_trans
     )
 
-    # === STEP 1: Determine which faces will be cut (have interior intersections) ===
-    # We must do this BEFORE splitting edges, so we only split edges belonging to faces that will be cut
-    debug_log(f"\n[CubeCut] === STEP 1: Find cuboid-face intersections ===")
+    # === PRE-STEP: Identify faces to delete (all vertices inside cuboid) ===
+    debug_log(f"\n[CubeCut] === PRE-STEP: Find faces entirely inside cuboid ===")
     bm.faces.ensure_lookup_table()
-    face_interior_points = _find_cuboid_face_intersections(bm, cuboid)
 
-    # Apply selection filter: only cut selected faces (or all if none selected)
+    # Apply selection filter: only process selected faces (or all if none selected)
     any_faces_selected = any(f.select for f in bm.faces if f.is_valid)
     if any_faces_selected:
-        debug_log(f"[CubeCut] Selection mode: only cutting selected faces")
+        debug_log(f"[CubeCut] Selection mode: only processing selected faces")
     else:
-        debug_log(f"[CubeCut] No faces selected: cutting all intersecting faces")
+        debug_log(f"[CubeCut] No faces selected: processing all faces")
+
+    faces_to_delete = set()
+    for face in bm.faces:
+        if not face.is_valid:
+            continue
+        if any_faces_selected and not face.select:
+            continue
+
+        # Check if ALL vertices are inside the cuboid
+        all_inside = all(cuboid.point_inside(v.co) for v in face.verts)
+        if all_inside:
+            faces_to_delete.add(face)
+            debug_log(f"[CubeCut] Face {face.index} has all vertices inside cuboid - will be deleted")
+
+    # Delete faces that are entirely inside the cuboid
+    if faces_to_delete:
+        debug_log(f"[CubeCut] Deleting {len(faces_to_delete)} faces entirely inside cuboid")
+        bmesh.ops.delete(bm, geom=list(faces_to_delete), context='FACES_ONLY')
+        bm.faces.ensure_lookup_table()
+
+    # === STEP 1: Determine which faces will be cut ===
+    # A face needs cutting if:
+    # 1. Any cuboid edge pierces the face interior, OR
+    # 2. Any face edge crosses a cuboid plane (cube wider than face case)
+    debug_log(f"\n[CubeCut] === STEP 1: Find faces to cut ===")
+    face_interior_points = _find_cuboid_face_intersections(bm, cuboid)
 
     # Determine which faces will actually be cut
     faces_to_be_cut = set()
     skipped_unselected_count = 0
+
+    # First: add faces with interior intersections (cuboid corners pierce face)
     for face_idx, points in face_interior_points.items():
         face = bm.faces[face_idx] if face_idx < len(bm.faces) else None
         if face is None or not face.is_valid:
@@ -208,6 +234,71 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
         faces_to_be_cut.add(face)
         debug_log(f"[CubeCut] Face {face_idx} will be cut ({len(points)} interior points)")
+
+    # Second: check for faces where face edges cross cuboid planes (cube wider than face)
+    # Only mark for cutting if crossings are on at least 2 DIFFERENT edges (cube passes through)
+    # If all crossings are on the same edge, it's just an edge that got split multiple times
+    for face in bm.faces:
+        if not face.is_valid:
+            continue
+        if face in faces_to_be_cut:
+            continue  # Already marked for cutting
+        if any_faces_selected and not face.select:
+            continue
+
+        # Collect all edges that have crossings within cuboid bounds
+        edges_with_crossings = set()
+        for edge in face.edges:
+            v1_co = edge.verts[0].co
+            v2_co = edge.verts[1].co
+
+            for plane_idx, (plane_point, plane_normal) in enumerate(cuboid.planes):
+                d1 = (v1_co - plane_point).dot(plane_normal)
+                d2 = (v2_co - plane_point).dot(plane_normal)
+
+                # Edge crosses plane if endpoints are on strictly opposite sides
+                crosses = (d1 > EPSILON and d2 < -EPSILON) or (d1 < -EPSILON and d2 > EPSILON)
+                if not crosses:
+                    continue
+
+                intersection = intersect_line_plane(v1_co, v2_co, plane_point, plane_normal)
+                if intersection is None:
+                    continue
+
+                # Check if intersection is within cuboid bounds on this plane
+                if _point_within_plane_bounds(intersection, plane_idx, cuboid):
+                    edges_with_crossings.add(edge)
+                    debug_log(f"[CubeCut] Face {face.index} edge crosses cuboid plane {plane_idx}")
+                    break  # This edge has a crossing, check next edge
+
+        # Only mark for cutting if crossings are on at least 2 different edges
+        # (meaning cube actually passes through the face, not just touches one edge)
+        if len(edges_with_crossings) >= 2:
+            faces_to_be_cut.add(face)
+            # Initialize empty interior points list for this face
+            if face.index not in face_interior_points:
+                face_interior_points[face.index] = []
+            debug_log(f"[CubeCut] Face {face.index} will be cut ({len(edges_with_crossings)} edges have crossings)")
+        elif len(edges_with_crossings) == 1:
+            debug_log(f"[CubeCut] Face {face.index} has only 1 edge with crossings - NOT cutting (just edge split)")
+
+    # Third: check for faces where any vertex is inside the cuboid
+    # (face partially overlaps cuboid but cuboid vertices land on existing edges)
+    for face in bm.faces:
+        if not face.is_valid:
+            continue
+        if face in faces_to_be_cut:
+            continue
+        if any_faces_selected and not face.select:
+            continue
+
+        for vert in face.verts:
+            if cuboid.point_inside(vert.co):
+                faces_to_be_cut.add(face)
+                if face.index not in face_interior_points:
+                    face_interior_points[face.index] = []
+                debug_log(f"[CubeCut] Face {face.index} will be cut (vertex inside cuboid)")
+                break
 
     debug_log(f"[CubeCut] Faces to be cut: {len(faces_to_be_cut)}")
     if skipped_unselected_count > 0:
@@ -249,8 +340,6 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
             continue
 
         points = face_interior_points.get(face.index, [])
-        if not points:
-            continue
 
         interior_verts = []
         for point in points:
@@ -259,70 +348,166 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
             debug_log(f"[CubeCut] VERTEX CREATED (interior): pos={point}, for face {face.index}")
             debug_log(f"[CubeCut]   No edges created yet (floating vertex)")
 
-        if interior_verts:
-            face_interior_verts.append((face, interior_verts))
+        # Always add face to list (even with no interior verts) so it gets processed in STEP 4
+        # This handles the "cube wider than face" case where only edge splits exist
+        face_interior_verts.append((face, interior_verts))
 
     debug_log(f"[CubeCut] Total interior vertices created: {sum(len(v) for _, v in face_interior_verts)}")
+    debug_log(f"[CubeCut] Faces to process: {len(face_interior_verts)}")
 
-
-    # === STEP 4: Connect interior vertices to face boundaries ===
-    # For faces with interior vertices, we need to split the face
-    bm.verts.ensure_lookup_table()
-    bm.edges.ensure_lookup_table()
-    bm.faces.ensure_lookup_table()
-
-    faces_actually_cut = set()
+    # === STEP 4: Capture face data and delete faces being processed ===
+    # Capture vertex data for each face BEFORE deleting faces
+    debug_log(f"\n[CubeCut] === STEP 4: Capture face data and delete faces ===")
     split_verts_set = set(split_verts)
+    face_data_list = []  # List of (new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, uv_projection) tuples
+    faces_to_delete = []
+
+    # Get UV layer for capturing projection data
+    uv_layer = bm.loops.layers.uv.active
+
     for face, interior_verts in face_interior_verts:
         if face is None or not face.is_valid:
             continue
-        # Find edge-split vertices that are on this face's boundary and on cuboid boundary
-        edge_verts_on_face = []
-        for v in face.verts:
-            if v in split_verts_set:
-                edge_verts_on_face.append(v)
-        _connect_new_verts_to_face(bm, face, interior_verts, edge_verts_on_face, cuboid, me, ppm)
-        faces_actually_cut.add(face)
 
-    # === STEP 5: Quadrilate n-gons created by edge splits ===
+        # Capture face normal BEFORE deleting - used for consistent vertex sorting
+        face_normal = face.normal.copy()
+
+        # Find edge-split vertices that are on this face's boundary
+        # Also include existing face vertices that lie on the cuboid boundary
+        # (these are effectively "split" vertices where the cuboid edge meets an existing vertex)
+        edge_verts_on_face = [v for v in face.verts if v in split_verts_set or
+                             (cuboid.point_inside(v.co) and not cuboid.point_strictly_inside(v.co))]
+
+        # Compute input variables for _verts_to_faces
+        # Use face normal for consistent winding in angle sorting
+        verts_to_delete = [v for v in face.verts if v not in split_verts_set and _should_delete_vertex_for_face(v, face, cuboid)]
+
+        # Validate that this cut will create a valid shape
+        # Count unique positions (zero-depth cuts create duplicate vertices at same positions)
+        def unique_positions(verts):
+            seen = set()
+            for v in verts:
+                key = (round(v.co.x, 5), round(v.co.y, 5), round(v.co.z, 5))
+                seen.add(key)
+            return len(seen)
+
+        num_interior_unique = unique_positions(interior_verts)
+        num_edge_unique = unique_positions(edge_verts_on_face)
+        num_deleted = len(verts_to_delete)
+
+        # Skip if only interior verts and 2 or fewer unique (can't form a valid hole)
+        if num_edge_unique == 0 and num_interior_unique <= 2:
+            print(f"Level Design Tools: Skipping face {face.index} - only {num_interior_unique} unique interior verts, cannot form valid shape")
+            # Remove orphaned interior vertices
+            for v in interior_verts:
+                if v.is_valid:
+                    bm.verts.remove(v)
+            continue
+
+        # Skip if only edge verts, 2 or fewer unique, and no deleted verts (cut doesn't remove anything)
+        if num_interior_unique == 0 and num_edge_unique <= 2 and num_deleted == 0:
+            print(f"Level Design Tools: Skipping face {face.index} - only {num_edge_unique} unique edge verts with no deleted verts, cannot form valid shape")
+            # Remove orphaned interior vertices
+            for v in interior_verts:
+                if v.is_valid:
+                    bm.verts.remove(v)
+            continue
+
+        new_verts = _sort_verts_by_angle_with_normal(list(interior_verts) + edge_verts_on_face, face_normal)
+        verts_in_original_interior = _sort_verts_by_angle_with_normal(list(interior_verts), face_normal)
+        verts_on_original_exterior = _sort_verts_by_angle_with_normal([v for v in face.verts if v not in verts_to_delete], face_normal)
+
+        # Capture UV projection data and material index before deleting the face
+        uv_projection = None
+        if uv_layer is not None:
+            uv_projection = compute_uv_projection_from_face(face, uv_layer)
+        material_index = face.material_index
+
+        face_data_list.append((new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, uv_projection, material_index))
+        faces_to_delete.append(face)
+        debug_log(f"[CubeCut] Captured data for face {face.index}: {len(new_verts)} new_verts, {len(verts_on_original_exterior)} exterior, {len(verts_in_original_interior)} interior, uv={'yes' if uv_projection else 'no'}")
+
+    # Delete only the faces we're processing
+    debug_log(f"[CubeCut] Deleting {len(faces_to_delete)} faces")
+    bmesh.ops.delete(bm, geom=faces_to_delete, context='FACES_ONLY')
+
+    # === STEP 5: Rebuild faces from captured vertex data ===
+    debug_log(f"\n[CubeCut] === STEP 5: Rebuild faces ===")
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+
+    newly_created_faces = []
+    for new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, uv_projection, material_index in face_data_list:
+        new_faces = _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, cuboid, me, ppm)
+        if new_faces:
+            for new_face in new_faces:
+                # Apply material from original face
+                new_face.material_index = material_index
+                # Apply UV projection from the original face
+                if uv_projection is not None and uv_layer is not None:
+                    u_axis, v_axis, origin_uv, origin_pos, source_normal = uv_projection
+                    apply_uv_projection_to_face(new_face, uv_layer, u_axis, v_axis, origin_uv, origin_pos, source_normal)
+            newly_created_faces.extend(new_faces)
+
+    # === STEP 6: Quadrilate n-gons created by edge splits ===
     # Faces that had edges split but weren't cut are now n-gons and need to be quadrilated
+    # Also quadrilate any newly created faces from cutting that are n-gons
     faces_to_quadrilate = []
+
+    # Check adjacent faces that had their edges split (but weren't deleted/cut)
     for face in faces_with_split_edges:
         if not face.is_valid:
-            continue
-        if face in faces_actually_cut:
-            # This face was cut - it's been replaced with new faces, skip
             continue
         if len(face.verts) > 4:
             # This is an n-gon that needs quadrilating
             faces_to_quadrilate.append(face)
-            debug_log(f"[CubeCut] Face needs quadrilating: {len(face.verts)} verts")
+            debug_log(f"[CubeCut] Adjacent face needs quadrilating: {len(face.verts)} verts")
+
+    # Check newly created faces from cutting
+    for face in newly_created_faces:
+        if not face.is_valid:
+            continue
+        if len(face.verts) > 4:
+            faces_to_quadrilate.append(face)
+            debug_log(f"[CubeCut] Newly created face needs quadrilating: {len(face.verts)} verts")
 
     if faces_to_quadrilate:
-        debug_log(f"[CubeCut] === STEP 5: Quadrilating {len(faces_to_quadrilate)} n-gon faces ===")
+        debug_log(f"[CubeCut] === STEP 6: Quadrilating {len(faces_to_quadrilate)} n-gon faces ===")
+        bm.normal_update()
         # Triangulate the n-gons first
         result = bmesh.ops.triangulate(bm, faces=faces_to_quadrilate)
-        new_faces = result['faces']
-        debug_log(f"[CubeCut] Triangulated into {len(new_faces)} triangles")
+        new_tris = result['faces']
+        debug_log(f"[CubeCut] Triangulated into {len(new_tris)} triangles")
 
         # Join triangles into quads where possible
-        if new_faces:
+        if new_tris:
             bmesh.ops.join_triangles(
                 bm,
-                faces=new_faces,
+                faces=new_tris,
                 angle_face_threshold=3.14159,  # ~180 degrees - allow any face angle
                 angle_shape_threshold=3.14159  # ~180 degrees - allow any shape
             )
             debug_log(f"[CubeCut] Joined triangles into quads where possible")
 
-    # === STEP 6: Cleanup ===
+    # === STEP 7: Cleanup ===
+    # Remove loose edges (edges not connected to any face)
+    # This can happen when adjacent faces are both cut and their shared edges are inside the cube
+    loose_edges = [e for e in bm.edges if e.is_valid and not e.link_faces]
+    if loose_edges:
+        debug_log(f"[CubeCut] Removing {len(loose_edges)} loose edges")
+        bmesh.ops.delete(bm, geom=loose_edges, context='EDGES')
+
     # Remove loose vertices
     loose_verts = [v for v in bm.verts if v.is_valid and not v.link_faces]
     if loose_verts:
+        debug_log(f"[CubeCut] Removing {len(loose_verts)} loose vertices")
         bmesh.ops.delete(bm, geom=loose_verts, context='VERTS')
 
     # Merge very close vertices
     bmesh.ops.remove_doubles(bm, verts=[v for v in bm.verts if v.is_valid], dist=EPSILON)
+
+    # Recalculate normals for newly created faces
+    bm.normal_update()
 
     bmesh.update_edit_mesh(me)
 
@@ -572,490 +757,29 @@ def _find_cuboid_face_intersections(bm, cuboid):
     return face_interior_verts
 
 
-def _connect_new_verts_to_face(bm, face, interior_verts, edge_verts, cuboid, me, ppm):
-    """
-    Connect new vertices to form a hole in the face.
-
-    Args:
-        interior_verts: Vertices from cuboid corners piercing the face interior (need connecting)
-        edge_verts: Vertices from edge splits on the face boundary (part of hole but already connected)
-
-    When creating the hole boundary, edges are only created when at least one vertex is interior.
-    """
-    if not face.is_valid:
-        return
-
-    face_normal = face.normal.copy()
-    face_material_index = face.material_index
-
-    # Combine all new vertices for the hole boundary
-    all_cut_verts = list(interior_verts) + list(edge_verts)
-    interior_verts_set = set(interior_verts)
-
-    debug_log(f"[CubeCut] Face {face.index}: {len(interior_verts)} interior verts + {len(edge_verts)} edge verts = {len(all_cut_verts)} total")
-
-    if len(all_cut_verts) < 3:
-        debug_log(f"[CubeCut] Not enough cut verts to form hole (need at least 3)")
-        return
-
-    # Get UV layer if it exists
-    uv_layer = bm.loops.layers.uv.active
-
-    # Compute UV projection from original face BEFORE deleting it
-    # This captures the world-space projection axes that map 3D positions to UVs
-    uv_projection = None
-    if uv_layer:
-        uv_projection = compute_uv_projection_from_face(face, uv_layer)
-
-        if uv_projection:
-            u_axis, v_axis, origin_uv, origin_pos, source_normal = uv_projection
-            debug_log(f"[CubeCut] Computed UV projection from face {face.index}:")
-            debug_log(f"[CubeCut]   u_axis={u_axis}, v_axis={v_axis}")
-            debug_log(f"[CubeCut]   origin_uv={origin_uv}, origin_pos={origin_pos}")
-        else:
-            debug_log(f"[CubeCut] Failed to compute UV projection from face {face.index}")
-
-    # Store the original face vertices in order (the outer boundary)
-    outer_loop = list(face.verts)
-
-    # Sort cut verts to form a proper polygon (the hole boundary)
-    sorted_cut_verts = _sort_verts_by_angle(all_cut_verts, face_normal)
-
-    debug_log(f"[CubeCut] Sorted cut verts: {[v.index for v in sorted_cut_verts]}")
-
-    # Create edges between cut verts to form the hole boundary
-    # Only create edges when at least one vertex is an interior vertex
-    debug_log(f"[CubeCut] Creating hole boundary edges...")
-    for i in range(len(sorted_cut_verts)):
-        v1 = sorted_cut_verts[i]
-        v2 = sorted_cut_verts[(i + 1) % len(sorted_cut_verts)]
-        if v1.is_valid and v2.is_valid:
-            # Skip edge if both vertices are non-interior (edge verts)
-            v1_is_interior = v1 in interior_verts_set
-            v2_is_interior = v2 in interior_verts_set
-            if not v1_is_interior and not v2_is_interior:
-                debug_log(f"[CubeCut] EDGE SKIPPED (both non-interior): ({v1.co}) -> ({v2.co})")
-                continue
-
-            edge_exists = any(v2 in e.verts for e in v1.link_edges)
-            if not edge_exists:
-                try:
-                    bm.edges.new([v1, v2])
-                    debug_log(f"[CubeCut] EDGE CREATED (hole boundary): ({v1.co}) -> ({v2.co})")
-                except ValueError:
-                    debug_log(f"[CubeCut] EDGE FAILED: ({v1.co}) -> ({v2.co})")
-            else:
-                debug_log(f"[CubeCut] EDGE EXISTS (skipped): ({v1.co}) -> ({v2.co})")
-
-    # Now we need to create faces around the hole
-    # Strategy: walk around the outer boundary, creating faces that connect to the inner boundary
-
-    # Delete the original face first
-    face_edges_before = [(e.verts[0].co.copy(), e.verts[1].co.copy()) for e in face.edges if e.is_valid]
-    debug_log(f"[CubeCut] FACE DELETED: face had edges: {len(face_edges_before)}")
-    bmesh.ops.delete(bm, geom=[face], context='FACES_ONLY')
-
-    # Delete edges between non-interior vertices (created during edge splitting)
-    # These edges shouldn't exist as part of the hole boundary
-    # BUT only delete if no other faces depend on this edge
-    edges_to_delete = []
-    for i in range(len(sorted_cut_verts)):
-        v1 = sorted_cut_verts[i]
-        v2 = sorted_cut_verts[(i + 1) % len(sorted_cut_verts)]
-        if v1.is_valid and v2.is_valid:
-            v1_is_interior = v1 in interior_verts_set
-            v2_is_interior = v2 in interior_verts_set
-            if not v1_is_interior and not v2_is_interior:
-                # Find edge between v1 and v2
-                for e in v1.link_edges:
-                    if e.is_valid and v2 in e.verts:
-                        # Only delete if no other faces use this edge
-                        # (the original face was already deleted, so link_faces shows remaining faces)
-                        remaining_faces = [f for f in e.link_faces if f.is_valid]
-                        if len(remaining_faces) == 0:
-                            edges_to_delete.append(e)
-                            debug_log(f"[CubeCut] EDGE MARKED FOR DELETION (both non-interior, no linked faces): ({v1.co}) -> ({v2.co})")
-                        else:
-                            debug_log(f"[CubeCut] EDGE KEPT (used by {len(remaining_faces)} other face(s)): ({v1.co}) -> ({v2.co})")
-                        break
-
-    if edges_to_delete:
-        bmesh.ops.delete(bm, geom=edges_to_delete, context='EDGES')
-        debug_log(f"[CubeCut] Deleted {len(edges_to_delete)} edges between non-interior vertices")
-
-    # Identify which outer verts are "outside" the cut (to be kept) vs "inside" (to be removed)
-    outer_kept = []  # Verts outside the cut region
-    outer_cut = []   # Verts on the cuboid boundary (these are in sorted_cut_verts too)
-    outer_inside = []  # Verts inside the cut region (to be deleted)
-
-    # Set of actual cut vertices (edge splits and interior) - these are kept as transition points
-    cut_verts_set = set(sorted_cut_verts)
-
-    # Track vertices that are excluded from this face but kept for other faces
-    excluded_verts = []
-
-    for v in outer_loop:
-        if v in cut_verts_set:
-            # This is an actual cut boundary vertex (edge split or interior) - keep it
-            outer_cut.append(v)
-            outer_kept.append(v)
-        elif cuboid.point_strictly_inside(v.co):
-            # Strictly inside 3D cuboid - candidate for removal
-            # But check if other faces still use this vertex
-            other_faces = [f for f in v.link_faces if f.is_valid]
-            if len(other_faces) > 0:
-                # Other faces still use this vertex - DON'T delete it
-                # But also DON'T include it in outer_kept or sorted_cut_verts
-                # because it's inside the cut region for THIS face
-                debug_log(f"[CubeCut] Vertex at {v.co} is inside cuboid but used by {len(other_faces)} other face(s) - keeping vertex but excluding from this face")
-                excluded_verts.append(v)
-            else:
-                outer_inside.append(v)
-                debug_log(f"[CubeCut] Vertex at {v.co} is strictly inside cuboid - removing")
-        elif cuboid.point_inside(v.co):
-            # On cuboid boundary but NOT a cut vertex - this is an original face vertex
-            # that falls on/inside the cut region
-            # But check if other faces still use this vertex
-            other_faces = [f for f in v.link_faces if f.is_valid]
-            if len(other_faces) > 0:
-                # Other faces still use this vertex - DON'T delete it
-                # But also DON'T include it in outer_kept or sorted_cut_verts
-                # because it's inside the cut region for THIS face
-                debug_log(f"[CubeCut] Vertex at {v.co} is on cuboid boundary, used by {len(other_faces)} other face(s) - keeping vertex but excluding from this face")
-                excluded_verts.append(v)
-            else:
-                outer_inside.append(v)
-                debug_log(f"[CubeCut] Vertex at {v.co} is on cuboid boundary (not a cut vert) - removing")
-        else:
-            # Outside - keep
-            outer_kept.append(v)
-
-    debug_log(f"[CubeCut] Outer loop: {len(outer_loop)} verts, {len(outer_kept)} kept, {len(outer_cut)} on cut boundary, {len(outer_inside)} inside cut, {len(excluded_verts)} excluded (kept for other faces)")
-
-    # Delete vertices that are inside the cut region
-    if outer_inside:
-        bmesh.ops.delete(bm, geom=outer_inside, context='VERTS')
-        debug_log(f"[CubeCut] Deleted {len(outer_inside)} vertices inside cut region")
-
-    # Clean up edges from excluded vertices that are no longer used by any face
-    # (these are edges that were part of the deleted face but connect to excluded verts)
-    if excluded_verts:
-        edges_to_cleanup = []
-        for v in excluded_verts:
-            if not v.is_valid:
-                continue
-            for e in v.link_edges:
-                if e.is_valid:
-                    # Check if this edge is used by any face
-                    linked_faces = [f for f in e.link_faces if f.is_valid]
-                    if len(linked_faces) == 0:
-                        edges_to_cleanup.append(e)
-                        debug_log(f"[CubeCut] EDGE CLEANUP (dangling from excluded vert): {e.verts[0].co[:]} -> {e.verts[1].co[:]}")
-        if edges_to_cleanup:
-            # Remove duplicates
-            edges_to_cleanup = list(set(edges_to_cleanup))
-            bmesh.ops.delete(bm, geom=edges_to_cleanup, context='EDGES')
-            debug_log(f"[CubeCut] Cleaned up {len(edges_to_cleanup)} dangling edges from excluded vertices")
-
-    # Create faces by walking around and connecting outer to inner (using kept verts only)
-    new_faces = _create_faces_around_hole(bm, outer_kept, sorted_cut_verts, cuboid)
-
-    # Apply UV projection to all new faces (same projection as original face)
-    if uv_projection and uv_layer and new_faces:
-        u_axis, v_axis, origin_uv, origin_pos, source_normal = uv_projection
-        debug_log(f"[CubeCut] Applying UV projection to {len(new_faces)} new faces")
-        for i, new_face in enumerate(new_faces):
-            if new_face.is_valid:
-                apply_uv_projection_to_face(
-                    new_face, uv_layer,
-                    u_axis, v_axis, origin_uv, origin_pos, source_normal
-                )
-                # Preserve material index
-                new_face.material_index = face_material_index
-                debug_log(f"[CubeCut]   Face {i}: {len(new_face.verts)} verts - UV projection applied")
-    elif not uv_projection:
-        debug_log(f"[CubeCut] No UV projection available - skipping UV application")
-    elif not uv_layer:
-        debug_log(f"[CubeCut] No UV layer - skipping UV application")
-    elif not new_faces:
-        debug_log(f"[CubeCut] No new faces created - skipping UV application")
-
-
-def _face_spans_cut_edge(face_verts, outer_on_cut):
-    """Check if a face would include an edge between two outer_on_cut vertices.
-
-    This detects faces that would span across the open edge where the cut
-    meets the mesh boundary.
-    """
-    n = len(face_verts)
-    for i in range(n):
-        v1 = face_verts[i]
-        v2 = face_verts[(i + 1) % n]
-        if v1 in outer_on_cut and v2 in outer_on_cut:
-            return True
-    return False
-
-
-def _vert_pos_key(v):
-    """Convert a vertex to a hashable position tuple (rounded for comparison)."""
-    co = v.co if hasattr(v, 'co') else v
-    return (round(co.x, 5), round(co.y, 5), round(co.z, 5))
-
-
-def _verts_to_set(verts):
-    """Convert a list of vertices to a frozenset of position keys."""
-    return frozenset(_vert_pos_key(v) for v in verts)
-
-
-def _is_subset_of_existing_face(new_verts, existing_face_vert_sets):
-    """Check if new_verts are a subset of any existing face's vertices."""
-    new_set = _verts_to_set(new_verts)
-    for existing_set in existing_face_vert_sets:
-        if new_set.issubset(existing_set):
-            return True
-    return False
-
-
-def _create_faces_around_hole(bm, outer_loop, inner_loop, cuboid):
-    """
-    Create faces connecting the outer boundary to the inner hole boundary.
-
-    Walks around both loops simultaneously, creating quads or triangles as needed.
-
-    Returns:
-        list: List of newly created BMFaces
-    """
-    n_outer = len(outer_loop)
-    n_inner = len(inner_loop)
-
-    debug_log(f"[CubeCut] Creating faces: outer={n_outer}, inner={n_inner}")
-
-    created_faces = []
-    # Track vertex sets of created faces to detect redundant triangles
-    created_face_vert_sets = []
-
-    if n_inner < 3:
-        # Not enough inner verts, recreate outer face
-        try:
-            new_face = bm.faces.new(outer_loop)
-            created_faces.append(new_face)
-        except ValueError:
-            pass
-        return created_faces
-
-    # Find which outer verts are on the cut boundary (shared with inner)
-    outer_on_cut = set()
-    for ov in outer_loop:
-        if any((ov.co - iv.co).length < EPSILON for iv in inner_loop):
-            outer_on_cut.add(ov)
-
-    # Find the best starting alignment between outer and inner loops
-    # Start from an outer vert that's on the cut boundary
-    start_outer_idx = 0
-    for i, ov in enumerate(outer_loop):
-        if ov in outer_on_cut:
-            start_outer_idx = i
-            break
-
-    # Find corresponding inner vert
-    start_outer_vert = outer_loop[start_outer_idx]
-    start_inner_idx = 0
-    for i, iv in enumerate(inner_loop):
-        if (iv.co - start_outer_vert.co).length < EPSILON:
-            start_inner_idx = i
-            break
-
-    debug_log(f"[CubeCut] Start alignment: outer[{start_outer_idx}] <-> inner[{start_inner_idx}]")
-
-    # Walk around outer loop, creating faces
-    inner_idx = start_inner_idx
-
-    for i in range(n_outer):
-        outer_idx = (start_outer_idx + i) % n_outer
-        next_outer_idx = (outer_idx + 1) % n_outer
-
-        ov1 = outer_loop[outer_idx]
-        ov2 = outer_loop[next_outer_idx]
-
-        ov1_on_cut = ov1 in outer_on_cut
-        ov2_on_cut = ov2 in outer_on_cut
-
-        if ov1_on_cut and ov2_on_cut:
-            # Both outer verts are on cut - this edge is part of cut, skip
-            # But we need to advance inner_idx if ov2 matches next inner
-            next_inner_idx = (inner_idx + 1) % n_inner
-            if (inner_loop[next_inner_idx].co - ov2.co).length < EPSILON:
-                inner_idx = next_inner_idx
-            debug_log(f"[CubeCut]   Skipping edge (both on cut): ({ov1.co}) -> ({ov2.co})")
-            continue
-
-        elif ov1_on_cut and not ov2_on_cut:
-            # Transitioning from cut to outside
-            iv = inner_loop[inner_idx]
-            if (iv.co - ov1.co).length < EPSILON:
-                continue
-            face_verts = [ov1, ov2, iv]
-            if _face_spans_cut_edge(face_verts, outer_on_cut):
-                debug_log(f"[CubeCut] FACE SKIPPED (spans cut edge): {ov1.co}, {ov2.co}, {iv.co}")
-                continue
-            # Check if this triangle's vertices are already covered by an existing face
-            if _is_subset_of_existing_face(face_verts, created_face_vert_sets):
-                debug_log(f"[CubeCut] FACE SKIPPED (redundant - subset of existing): {ov1.co}, {ov2.co}, {iv.co}")
-                continue
-            try:
-                new_face = bm.faces.new(face_verts)
-                created_faces.append(new_face)
-                created_face_vert_sets.append(_verts_to_set(face_verts))
-                debug_log(f"[CubeCut] FACE CREATED (cut->outside tri): verts at {ov1.co}, {ov2.co}, {iv.co}")
-                debug_log(f"[CubeCut]   Edges implied: ({ov1.co})->({ov2.co}), ({ov2.co})->({iv.co}), ({iv.co})->({ov1.co})")
-            except ValueError:
-                debug_log(f"[CubeCut] FACE FAILED (cut->outside tri)")
-
-        elif not ov1_on_cut and ov2_on_cut:
-            # Transitioning from outside to cut
-            for j in range(n_inner):
-                test_idx = (inner_idx + j) % n_inner
-                if (inner_loop[test_idx].co - ov2.co).length < EPSILON:
-                    inner_idx = test_idx
-                    break
-
-            iv = inner_loop[inner_idx]
-            if (iv.co - ov2.co).length < EPSILON:
-                prev_inner_idx = (inner_idx - 1) % n_inner
-                iv_prev = inner_loop[prev_inner_idx]
-                face_verts = [ov1, ov2, iv_prev]
-                if _face_spans_cut_edge(face_verts, outer_on_cut):
-                    debug_log(f"[CubeCut] FACE SKIPPED (spans cut edge): {ov1.co}, {ov2.co}, {iv_prev.co}")
-                    continue
-                # Check if this triangle's vertices are already covered by an existing face
-                if _is_subset_of_existing_face(face_verts, created_face_vert_sets):
-                    debug_log(f"[CubeCut] FACE SKIPPED (redundant - subset of existing): {ov1.co}, {ov2.co}, {iv_prev.co}")
-                    continue
-                try:
-                    new_face = bm.faces.new(face_verts)
-                    created_faces.append(new_face)
-                    created_face_vert_sets.append(_verts_to_set(face_verts))
-                    debug_log(f"[CubeCut] FACE CREATED (outside->cut tri): verts at {ov1.co}, {ov2.co}, {iv_prev.co}")
-                    debug_log(f"[CubeCut]   Edges implied: ({ov1.co})->({ov2.co}), ({ov2.co})->({iv_prev.co}), ({iv_prev.co})->({ov1.co})")
-                except ValueError:
-                    debug_log(f"[CubeCut] FACE FAILED (outside->cut tri)")
-
-        else:
-            # Both outside - create quad or triangle connecting to inner
-            iv1 = min(inner_loop, key=lambda v: (v.co - ov1.co).length)
-            iv2 = min(inner_loop, key=lambda v: (v.co - ov2.co).length)
-
-            if iv1 == iv2:
-                face_verts = [ov1, ov2, iv1]
-                if _face_spans_cut_edge(face_verts, outer_on_cut):
-                    debug_log(f"[CubeCut] FACE SKIPPED (spans cut edge): {ov1.co}, {ov2.co}, {iv1.co}")
-                    continue
-                try:
-                    new_face = bm.faces.new(face_verts)
-                    created_faces.append(new_face)
-                    created_face_vert_sets.append(_verts_to_set(face_verts))
-                    debug_log(f"[CubeCut] FACE CREATED (outside tri): verts at {ov1.co}, {ov2.co}, {iv1.co}")
-                except ValueError:
-                    debug_log(f"[CubeCut] FACE FAILED (outside tri)")
-            elif _is_convex_quad(ov1.co, ov2.co, iv2.co, iv1.co):
-                # Quad is convex, create it
-                face_verts = [ov1, ov2, iv2, iv1]
-                if _face_spans_cut_edge(face_verts, outer_on_cut):
-                    debug_log(f"[CubeCut] FACE SKIPPED (spans cut edge): {ov1.co}, {ov2.co}, {iv2.co}, {iv1.co}")
-                    continue
-                try:
-                    new_face = bm.faces.new(face_verts)
-                    created_faces.append(new_face)
-                    created_face_vert_sets.append(_verts_to_set(face_verts))
-                    debug_log(f"[CubeCut] FACE CREATED (outside quad): verts at {ov1.co}, {ov2.co}, {iv2.co}, {iv1.co}")
-                except ValueError:
-                    debug_log(f"[CubeCut] FACE FAILED (outside quad)")
-            else:
-                # Quad would be non-convex, fall back to two triangles
-                debug_log(f"[CubeCut] Non-convex quad detected, splitting into triangles")
-
-                # Triangle 1: ov1, ov2, iv2
-                face_verts_1 = [ov1, ov2, iv2]
-                if not _face_spans_cut_edge(face_verts_1, outer_on_cut):
-                    try:
-                        new_face = bm.faces.new(face_verts_1)
-                        created_faces.append(new_face)
-                        created_face_vert_sets.append(_verts_to_set(face_verts_1))
-                        debug_log(f"[CubeCut] FACE CREATED (non-convex split tri 1): verts at {ov1.co}, {ov2.co}, {iv2.co}")
-                    except ValueError:
-                        debug_log(f"[CubeCut] FACE FAILED (non-convex split tri 1)")
-
-                # Triangle 2: ov1, iv2, iv1
-                face_verts_2 = [ov1, iv2, iv1]
-                if not _face_spans_cut_edge(face_verts_2, outer_on_cut):
-                    try:
-                        new_face = bm.faces.new(face_verts_2)
-                        created_faces.append(new_face)
-                        created_face_vert_sets.append(_verts_to_set(face_verts_2))
-                        debug_log(f"[CubeCut] FACE CREATED (non-convex split tri 2): verts at {ov1.co}, {iv2.co}, {iv1.co}")
-                    except ValueError:
-                        debug_log(f"[CubeCut] FACE FAILED (non-convex split tri 2)")
-
-    debug_log(f"[CubeCut] Created {len(created_faces)} faces around hole")
-    return created_faces
-
-
-def _is_convex_quad(p0, p1, p2, p3):
-    """
-    Check if a quad with vertices p0, p1, p2, p3 (in order) is convex.
-
-    A quad is convex if all interior angles are less than 180 degrees,
-    which means all cross products of consecutive edges point in the same direction.
-
-    Args:
-        p0, p1, p2, p3: Vector positions of the quad vertices in order
-
-    Returns:
-        bool: True if the quad is convex, False otherwise
-    """
-    # Edge vectors (going around the quad)
-    e0 = p1 - p0
-    e1 = p2 - p1
-    e2 = p3 - p2
-    e3 = p0 - p3
-
-    # Cross products at each vertex (tells us which way we're turning)
-    c0 = e0.cross(e1)
-    c1 = e1.cross(e2)
-    c2 = e2.cross(e3)
-    c3 = e3.cross(e0)
-
-    # For a convex quad, all cross products should point in the same direction
-    # Check by comparing signs of dot products
-    # Use a small epsilon to handle numerical precision
-    eps = EPSILON * EPSILON
-
-    # Check that all cross products agree in direction
-    if c0.dot(c1) < -eps:
-        return False
-    if c0.dot(c2) < -eps:
-        return False
-    if c0.dot(c3) < -eps:
-        return False
-
-    return True
-
-
-def _sort_verts_by_angle(verts, face_normal):
-    """Sort vertices by angle around their centroid, consistent with face normal."""
+def _sort_verts_by_angle(verts):
+    """Sort vertices by angle around their centroid."""
     import math
+
+    if len(verts) < 2:
+        return list(verts)
 
     centroid = Vector((0, 0, 0))
     for v in verts:
         centroid += v.co
     centroid /= len(verts)
 
-    # Create coordinate axes on the face plane
+    # Compute a normal from the vertices (finds 3 non-collinear points)
+    normal = compute_normal_from_verts(verts)
+    if normal is None:
+        normal = Vector((0, 0, 1))
+
+    # Create coordinate axes on the plane
     up = Vector((0, 0, 1))
-    if abs(face_normal.dot(up)) > 0.9:
+    if abs(normal.dot(up)) > 0.9:
         up = Vector((1, 0, 0))
-    axis1 = face_normal.cross(up).normalized()
-    axis2 = face_normal.cross(axis1).normalized()
+    axis1 = normal.cross(up).normalized()
+    axis2 = normal.cross(axis1).normalized()
 
     def angle_key(v):
         delta = v.co - centroid
@@ -1064,55 +788,270 @@ def _sort_verts_by_angle(verts, face_normal):
     return sorted(verts, key=angle_key)
 
 
-def _reconstruct_partial_face(bm, face, inside_verts, outside_verts, boundary_verts, cuboid):
+def _sort_verts_by_angle_with_normal(verts, normal):
+    """Sort vertices by angle around their centroid using the provided normal.
+
+    This ensures consistent winding direction based on the original face normal.
+    The normal is negated to produce winding that creates exterior faces (not the hole).
     """
-    Reconstruct a face that is partially inside the cuboid.
+    import math
 
-    Keeps the portion outside the cuboid, removes the portion inside.
+    if len(verts) < 2:
+        return list(verts)
+
+    if normal is None or normal.length < EPSILON:
+        return _sort_verts_by_angle(verts)
+
+    # Negate normal to get correct winding for exterior faces
+    normal = -normal
+
+    centroid = Vector((0, 0, 0))
+    for v in verts:
+        centroid += v.co
+    centroid /= len(verts)
+
+    # Create coordinate axes on the plane using the provided normal
+    up = Vector((0, 0, 1))
+    if abs(normal.dot(up)) > 0.9:
+        up = Vector((1, 0, 0))
+    axis1 = normal.cross(up).normalized()
+    axis2 = normal.cross(axis1).normalized()
+
+    def angle_key(v):
+        delta = v.co - centroid
+        return math.atan2(delta.dot(axis2), delta.dot(axis1))
+
+    return sorted(verts, key=angle_key)
+
+
+def _should_delete_vertex_for_face(vertex, face, cuboid):
+    """Check if a vertex should be deleted when processing a specific face.
+
+    Returns True if:
+    - Vertex is strictly inside the cuboid, OR
+    - Vertex is on the cuboid boundary and has no edges (on this face) leading outside the cuboid
+
+    Only considers edges that belong to the given face.
     """
-    debug_log(f"[CubeCut] _reconstruct_partial_face: face {face.index}")
-    if not face.is_valid:
-        debug_log(f"[CubeCut]   Face invalid, skipping")
-        return
+    if cuboid.point_strictly_inside(vertex.co):
+        return True
 
-    # Get the ordered list of face vertices
-    face_vert_list = list(face.verts)
-    n = len(face_vert_list)
-    debug_log(f"[CubeCut]   Original verts ({n}): {[v.co[:] for v in face_vert_list]}")
+    if cuboid.point_inside(vertex.co):
+        # On boundary - check if any edge on this face goes outside
+        face_edges = set(face.edges)
+        for edge in vertex.link_edges:
+            if edge not in face_edges:
+                continue  # Skip edges not on this face
+            other_vert = edge.other_vert(vertex)
+            if not cuboid.point_inside(other_vert.co):
+                return False  # Has edge outside on this face, keep it
+        return True  # No edges on this face go outside, delete it
 
-    # Build new vertex sequence: keep outside and boundary verts, skip inside verts
-    # This is simplified - just creates a face from non-inside vertices in order
-    new_face_verts = []
+    return False  # Outside cuboid, keep it
 
-    for v in face_vert_list:
-        if v not in inside_verts:
-            new_face_verts.append(v)
 
-    debug_log(f"[CubeCut]   After removing inside verts ({len(new_face_verts)}): {[v.co[:] for v in new_face_verts]}")
+def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, cuboid, me, ppm):
+    import math
 
-    # Need at least 3 vertices for a valid face
-    if len(new_face_verts) < 3:
-        # Can't form a face, just delete the original
-        debug_log(f"[CubeCut]   Not enough verts, deleting face")
-        bmesh.ops.delete(bm, geom=[face], context='FACES')
-        return
+    debug_log(f"[CubeCut] _verts_to_faces: new_verts={[v.co[:] for v in new_verts]}")
+    debug_log(f"[CubeCut] _verts_to_faces: verts_on_original_exterior={[v.co[:] for v in verts_on_original_exterior]}")
+    debug_log(f"[CubeCut] _verts_to_faces: verts_in_original_interior={[v.co[:] for v in verts_in_original_interior]}")
+    debug_log(f"[CubeCut] _verts_to_faces: face_normal={face_normal[:]}")
 
-    # Check if we can just modify the existing face or need to recreate
-    if len(new_face_verts) == len(face_vert_list):
-        # No vertices removed, face doesn't need reconstruction
-        debug_log(f"[CubeCut]   No verts removed, no action needed")
-        return
+    if len(new_verts) < 2:
+        return []
 
-    # Delete old face and create new one
-    debug_log(f"[CubeCut]   Deleting old face, creating new with {len(new_face_verts)} verts")
-    bmesh.ops.delete(bm, geom=[face], context='FACES_ONLY')
+    # Helper to check if two verts are adjacent in the exterior loop
+    exterior_set = set(verts_on_original_exterior)
+    n_exterior = len(verts_on_original_exterior)
 
-    try:
-        new_face = bm.faces.new(new_face_verts)
-        debug_log(f"[CubeCut]   FACE CREATED (reconstructed): {[v.co[:] for v in new_face_verts]}")
-    except ValueError:
-        # Face already exists or invalid vertex sequence
-        debug_log(f"[CubeCut]   FACE FAILED (reconstructed)")
+    def are_adjacent_on_exterior(v1, v2):
+        if v1 not in exterior_set or v2 not in exterior_set:
+            return False
+        try:
+            idx1 = verts_on_original_exterior.index(v1)
+            idx2 = verts_on_original_exterior.index(v2)
+            return (idx1 + 1) % n_exterior == idx2 or (idx2 + 1) % n_exterior == idx1
+        except ValueError:
+            return False
+
+    # Connect new vertices in order, skipping where both are adjacent on exterior
+    # Track created edges for face creation
+    created_edges = []
+    n_new = len(new_verts)
+    for i in range(n_new):
+        v1 = new_verts[i]
+        v2 = new_verts[(i + 1) % n_new]
+
+        # Skip if both vertices are on exterior and adjacent on exterior
+        # UNLESS there are no interior verts (cutting off a piece, not making a hole)
+        if v1 in exterior_set and v2 in exterior_set and are_adjacent_on_exterior(v1, v2) and len(verts_in_original_interior) > 0:
+            debug_log(f"[CubeCut]   Skipping edge (both adjacent on exterior): {v1.co[:]} -> {v2.co[:]}")
+            continue
+
+        # Check if edge already exists
+        edge_exists = any(v2 in e.verts for e in v1.link_edges)
+        if not edge_exists:
+            try:
+                new_edge = bm.edges.new([v1, v2])
+                created_edges.append((v1, v2))
+                debug_log(f"[CubeCut]   Created edge: {v1.co[:]} -> {v2.co[:]}")
+            except ValueError:
+                debug_log(f"[CubeCut]   Failed to create edge: {v1.co[:]} -> {v2.co[:]}")
+        else:
+            debug_log(f"[CubeCut]   Edge already exists: {v1.co[:]} -> {v2.co[:]}")
+
+    # Connect interior vertices to closest exterior vertex (in the "away" direction)
+    for interior_vert in verts_in_original_interior:
+        # Find the two connected edges from the new_verts loop
+        connected_verts = []
+        for edge in interior_vert.link_edges:
+            other = edge.other_vert(interior_vert)
+            if other in new_verts:
+                connected_verts.append(other)
+
+        if len(connected_verts) != 2:
+            debug_log(f"[CubeCut]   Interior vert {interior_vert.co[:]} has {len(connected_verts)} connections (expected 2)")
+            continue
+
+        # Get directions to the two connected vertices
+        dir1 = (connected_verts[0].co - interior_vert.co).normalized()
+        dir2 = (connected_verts[1].co - interior_vert.co).normalized()
+
+        # Compute bisector of the angle between the two edges
+        bisector = (dir1 + dir2).normalized()
+
+        # The "away" direction is opposite to the bisector
+        away_dir = -bisector
+
+        # Compute the half-angle of the cut (angle between bisector and either edge)
+        dot_val = max(-1.0, min(1.0, bisector.dot(dir1)))
+        half_angle = math.acos(dot_val)
+
+        # Find the exterior vertex closest to the "away" direction
+        best_vert = None
+        best_dot = -2.0  # Will look for highest dot product with away_dir
+
+        for ext_vert in verts_on_original_exterior:
+            if ext_vert == interior_vert:
+                continue
+            dir_to_ext = (ext_vert.co - interior_vert.co).normalized()
+            dot = dir_to_ext.dot(away_dir)
+            if dot > best_dot:
+                best_dot = dot
+                best_vert = ext_vert
+
+        if best_vert is None:
+            debug_log(f"[CubeCut]   No exterior vertex found for interior vert {interior_vert.co[:]}")
+            continue
+
+        # Check if the best vertex is inside the angle between the two connected edges
+        # A vertex is inside if its direction from interior_vert has a higher dot with bisector
+        # than the threshold (which is cos(half_angle))
+        dir_to_best = (best_vert.co - interior_vert.co).normalized()
+        dot_with_bisector = dir_to_best.dot(bisector)
+        threshold = math.cos(half_angle)
+
+        if dot_with_bisector >= threshold - EPSILON:
+            # The best vertex is inside (or on) the angle between connected edges - ERROR
+            print(f"Level Design Tools: Error - Interior vertex {interior_vert.co[:]} closest exterior vertex {best_vert.co[:]} is inside the cut angle")
+            continue
+
+        # Create edge to the best exterior vertex
+        edge_exists = any(best_vert in e.verts for e in interior_vert.link_edges)
+        if not edge_exists:
+            try:
+                bm.edges.new([interior_vert, best_vert])
+                debug_log(f"[CubeCut]   Connected interior {interior_vert.co[:]} to exterior {best_vert.co[:]}")
+            except ValueError:
+                debug_log(f"[CubeCut]   Failed to connect interior {interior_vert.co[:]} to exterior {best_vert.co[:]}")
+        else:
+            debug_log(f"[CubeCut]   Edge already exists: interior {interior_vert.co[:]} to exterior {best_vert.co[:]}")
+
+    # Create faces - one for each edge created between new verts
+    # Use the provided face_normal for angular ordering (captured from original face)
+    if face_normal is None or face_normal.length < EPSILON:
+        debug_log(f"[CubeCut]   Invalid face normal for angular ordering")
+        return []
+
+    def signed_angle(v_from, v_to, normal):
+        """Compute signed angle from v_from to v_to around normal axis."""
+        cross = v_from.cross(v_to)
+        dot = v_from.dot(v_to)
+        angle = math.atan2(cross.dot(normal), dot)
+        return angle
+
+    valid_verts = set(verts_on_original_exterior) | set(verts_in_original_interior)
+
+    def find_next_vert_angular(current, prev, target):
+        """Find the next vertex by following edges in angular order (clockwise).
+
+        Picks the edge that makes the largest counterclockwise angle from the incoming direction
+        (i.e., the leftmost turn / clockwise traversal).
+        Only considers edges leading to vertices belonging to this face.
+        """
+        incoming = (prev.co - current.co).normalized()
+
+        best_vert = None
+        best_angle = float('-inf')
+
+        for edge in current.link_edges:
+            other = edge.other_vert(current)
+            if other == prev:
+                continue
+
+            if other not in valid_verts:
+                continue
+
+            outgoing = (other.co - current.co).normalized()
+            # Compute angle from incoming to outgoing (counterclockwise positive)
+            # We want the largest angle (leftmost turn / clockwise winding)
+            angle = signed_angle(incoming, outgoing, face_normal)
+
+            # Normalize to [0, 2*pi) for comparison
+            if angle < 0:
+                angle += 2 * math.pi
+
+            if angle > best_angle:
+                best_angle = angle
+                best_vert = other
+
+        return best_vert
+
+    created_faces = []
+
+    for v1, v2 in created_edges:
+        # Walk around edges to form a closed loop starting with this edge
+        # Start at v1, go to v2, then continue in angular order until we return to v1
+        face_verts = [v1, v2]
+        current = v2
+        prev = v1
+        max_steps = 100  # Safety limit
+
+        for _ in range(max_steps):
+            next_vert = find_next_vert_angular(current, prev, v1)
+
+            if next_vert is None:
+                debug_log(f"[CubeCut]   Could not find next vert from {current.co[:]}")
+                break
+
+            if next_vert == v1:
+                # Completed the loop
+                break
+
+            face_verts.append(next_vert)
+            prev = current
+            current = next_vert
+
+        if len(face_verts) >= 3:
+            try:
+                new_face = bm.faces.new(face_verts)
+                created_faces.append(new_face)
+                debug_log(f"[CubeCut]   Created face with {len(face_verts)} verts")
+            except ValueError as e:
+                debug_log(f"[CubeCut]   Failed to create face: {e}")
+
+    return created_faces
 
 
 def _point_within_plane_bounds(point, plane_idx, cuboid):
@@ -1224,126 +1163,3 @@ def _point_in_polygon(point, face_verts, face_normal):
         j = i
 
     return inside
-
-
-# Keep the diagnostic function available for testing
-def find_cut_vertices(context, first_vertex, second_vertex, depth, local_x, local_y, local_z):
-    """
-    Diagnostic function: Find and create intersection vertices without cutting.
-    """
-    obj = context.active_object
-    if obj is None or obj.type != 'MESH':
-        return (False, "No active mesh object", [])
-
-    effective_depth = depth
-    if abs(depth) < EPSILON:
-        effective_depth = EPSILON * 2 if depth >= 0 else -EPSILON * 2
-
-    me = obj.data
-    bm = bmesh.from_edit_mesh(me)
-
-    world_to_local = obj.matrix_world.inverted()
-    local_to_world = obj.matrix_world
-
-    local_first = world_to_local @ first_vertex
-    local_second = world_to_local @ second_vertex
-    local_x_trans = (world_to_local.to_3x3() @ local_x).normalized()
-    local_y_trans = (world_to_local.to_3x3() @ local_y).normalized()
-    local_z_trans = (world_to_local.to_3x3() @ local_z).normalized()
-
-    scale_factor = (world_to_local.to_3x3() @ local_z).length
-    local_depth = effective_depth * scale_factor
-
-    cuboid = CuboidPlanes(
-        local_first, local_second, local_depth,
-        local_x_trans, local_y_trans, local_z_trans
-    )
-
-    intersection_points = []
-
-    # Edge-plane intersections
-    for edge in bm.edges:
-        if not edge.is_valid:
-            continue
-        v1_co = edge.verts[0].co
-        v2_co = edge.verts[1].co
-
-        for plane_idx, (plane_point, plane_normal) in enumerate(cuboid.planes):
-            d1 = (v1_co - plane_point).dot(plane_normal)
-            d2 = (v2_co - plane_point).dot(plane_normal)
-
-            crosses = (d1 > EPSILON and d2 < -EPSILON) or (d1 < -EPSILON and d2 > EPSILON)
-            if not crosses:
-                continue
-
-            intersection = intersect_line_plane(v1_co, v2_co, plane_point, plane_normal)
-            if intersection is None:
-                continue
-
-            if not _point_within_plane_bounds(intersection, plane_idx, cuboid):
-                continue
-
-            is_duplicate = any((existing - intersection).length < EPSILON for existing in intersection_points)
-            if not is_duplicate:
-                intersection_points.append(intersection.copy())
-
-    # Cuboid-face intersections
-    cuboid_verts = _build_cuboid_vertices_local(cuboid)
-    cuboid_edges = [
-        (0, 1), (1, 2), (2, 3), (3, 0),
-        (4, 5), (5, 6), (6, 7), (7, 4),
-        (0, 4), (1, 5), (2, 6), (3, 7),
-    ]
-
-    for face in bm.faces:
-        if not face.is_valid:
-            continue
-        face_normal = face.normal
-        if face_normal.length < EPSILON:
-            continue
-        face_point = face.verts[0].co
-        face_verts = [v.co for v in face.verts]
-
-        for v1_idx, v2_idx in cuboid_edges:
-            edge_start = cuboid_verts[v1_idx]
-            edge_end = cuboid_verts[v2_idx]
-
-            d1 = (edge_start - face_point).dot(face_normal)
-            d2 = (edge_end - face_point).dot(face_normal)
-
-            crosses = (d1 > EPSILON and d2 < -EPSILON) or (d1 < -EPSILON and d2 > EPSILON)
-            if not crosses:
-                continue
-
-            intersection = intersect_line_plane(edge_start, edge_end, face_point, face_normal)
-            if intersection is None:
-                continue
-
-            if not _point_in_polygon(intersection, face_verts, face_normal):
-                continue
-
-            is_duplicate = any((existing - intersection).length < EPSILON for existing in intersection_points)
-            if not is_duplicate:
-                intersection_points.append(intersection.copy())
-
-    # Create vertices
-    created_verts = []
-    for point in intersection_points:
-        new_vert = bm.verts.new(point)
-        created_verts.append(new_vert)
-
-    # Select created vertices
-    for v in bm.verts:
-        v.select = False
-    for e in bm.edges:
-        e.select = False
-    for f in bm.faces:
-        f.select = False
-    for v in created_verts:
-        v.select = True
-    bm.select_flush_mode()
-
-    world_positions = [local_to_world @ v.co for v in created_verts]
-    bmesh.update_edit_mesh(me)
-
-    return (True, f"Created {len(created_verts)} intersection vertices", world_positions)

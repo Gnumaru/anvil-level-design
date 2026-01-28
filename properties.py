@@ -1,8 +1,8 @@
 import bpy
 import bmesh
 import math
+import time
 from bpy.props import BoolProperty, FloatProperty, IntProperty, PointerProperty, StringProperty, EnumProperty
-from mathutils import Vector
 
 
 # Flag to prevent recursive updates
@@ -16,6 +16,12 @@ _normalizing_rotation = False
 # Track last scale values to detect which one changed
 _last_scale_u = 1.0
 _last_scale_v = 1.0
+
+# Undo push tracking - only push if enough time has passed (new edit vs dragging)
+_UNDO_PUSH_THRESHOLD = 0.3  # seconds
+_last_scale_update_time = 0.0
+_last_rotation_update_time = 0.0
+_last_offset_update_time = 0.0
 
 
 def set_updating_from_selection(value):
@@ -135,9 +141,13 @@ def apply_scale_to_selected_faces(context):
         return
 
     from .handlers import cache_single_face
-    from .utils import derive_transform_from_uvs
+    from .utils import derive_transform_from_uvs, face_has_hotspot_material
 
     for face in selected_faces:
+        # Skip faces with hotspottable materials
+        if face_has_hotspot_material(face, me):
+            continue
+
         # Get current transform from this face's UVs
         current = derive_transform_from_uvs(face, uv_layer, ppm, me)
         if current is None:
@@ -173,9 +183,13 @@ def apply_rotation_to_selected_faces(context):
         return
 
     from .handlers import cache_single_face
-    from .utils import derive_transform_from_uvs
+    from .utils import derive_transform_from_uvs, face_has_hotspot_material
 
     for face in selected_faces:
+        # Skip faces with hotspottable materials
+        if face_has_hotspot_material(face, me):
+            continue
+
         # Get current transform from this face's UVs
         current = derive_transform_from_uvs(face, uv_layer, ppm, me)
         if current is None:
@@ -212,9 +226,13 @@ def apply_offset_to_selected_faces(context):
         return
 
     from .handlers import cache_single_face
-    from .utils import derive_transform_from_uvs
+    from .utils import derive_transform_from_uvs, face_has_hotspot_material
 
     for face in selected_faces:
+        # Skip faces with hotspottable materials
+        if face_has_hotspot_material(face, me):
+            continue
+
         # Get current transform from this face's UVs
         current = derive_transform_from_uvs(face, uv_layer, ppm, me)
         if current is None:
@@ -230,10 +248,16 @@ def apply_offset_to_selected_faces(context):
 
 def update_texture_scale(self, context):
     """Called when scale_u or scale_v changes"""
-    global _updating_linked_scale, _last_scale_u, _last_scale_v
+    global _updating_linked_scale, _last_scale_u, _last_scale_v, _last_scale_update_time
 
     if _updating_linked_scale or get_updating_from_selection():
         return
+
+    # Push undo if this is a new edit session (not mid-drag)
+    current_time = time.time()
+    if current_time - _last_scale_update_time > _UNDO_PUSH_THRESHOLD:
+        bpy.ops.ed.undo_push(message="Change Texture Scale")
+    _last_scale_update_time = current_time
 
     props = context.scene.level_design_props
 
@@ -260,10 +284,16 @@ def update_texture_scale(self, context):
 
 def update_texture_rotation(self, context):
     """Called when rotation changes"""
-    global _normalizing_rotation
+    global _normalizing_rotation, _last_rotation_update_time
 
     if _normalizing_rotation or get_updating_from_selection():
         return
+
+    # Push undo if this is a new edit session (not mid-drag)
+    current_time = time.time()
+    if current_time - _last_rotation_update_time > _UNDO_PUSH_THRESHOLD:
+        bpy.ops.ed.undo_push(message="Change Texture Rotation")
+    _last_rotation_update_time = current_time
 
     props = context.scene.level_design_props
 
@@ -280,10 +310,16 @@ def update_texture_rotation(self, context):
 
 def update_texture_offset(self, context):
     """Called when offset_x or offset_y changes"""
-    global _normalizing_offset
+    global _normalizing_offset, _last_offset_update_time
 
     if _normalizing_offset or get_updating_from_selection():
         return
+
+    # Push undo if this is a new edit session (not mid-drag)
+    current_time = time.time()
+    if current_time - _last_offset_update_time > _UNDO_PUSH_THRESHOLD:
+        bpy.ops.ed.undo_push(message="Change Texture Offset")
+    _last_offset_update_time = current_time
 
     props = context.scene.level_design_props
 
@@ -305,7 +341,11 @@ def update_texture_offset(self, context):
 
 def update_projection_scale(self, context):
     """Called when projection_scale changes - automatically runs face-aligned projection"""
-    if get_updating_from_selection() or context.mode != 'EDIT_MESH':
+    if get_updating_from_selection():
+        return
+
+    # Only run in edit mode or object mode (operator handles mode switching)
+    if context.mode not in {'EDIT_MESH', 'OBJECT'}:
         return
 
     bpy.ops.leveldesign.face_aligned_project()
@@ -384,6 +424,23 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         update=update_projection_scale,
     )
 
+    hotspot_seam_mode: EnumProperty(
+        name="Seam Mode",
+        description="How to handle seams after hotspot mapping",
+        items=[
+            ('MAINTAIN_USER', "Maintain User Seams", "Remember seams before hotspotting and restore them after"),
+            ('DISPLAY_ALL', "Display All Seams", "Keep existing seams and add seams around single quad islands"),
+            ('CLEAR_ALL', "Clear All Seams", "Clear all seams after hotspotting"),
+        ],
+        default='CLEAR_ALL',
+    )
+
+    auto_hotspot: BoolProperty(
+        name="Auto Hotspot",
+        description="Automatically apply hotspot mapping after geometry changes",
+        default=False,
+    )
+
     # === Export Properties (last used settings) ===
     last_export_filepath: StringProperty(
         name="Last Export Path",
@@ -441,8 +498,27 @@ def register():
         update=update_uv_lock,
     )
 
+    # Per-object allow combined faces property for hotspotting
+    bpy.types.Object.anvil_allow_combined_faces = BoolProperty(
+        name="Allow Combined Faces",
+        description="Allow multi-face islands during hotspot mapping. When disabled, each face is mapped independently",
+        default=True,
+    )
+
+    # Per-object balance between aspect ratio and size matching (0 = pure aspect, 1 = pure size)
+    bpy.types.Object.anvil_hotspot_size_weight = FloatProperty(
+        name="Size Weight",
+        description="Balance between aspect ratio matching (0) and size matching (1)",
+        default=0.1,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+    )
+
 
 def unregister():
+    del bpy.types.Object.anvil_hotspot_size_weight
+    del bpy.types.Object.anvil_allow_combined_faces
     del bpy.types.Object.anvil_uv_lock
     del bpy.types.Scene.level_design_props
     bpy.utils.unregister_class(LevelDesignProperties)

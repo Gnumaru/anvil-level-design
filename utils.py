@@ -1,12 +1,11 @@
 import bpy
 import bmesh
-import os
 import math
-from mathutils import Vector, Matrix
+from mathutils import Vector
 
 
 # Global debug logging toggle for the addon
-DEBUG_LOGGING = False
+DEBUG_LOGGING = True
 
 
 def debug_log(msg):
@@ -38,6 +37,61 @@ def get_local_x_from_verts_3d(verts):
         edge = p1 - p0
         if edge.length > 0.0001:
             return edge.normalized()
+
+    return None
+
+
+def compute_normal_from_verts(verts):
+    """Compute a normal vector from a list of vertices by finding 3 non-collinear points.
+
+    Searches through vertex triplets until finding three that are non-collinear,
+    then computes the normal from their cross product.
+
+    Args:
+        verts: List of BMVerts or objects with .co attribute (at least 3 elements)
+
+    Returns:
+        Normalized Vector3 normal, or None if all vertices are collinear or < 3 vertices.
+    """
+    if len(verts) < 3:
+        return None
+
+    # Get position from vert (handles both BMVert and Vector)
+    def get_pos(v):
+        return v.co if hasattr(v, 'co') else v
+
+    n = len(verts)
+    p0 = get_pos(verts[0])
+
+    for i in range(1, n):
+        p1 = get_pos(verts[i])
+        e1 = p1 - p0
+        e1e1 = e1.dot(e1)
+
+        # Skip if e1 is too short
+        if e1e1 < 1e-10:
+            continue
+
+        for j in range(i + 1, n):
+            p2 = get_pos(verts[j])
+            e2 = p2 - p0
+            e2e2 = e2.dot(e2)
+
+            # Skip if e2 is too short
+            if e2e2 < 1e-10:
+                continue
+
+            e1e2 = e1.dot(e2)
+            det = e1e1 * e2e2 - e1e2 * e1e2
+
+            # Check if vertices are non-collinear (det is non-zero)
+            if abs(det) < 1e-10:
+                continue
+
+            # Found valid triplet - compute normal
+            normal = e1.cross(e2)
+            if normal.length > 1e-10:
+                return normal.normalized()
 
     return None
 
@@ -173,88 +227,6 @@ def get_face_local_axes(face):
         local_y = face_normal.cross(local_x).normalized()
 
     return (local_x, local_y)
-
-
-def get_uv_local_axes(uvs):
-    """Compute local X and Y axes for a UV shape.
-
-    X-axis: Along the first non-zero UV edge, normalized
-    Y-axis: Perpendicular to X in 2D space
-
-    Args:
-        uvs: List of Vector2 or tuples representing UV coordinates
-
-    Returns (local_x, local_y) as 2D vectors (tuples), or None if < 2 UVs
-    or no valid edge exists.
-    """
-    if len(uvs) < 2:
-        return None
-
-    # Get first non-zero UV edge as local X
-    local_x = get_local_x_from_verts_2d(uvs)
-    if local_x is None:
-        return None
-
-    # Perpendicular in 2D: rotate 90 degrees counter-clockwise
-    local_y = (-local_x[1], local_x[0])
-
-    return (local_x, local_y)
-
-
-def get_bbox_in_local_axes(points, local_x, local_y):
-    """Compute bounding box of points projected onto local axes.
-
-    Args:
-        points: List of Vector3 (for 3D) or Vector2/tuples (for 2D)
-        local_x: Local X axis (Vector3 or 2-tuple)
-        local_y: Local Y axis (Vector3 or 2-tuple)
-
-    Returns dict with 'min_x', 'max_x', 'min_y', 'max_y', 'width', 'height'.
-    """
-    if not points:
-        return {'min_x': 0, 'max_x': 0, 'min_y': 0, 'max_y': 0, 'width': 0, 'height': 0}
-
-    # Determine if 2D or 3D
-    is_3d = hasattr(points[0], 'z') or (hasattr(points[0], '__len__') and len(points[0]) >= 3)
-
-    projected_x = []
-    projected_y = []
-
-    for p in points:
-        if is_3d:
-            # 3D projection using dot product
-            if isinstance(local_x, tuple):
-                px = p[0] * local_x[0] + p[1] * local_x[1] + (p[2] * local_x[2] if len(local_x) > 2 else 0)
-                py = p[0] * local_y[0] + p[1] * local_y[1] + (p[2] * local_y[2] if len(local_y) > 2 else 0)
-            else:
-                pv = Vector(p) if not isinstance(p, Vector) else p
-                px = pv.dot(local_x)
-                py = pv.dot(local_y)
-        else:
-            # 2D projection
-            if isinstance(p, (tuple, list)):
-                px_val, py_val = p[0], p[1]
-            else:
-                px_val, py_val = p.x, p.y
-            px = px_val * local_x[0] + py_val * local_x[1]
-            py = px_val * local_y[0] + py_val * local_y[1]
-
-        projected_x.append(px)
-        projected_y.append(py)
-
-    min_x = min(projected_x)
-    max_x = max(projected_x)
-    min_y = min(projected_y)
-    max_y = max(projected_y)
-
-    return {
-        'min_x': min_x,
-        'max_x': max_x,
-        'min_y': min_y,
-        'max_y': max_y,
-        'width': max_x - min_x,
-        'height': max_y - min_y
-    }
 
 
 def derive_transform_from_uvs(face, uv_layer, ppm, me):
@@ -541,26 +513,6 @@ def get_selected_image_path(context):
     return None
 
 
-def get_file_browser_image(context):
-    """Get the image from the File Browser selection (load if needed), or None"""
-    filepath = get_selected_image_path(context)
-    if not filepath or not os.path.exists(filepath):
-        return None
-
-    # Check if it's an image file
-    valid_extensions = {'.png', '.jpg', '.jpeg', '.tga', '.bmp', '.tiff', '.exr', '.hdr'}
-    ext = os.path.splitext(filepath)[1].lower()
-    if ext not in valid_extensions:
-        return None
-
-    # Load or get existing image
-    try:
-        image = bpy.data.images.load(filepath, check_existing=True)
-        return image
-    except RuntimeError:
-        return None
-
-
 def find_material_with_image(image):
     """Return existing material that uses this image, or None"""
     for mat in bpy.data.materials:
@@ -660,32 +612,6 @@ def get_selected_face_count(context):
     return sum(1 for f in bm.faces if f.select)
 
 
-def find_shared_edge(face1, face2):
-    """Find the shared edge between two faces, or None if not adjacent.
-
-    Returns tuple of (edge, vert1, vert2) where vert1 and vert2 are the
-    shared vertices in order as they appear in face1's loop.
-    """
-    face1_verts = set(face1.verts)
-    face2_verts = set(face2.verts)
-    shared_verts = face1_verts & face2_verts
-
-    if len(shared_verts) < 2:
-        return None
-
-    # Find the edge that contains both shared vertices
-    for edge in face1.edges:
-        if edge.verts[0] in shared_verts and edge.verts[1] in shared_verts:
-            # Return verts in the order they appear in face1's loops
-            for i, loop in enumerate(face1.loops):
-                if loop.vert in shared_verts:
-                    next_loop = face1.loops[(i + 1) % len(face1.loops)]
-                    if next_loop.vert in shared_verts:
-                        return (edge, loop.vert, next_loop.vert)
-
-    return None
-
-
 def compute_uv_projection_from_face(face, uv_layer):
     """Compute the UV projection axes from a face's existing UVs.
 
@@ -705,73 +631,82 @@ def compute_uv_projection_from_face(face, uv_layer):
     loops = list(face.loops)
     n = len(loops)
 
-    # Search for 3 non-collinear vertices
-    # Use loop 0 as origin, then find two other loops that form a valid basis
-    p0 = loops[0].vert.co.copy()
-    uv0 = loops[0][uv_layer].uv.copy()
+    # Search for 3 non-collinear vertices that form the best basis
+    # (highest determinant = most orthogonal = most stable UV computation)
+    best_result = None
+    best_det = 0
 
-    for i in range(1, n):
-        p1 = loops[i].vert.co.copy()
-        e1 = p1 - p0
-        e1e1 = e1.dot(e1)
+    for origin_idx in range(n):
+        p0 = loops[origin_idx].vert.co.copy()
+        uv0 = loops[origin_idx][uv_layer].uv.copy()
 
-        # Skip if e1 is too short
-        if e1e1 < 1e-10:
-            continue
+        for i in range(n):
+            if i == origin_idx:
+                continue
+            p1 = loops[i].vert.co.copy()
+            e1 = p1 - p0
+            e1e1 = e1.dot(e1)
 
-        for j in range(i + 1, n):
-            p2 = loops[j].vert.co.copy()
-            e2 = p2 - p0
-            e2e2 = e2.dot(e2)
-
-            # Skip if e2 is too short
-            if e2e2 < 1e-10:
+            # Skip if e1 is too short
+            if e1e1 < 1e-10:
                 continue
 
-            e1e2 = e1.dot(e2)
-            det = e1e1 * e2e2 - e1e2 * e1e2
+            for j in range(i + 1, n):
+                if j == origin_idx:
+                    continue
+                p2 = loops[j].vert.co.copy()
+                e2 = p2 - p0
+                e2e2 = e2.dot(e2)
 
-            # Check if vertices are non-collinear (det is non-zero)
-            if abs(det) < 1e-10:
-                continue
+                # Skip if e2 is too short
+                if e2e2 < 1e-10:
+                    continue
 
-            # Found valid triplet (0, i, j)
-            uv1 = loops[i][uv_layer].uv.copy()
-            uv2 = loops[j][uv_layer].uv.copy()
+                e1e2 = e1.dot(e2)
+                det = e1e1 * e2e2 - e1e2 * e1e2
 
-            duv1 = uv1 - uv0
-            duv2 = uv2 - uv0
+                # Check if vertices are non-collinear (det is non-zero)
+                if abs(det) < 1e-10:
+                    continue
 
-            # We want to find u_axis and v_axis (3D vectors in face plane) such that:
-            # e1 · u_axis = duv1.x
-            # e2 · u_axis = duv2.x
-            # e1 · v_axis = duv1.y
-            # e2 · v_axis = duv2.y
-            #
-            # The axes lie in the plane spanned by e1 and e2.
-            # u_axis = a * e1 + b * e2
-            # v_axis = c * e1 + d * e2
-            #
-            # Substituting:
-            # a * (e1·e1) + b * (e1·e2) = duv1.x
-            # a * (e1·e2) + b * (e2·e2) = duv2.x
+                # Keep track of the best (most orthogonal) triplet
+                if det > best_det:
+                    best_det = det
+                    uv1 = loops[i][uv_layer].uv.copy()
+                    uv2 = loops[j][uv_layer].uv.copy()
 
-            inv_det = 1.0 / det
+                    duv1 = uv1 - uv0
+                    duv2 = uv2 - uv0
 
-            # Solve for u_axis coefficients
-            a = inv_det * (e2e2 * duv1.x - e1e2 * duv2.x)
-            b = inv_det * (e1e1 * duv2.x - e1e2 * duv1.x)
-            u_axis = e1 * a + e2 * b
+                    # We want to find u_axis and v_axis (3D vectors in face plane) such that:
+                    # e1 · u_axis = duv1.x
+                    # e2 · u_axis = duv2.x
+                    # e1 · v_axis = duv1.y
+                    # e2 · v_axis = duv2.y
+                    #
+                    # The axes lie in the plane spanned by e1 and e2.
+                    # u_axis = a * e1 + b * e2
+                    # v_axis = c * e1 + d * e2
+                    #
+                    # Substituting:
+                    # a * (e1·e1) + b * (e1·e2) = duv1.x
+                    # a * (e1·e2) + b * (e2·e2) = duv2.x
 
-            # Solve for v_axis coefficients
-            c = inv_det * (e2e2 * duv1.y - e1e2 * duv2.y)
-            d = inv_det * (e1e1 * duv2.y - e1e2 * duv1.y)
-            v_axis = e1 * c + e2 * d
+                    inv_det = 1.0 / det
 
-            return (u_axis, v_axis, uv0, p0, face.normal.copy())
+                    # Solve for u_axis coefficients
+                    a = inv_det * (e2e2 * duv1.x - e1e2 * duv2.x)
+                    b = inv_det * (e1e1 * duv2.x - e1e2 * duv1.x)
+                    u_axis = e1 * a + e2 * b
 
-    # No valid triplet found
-    return None
+                    # Solve for v_axis coefficients
+                    c = inv_det * (e2e2 * duv1.y - e1e2 * duv2.y)
+                    d = inv_det * (e1e1 * duv2.y - e1e2 * duv1.y)
+                    v_axis = e1 * c + e2 * d
+
+                    best_result = (u_axis, v_axis, uv0, p0, face.normal.copy())
+
+    return best_result
 
 
 def apply_uv_projection_to_face(target_face, uv_layer, u_axis, v_axis, origin_uv, origin_pos, source_normal):
@@ -816,6 +751,71 @@ def apply_uv_projection_to_face(target_face, uv_layer, u_axis, v_axis, origin_uv
         v = origin_uv.y + delta.dot(v_axis)
 
         loop[uv_layer].uv = (u, v)
+
+
+def face_has_hotspot_material(face, me):
+    """Check if a face has a material with a hotspottable texture.
+
+    Args:
+        face: BMesh face to check
+        me: Mesh data (for accessing materials)
+
+    Returns:
+        True if the face's material has a hotspottable texture, False otherwise.
+    """
+    from .hotspot_mapping.json_storage import is_texture_hotspottable
+
+    mat = me.materials[face.material_index] if face.material_index < len(me.materials) else None
+    image = get_image_from_material(mat)
+    if image and is_texture_hotspottable(image.name):
+        return True
+    return False
+
+
+def get_connected_faces(face):
+    """Get all faces connected to a face via shared edges.
+
+    Args:
+        face: BMesh face to get connected faces for
+
+    Returns:
+        Set of BMesh faces connected to the input face (excluding the input face itself).
+    """
+    connected = set()
+    for edge in face.edges:
+        for linked_face in edge.link_faces:
+            if linked_face != face and linked_face.is_valid:
+                connected.add(linked_face)
+    return connected
+
+
+def any_connected_face_has_hotspot(face, me):
+    """Check if any face connected to the given face has a hotspot material.
+
+    Args:
+        face: BMesh face to check neighbors of
+        me: Mesh data (for accessing materials)
+
+    Returns:
+        True if any connected face has a hotspottable texture, False otherwise.
+    """
+    for connected_face in get_connected_faces(face):
+        if face_has_hotspot_material(connected_face, me):
+            return True
+    return False
+
+
+def get_all_hotspot_faces(bm, me):
+    """Get all faces in the bmesh that have hotspot materials.
+
+    Args:
+        bm: BMesh to search
+        me: Mesh data (for accessing materials)
+
+    Returns:
+        List of BMesh faces that have hotspottable textures.
+    """
+    return [f for f in bm.faces if f.is_valid and face_has_hotspot_material(f, me)]
 
 
 def transfer_uvs_from_projection(source_face, target_face, uv_layer):

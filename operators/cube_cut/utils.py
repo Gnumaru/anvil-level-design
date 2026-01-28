@@ -11,7 +11,6 @@ from mathutils.geometry import intersect_line_plane
 from bpy_extras.view3d_utils import (
     region_2d_to_origin_3d,
     region_2d_to_vector_3d,
-    location_3d_to_region_2d,
 )
 
 

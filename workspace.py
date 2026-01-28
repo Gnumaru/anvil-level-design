@@ -2,7 +2,15 @@ import bpy
 from bpy.app.handlers import persistent
 from mathutils import Quaternion
 
+from .hotspot_mapping import workspace as hotspot_workspace
+
 WORKSPACE_NAME = "Level Design"
+
+# Flag to track when Level Design workspace setup is fully complete
+_level_design_setup_complete = False
+
+# Guard to prevent multiple simultaneous workspace creation attempts
+_workspace_setup_in_progress = False
 
 
 def workspace_exists():
@@ -285,6 +293,8 @@ def _configure_layout_step5():
 
 def _configure_layout_step6():
     """Step 6: Configure all areas with their final settings"""
+    global _level_design_setup_complete
+
     try:
         screen = bpy.context.window.screen
         scene = bpy.context.scene
@@ -312,7 +322,7 @@ def _configure_layout_step6():
         file_browsers = _get_areas_by_type(screen, 'FILE_BROWSER')
         for area in file_browsers:
             for space in area.spaces:
-                if space.type == 'FILE_BROWSER':
+                if space.type == 'FILE_BROWSER' and space.params:
                     space.params.display_type = 'THUMBNAIL'
                     break
 
@@ -321,6 +331,8 @@ def _configure_layout_step6():
     except Exception as e:
         print(f"Anvil Level Design: Error in layout step 6: {e}")
 
+    # Mark Level Design setup as complete (even if there were errors, we're done trying)
+    _level_design_setup_complete = True
     return None
 
 
@@ -405,32 +417,76 @@ def _configure_right_viewport(area):
 def on_load_post(dummy):
     """Handler called after a .blend file is loaded"""
     # Use a timer to defer workspace creation until Blender is fully ready
-    def deferred_workspace_check():
-        try:
-            if not workspace_exists():
-                create_level_design_workspace()
-        except Exception as e:
-            print(f"Anvil Level Design: Error checking workspace on load: {e}")
-        return None  # Don't repeat
+    bpy.app.timers.register(_ensure_all_workspaces, first_interval=0.5)
 
-    bpy.app.timers.register(deferred_workspace_check, first_interval=0.5)
+
+def _ensure_all_workspaces():
+    """Ensure both Level Design and Hotspot Mapping workspaces exist.
+
+    Creates Level Design first (if needed), waits for completion,
+    then creates Hotspot Mapping (if needed).
+    """
+    global _level_design_setup_complete, _workspace_setup_in_progress
+
+    # Prevent re-entry from multiple timer calls
+    if _workspace_setup_in_progress:
+        return None
+    _workspace_setup_in_progress = True
+
+    try:
+        if not workspace_exists():
+            # Need to create Level Design first
+            _level_design_setup_complete = False
+            create_level_design_workspace()
+            # Poll until Level Design is complete, then create Hotspot Mapping
+            bpy.app.timers.register(_wait_then_create_hotspot, first_interval=0.2)
+        else:
+            # Level Design exists, just ensure Hotspot Mapping
+            _level_design_setup_complete = True
+            bpy.app.timers.register(_create_hotspot_if_needed, first_interval=0.1)
+    except Exception as e:
+        print(f"Anvil Level Design: Error ensuring workspaces: {e}")
+        _workspace_setup_in_progress = False
+    return None
+
+
+def _wait_then_create_hotspot():
+    """Poll until Level Design setup is complete, then create Hotspot Mapping."""
+    if not _level_design_setup_complete:
+        return 0.2  # Keep polling
+
+    _create_hotspot_if_needed()
+    return None
+
+
+def _create_hotspot_if_needed():
+    """Create Hotspot Mapping workspace if it doesn't exist."""
+    global _workspace_setup_in_progress
+
+    try:
+        if not hotspot_workspace.workspace_exists():
+            hotspot_workspace.create_hotspot_mapping_workspace()
+    except Exception as e:
+        print(f"Anvil Level Design: Error creating Hotspot Mapping workspace: {e}")
+    finally:
+        # Reset guard to allow future workspace checks (e.g., after file load)
+        _workspace_setup_in_progress = False
+    return None
 
 
 def ensure_workspace_exists():
-    """Ensure the Level Design workspace exists. Called on addon enable."""
-    def deferred_create():
-        try:
-            if not workspace_exists():
-                create_level_design_workspace()
-        except Exception as e:
-            print(f"Anvil Level Design: Error ensuring workspace: {e}")
-        return None
-
+    """Ensure all addon workspaces exist. Called on addon enable."""
     # Defer creation to ensure Blender is ready
-    bpy.app.timers.register(deferred_create, first_interval=0.2)
+    bpy.app.timers.register(_ensure_all_workspaces, first_interval=0.2)
 
 
 def register():
+    global _level_design_setup_complete, _workspace_setup_in_progress
+
+    # Reset state flags
+    _level_design_setup_complete = False
+    _workspace_setup_in_progress = False
+
     # Create workspace on addon enable
     ensure_workspace_exists()
 

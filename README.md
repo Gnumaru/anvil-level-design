@@ -43,6 +43,67 @@ Manual UV adjustments are possible via the Anvil LD panel:
 
 Select a face and press T to enter Face UV Mode. In this mode by default the bottom of the texture will snap to the edge *closest to the mouse cusor*. Use WASD to select different texture edges. Use Q and E to set FIT modes.
 
+### Hotspot Mapping
+
+Hotspot mapping automatically assigns UV coordinates by matching face shapes to predefined regions on a texture atlas. It allows you to quickly add details to models.
+
+#### Setting Up Hotspot Maps
+
+Hotspot maps are defined in the Image Editor:
+
+1. Open your texture atlas in Hotspot Mapping workspace
+2. Click the Hotspot Edit tool in the left sidebar
+2. In the Anvil panel (N key), click "Assign Hotspottable" to mark the texture as a hotspot source
+3. Click "Add Hotspot" to create a new hotspot region
+4. Click and drag on the image to define rectangular hotspot areas
+5. Hotspots can be resized by dragging their edges or corners, and moved by dragging the centre
+
+Hotspot data is stored in a `hotspots.json` file next to your .blend file. This file can be shared between projects or checked into version control.
+
+As in 3d views using this addon, '[' and ']' control pixel snapping.
+
+#### Orientation Types
+
+Each hotspot has an orientation type that controls which faces it can be applied to. Click the orientation button next to a hotspot, or on the orientation icon on the hotspot itself, to cycle through types:
+
+* **Any** - Can be applied to any face. Rotation is randomised
+* **Upwards** - Only applies to wall faces (vertical surfaces). The texture's top edge will point upward in world space. Useful for textures with a clear "up" direction like bricks or siding
+* **Floor** - Only applies to floor faces (surfaces facing up). Rotation is randomised
+* **Ceiling** - Only applies to ceiling faces (surfaces facing down). Rotation is randomised
+
+#### Applying Hotspots
+
+In the 3D viewport, the Anvil panel provides hotspot controls.
+
+You can manually apply hotspots to selected faces (or all faces if none are selected or the object is in edit mode) using the Apply Hotspot button.
+
+You can toggle auto applying hotspots when making geometry edits; this only adjusts hotspots on moved geometry.
+
+##### Allow Combined Faces & Seam Mode
+
+The hotspotting algorithm is able to treat connected faces as one face for the purpose of hotspot application. This works on series of faces that curve or bend. The algorithm attempts to find groups of faces that when taken together can be roughly transformed into a rectangle. The algorithm splits 'islands' based on normals and user added seams.
+
+This functionality can be turned off by unchecking allow combined faces.
+
+Whether or not this functionality is enabled, the hotspotting algorithm adds seams automatically to help UV unwrapping. The seam mode controls what happens to these seams.
+* Maintain User Seams clears the automatically added seams so from your perspective seams are unchanged
+* Display All Seams (unsurprisingly) displays all seams; it is primarily useful to see what the algorithm is treating as an island if your hotspot textures don't make it clear
+* Clear All Seams is there just in case
+
+For now the hotspotting algorithm does not attempt to split non-rectangular islands. As an example: if the algorithm finds an L shaped island of 3 faces, it won't split it into 2 rectangular islands; it will treat each face separately.
+
+##### Size Weight & Texture Thoughts
+
+Once the hotspotting algorithm has chosen islands, it must choose the closest matching hotspot for each island. 
+
+By default the hotspot with the closest matching aspect ratio the island will be chosen, to preserve the texture / pixel aspect ratio.
+
+Depending on the texture atlas used, the closest matching aspect ratio hotspot (or one of the multiple closest matching aspect ratio hotspots) may be small, leading to a blurry texture.
+
+Drag the Size Weight to introduce weighting towards hotspots that match the same texel density.
+
+It is important to have a wide variety of aspect ratios and sizes in your texture atlas to ensure that hotspotting will look good on any given object you create.
+
 ### Geometry Tools
 
 ## Cube Cut
