@@ -5,6 +5,16 @@ import math
 from mathutils import Vector, Matrix
 
 
+# Global debug logging toggle for the addon
+DEBUG_LOGGING = False
+
+
+def debug_log(msg):
+    """Print debug message if logging is enabled."""
+    if DEBUG_LOGGING:
+        print(msg)
+
+
 def get_local_x_from_verts_3d(verts):
     """Get the first non-zero edge direction from a list of 3D vertices.
 
