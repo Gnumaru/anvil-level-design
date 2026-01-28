@@ -43,21 +43,32 @@ class LEVELDESIGN_PT_uv_lock_panel(Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.level_design_props
+        obj = context.object
+        in_edit_mode = context.mode == 'EDIT_MESH'
 
         row = layout.row()
-        row.prop(
-            props,
-            "uv_lock",
-            text="UV Lock",
-            toggle=True,
-            icon='LOCKED' if props.uv_lock else 'UNLOCKED',
-        )
 
-        if props.uv_lock:
-            layout.label(text="Texture locked to geometry", icon='INFO')
+        if obj and obj.type == 'MESH':
+            row.enabled = in_edit_mode
+            row.prop(
+                obj,
+                "anvil_uv_lock",
+                text="UV Lock",
+                toggle=True,
+                icon='LOCKED' if obj.anvil_uv_lock else 'UNLOCKED',
+            )
+
+            if obj.anvil_uv_lock:
+                layout.label(text="Texture locked to geometry", icon='INFO')
+            else:
+                layout.label(text="Texture at world scale", icon='INFO')
+
+            if not in_edit_mode:
+                layout.label(text="(Edit Mode required)", icon='INFO')
         else:
-            layout.label(text="Texture at world scale", icon='INFO')
+            row.enabled = False
+            row.label(text="UV Lock")
+            layout.label(text="Select a mesh object", icon='INFO')
 
 
 class LEVELDESIGN_PT_uv_settings_panel(Panel):

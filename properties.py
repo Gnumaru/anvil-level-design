@@ -36,7 +36,7 @@ def sync_scale_tracking(context):
 
 
 def update_uv_lock(self, context):
-    """Called when UV lock is toggled"""
+    """Called when UV lock is toggled on an object"""
     from .handlers import cache_face_data
     cache_face_data(context)
 
@@ -315,13 +315,6 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
     """Combined properties for Level Design Tools"""
 
     # === UV Tools Properties ===
-    uv_lock: BoolProperty(
-        name="UV Lock",
-        description="Lock UVs to geometry when transforming",
-        default=False,
-        update=update_uv_lock,
-    )
-
     pixels_per_meter: IntProperty(
         name="Pixels per Meter",
         description="Number of texture pixels that represent 1 meter at scale 1",
@@ -440,7 +433,16 @@ def register():
     bpy.utils.register_class(LevelDesignProperties)
     bpy.types.Scene.level_design_props = PointerProperty(type=LevelDesignProperties)
 
+    # Per-object UV lock property
+    bpy.types.Object.anvil_uv_lock = BoolProperty(
+        name="UV Lock",
+        description="Lock UVs to geometry when transforming",
+        default=False,
+        update=update_uv_lock,
+    )
+
 
 def unregister():
+    del bpy.types.Object.anvil_uv_lock
     del bpy.types.Scene.level_design_props
     bpy.utils.unregister_class(LevelDesignProperties)

@@ -886,7 +886,7 @@ def on_depsgraph_update(scene, depsgraph):
                     if not face_data_cache and context.mode == 'EDIT_MESH':
                         cache_face_data(context)
 
-                    if props.uv_lock:
+                    if obj.anvil_uv_lock:
                         apply_uv_lock(obj, scene)
                     else:
                         apply_world_scale_uvs(obj, scene)
