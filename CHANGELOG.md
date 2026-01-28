@@ -1,5 +1,9 @@
 # Anvil Level Design Changelog
 
+## 1.1.0
+
+- Introduce CUBE CUT. Press C in edit mode to enter cube cut mode. See Readme for more details.
+
 ## 1.0.3
 
 - Fix applied textures sometimes being rotated 180 degrees extra

@@ -43,6 +43,16 @@ Manual UV adjustments are possible via the Anvil LD panel:
 
 Select a face and press T to enter Face UV Mode. In this mode by default the bottom of the texture will snap to the edge *closest to the mouse cusor*. Use WASD to select different texture edges. Use Q and E to set FIT modes.
 
+### Geometry Tools
+
+## Cube Cut
+
+Press C in edit mode to enter cube cut mode.
+
+Click on a face in the 3d view to start drawing the cube; move your mouse and click again to define the rectangular face that will be cut. Move your mouse a third time to define the cube; click a third time to make the cut.
+
+Cube cut avoids N-gons and T-Junctions.
+
 ### Camera and Viewport Tools
 
 Hotkeys are intended to be blender default.
