@@ -12,6 +12,13 @@ def get_addon_prefs(context):
     return None
 
 
+def get_movement_keys_map():
+    """Get movement key configuration from the main module."""
+    import importlib
+    main_module = importlib.import_module(__package__.rsplit('.', 1)[0])
+    return main_module.get_movement_keys_map()
+
+
 class LEVELDESIGN_OT_walk_navigation_hold(Operator):
     """First-person camera navigation while holding right mouse button."""
     bl_idname = "leveldesign.walk_navigation_hold"
@@ -131,7 +138,8 @@ class LEVELDESIGN_OT_walk_navigation_hold(Operator):
             return {'RUNNING_MODAL'}
 
         # Track key presses for movement
-        movement_keys = {'W', 'A', 'S', 'D', 'Q', 'E', 'LEFT_SHIFT', 'RIGHT_SHIFT'}
+        movement_keys_map = get_movement_keys_map()
+        movement_keys = set(movement_keys_map.keys()) | {'LEFT_SHIFT', 'RIGHT_SHIFT'}
         if event.type in movement_keys:
             if event.value == 'PRESS':
                 self.keys_held.add(event.type)
@@ -175,24 +183,28 @@ class LEVELDESIGN_OT_walk_navigation_hold(Operator):
         rot_mat = rv3d.view_rotation.to_matrix()
         forward = rot_mat @ Vector((0, 0, -1))  # Camera forward
         right = rot_mat @ Vector((1, 0, 0))     # Camera right
-        world_up = Vector((0, 0, 1))            # World up for Q/E
+        world_up = Vector((0, 0, 1))            # World up for up/down
 
         move_dir = Vector((0, 0, 0))
 
-        # WASD: camera-relative movement
-        if 'W' in self.keys_held:
-            move_dir += forward
-        if 'S' in self.keys_held:
-            move_dir -= forward
-        if 'D' in self.keys_held:
-            move_dir += right
-        if 'A' in self.keys_held:
-            move_dir -= right
-        # Q/E: world-relative vertical movement
-        if 'E' in self.keys_held:
-            move_dir += world_up
-        if 'Q' in self.keys_held:
-            move_dir -= world_up
+        # Get configured movement keys
+        movement_keys_map = get_movement_keys_map()
+
+        # Check held keys against configured bindings
+        for key in self.keys_held:
+            direction = movement_keys_map.get(key)
+            if direction == 'forward':
+                move_dir += forward
+            elif direction == 'backward':
+                move_dir -= forward
+            elif direction == 'right':
+                move_dir += right
+            elif direction == 'left':
+                move_dir -= right
+            elif direction == 'up':
+                move_dir += world_up
+            elif direction == 'down':
+                move_dir -= world_up
 
         if move_dir.length > 0:
             move_dir.normalize()

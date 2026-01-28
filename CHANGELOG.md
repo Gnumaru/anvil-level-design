@@ -6,6 +6,8 @@
 - Fix grids not displaying in orthographic view in some cases
 - On Level Design workspace creation, set appropriate blender file settings
 - Set paths to relative on save
+- UV lock is now on a per object basis
+- Allow camera navigation keys to be remapped
 
 ## 1.0.3
 

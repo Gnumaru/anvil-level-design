@@ -18,6 +18,69 @@ from . import panels
 from . import workspace
 
 
+# Default movement keys
+DEFAULT_KEY_FORWARD = 'W'
+DEFAULT_KEY_BACKWARD = 'S'
+DEFAULT_KEY_LEFT = 'A'
+DEFAULT_KEY_RIGHT = 'D'
+DEFAULT_KEY_UP = 'E'
+DEFAULT_KEY_DOWN = 'Q'
+
+# Movement key bindings (keymap, keymap_item) tuples
+freelook_movement_keymaps = []
+
+# Direction names for display
+MOVEMENT_DIRECTIONS = [
+    ('forward', "Forward", DEFAULT_KEY_FORWARD),
+    ('backward', "Backward", DEFAULT_KEY_BACKWARD),
+    ('left', "Left", DEFAULT_KEY_LEFT),
+    ('right', "Right", DEFAULT_KEY_RIGHT),
+    ('up', "Up", DEFAULT_KEY_UP),
+    ('down', "Down", DEFAULT_KEY_DOWN),
+]
+
+
+def get_movement_key(direction):
+    """Get the configured key for a movement direction."""
+    wm = bpy.context.window_manager
+    kc_user = wm.keyconfigs.user
+    if kc_user:
+        km = kc_user.keymaps.get("3D View")
+        if km:
+            for kmi in km.keymap_items:
+                if (kmi.idname == "leveldesign.freelook_movement_key" and
+                    hasattr(kmi.properties, 'direction') and
+                    kmi.properties.direction == direction):
+                    return kmi.type
+    # Return default if not found
+    for d, name, default in MOVEMENT_DIRECTIONS:
+        if d == direction:
+            return default
+    return 'NONE'
+
+
+def get_movement_keys_map():
+    """Get a dict mapping key types to movement directions."""
+    keys = {}
+    for direction, name, default in MOVEMENT_DIRECTIONS:
+        key_type = get_movement_key(direction)
+        keys[key_type] = direction
+    return keys
+
+
+class LEVELDESIGN_OT_freelook_movement_key(bpy.types.Operator):
+    """Placeholder operator for freelook movement key bindings (handled by modal)"""
+    bl_idname = "leveldesign.freelook_movement_key"
+    bl_label = "Freelook Movement Key"
+    bl_options = {'INTERNAL'}
+
+    direction: bpy.props.StringProperty()
+
+    def execute(self, context):
+        # This operator is never actually executed - it's just for keymap UI
+        return {'PASS_THROUGH'}
+
+
 class LEVELDESIGN_OT_restore_default_keybindings(bpy.types.Operator):
     """Restore all addon keybindings to their default values"""
     bl_idname = "leveldesign.restore_default_keybindings"
@@ -105,6 +168,12 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                                             kmi.properties.view_type == kmi_addon.properties.view_type):
                                             kmi_user = kmi
                                             break
+                                    elif kmi_addon.idname == "leveldesign.freelook_movement_key":
+                                        if (hasattr(kmi.properties, "direction") and
+                                            hasattr(kmi_addon.properties, "direction") and
+                                            kmi.properties.direction == kmi_addon.properties.direction):
+                                            kmi_user = kmi
+                                            break
                                     else:
                                         kmi_user = kmi
                                         break
@@ -112,9 +181,11 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                         # Use user keymap item if found, otherwise fall back to addon
                         kmi_display = kmi_user if kmi_user else kmi_addon
 
-                        # Check for property-based differentiation (e.g., ortho_view with view_type)
+                        # Check for property-based differentiation
                         if kmi_addon.idname == "leveldesign.ortho_view" and hasattr(kmi_addon.properties, "view_type"):
                             display_name = f"{base_name} - {kmi_addon.properties.view_type.title()}"
+                        elif kmi_addon.idname == "leveldesign.freelook_movement_key" and hasattr(kmi_addon.properties, "direction"):
+                            display_name = f"Freelook {kmi_addon.properties.direction.title()}"
                         else:
                             # Add keymap context in brackets for mode-based differentiation
                             display_name = f"{base_name} ({km_addon.name})"
@@ -135,6 +206,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
 
 
 def register():
+    bpy.utils.register_class(LEVELDESIGN_OT_freelook_movement_key)
     bpy.utils.register_class(LEVELDESIGN_OT_restore_default_keybindings)
     bpy.utils.register_class(LevelDesignPreferences)
     properties.register()
@@ -143,8 +215,30 @@ def register():
     panels.register()
     workspace.register()
 
+    # Register movement key keymaps
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon
+    if kc:
+        km = kc.keymaps.new(name="3D View", space_type='VIEW_3D')
+        for direction, display_name, default_key in MOVEMENT_DIRECTIONS:
+            kmi = km.keymap_items.new(
+                "leveldesign.freelook_movement_key",
+                default_key, 'PRESS'
+            )
+            kmi.properties.direction = direction
+            kmi.active = False  # Don't actually intercept these keys
+            freelook_movement_keymaps.append((km, kmi))
+
 
 def unregister():
+    # Remove movement key keymaps
+    for km, kmi in freelook_movement_keymaps:
+        try:
+            km.keymap_items.remove(kmi)
+        except ReferenceError:
+            pass
+    freelook_movement_keymaps.clear()
+
     workspace.unregister()
     panels.unregister()
     operators.unregister()
@@ -152,6 +246,7 @@ def unregister():
     properties.unregister()
     bpy.utils.unregister_class(LevelDesignPreferences)
     bpy.utils.unregister_class(LEVELDESIGN_OT_restore_default_keybindings)
+    bpy.utils.unregister_class(LEVELDESIGN_OT_freelook_movement_key)
 
 
 if __name__ == "__main__":
