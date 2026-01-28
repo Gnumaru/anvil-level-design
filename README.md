@@ -81,7 +81,9 @@ Godot and Unity can both automatically translate the .blend to a hidden intermed
 
 .fbx image file paths are defined on export.
 
-.gltf image file paths are defined by the file paths blender uses. Be aware of the 'set paths to relative' and 'set paths to absolute' blender options (I'll handle this in Anvil at some point). Be aware that for Godot if your image files are in the same folder as your .blend file and paths are set to absolute, you may not notice until a collaborator opens the project and has missing textures on the imported level (because they do not have the same folder structure as you).
+.gltf image file paths are defined by the file paths blender uses. Be aware of the 'set paths to relative' and 'set paths to absolute' blender options. Be aware that for Godot if your image files are in the same folder as your .blend file and paths are set to absolute, you may not notice until a collaborator opens the project and has missing textures on the imported level (because they do not have the same folder structure as you).
+
+**Anvil sets paths to relative on save.**
 
 .glb files include the images in the exported file. Good for mods but not recommended if you're making a game with multiple levels that will share the same materials.
 

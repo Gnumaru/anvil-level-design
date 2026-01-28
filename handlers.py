@@ -47,6 +47,10 @@ face_data_cache = {}
 last_face_count = 0
 last_vertex_count = 0
 
+# Track if this is the first save (for making paths relative after save)
+_was_first_save = False
+
+
 # Cache for material deduplication
 _last_material_count = 0
 
@@ -758,6 +762,37 @@ def _clear_file_loaded_flag():
 
 
 @persistent
+def on_save_pre(dummy):
+    """Handler called before saving a .blend file.
+
+    Makes all paths relative if the file has been saved before.
+    For first-time saves, we wait until save_post to make paths relative.
+    """
+    global _was_first_save
+    _was_first_save = not bpy.data.filepath
+
+    if bpy.data.filepath:
+        print("Anvil Level Design: Making all paths relative (pre save)")
+        bpy.ops.file.make_paths_relative()
+
+
+@persistent
+def on_save_post(dummy):
+    """Handler called after saving a .blend file.
+
+    If this was the first save, makes paths relative and triggers a second save.
+    """
+    global _was_first_save
+
+    if _was_first_save:
+        _was_first_save = False
+        print("Anvil Level Design: Making all paths relative (post save, for first save)")
+        bpy.ops.file.make_paths_relative()
+        print("Anvil Level Design: Triggering second save to apply relative paths")
+        bpy.ops.wm.save_mainfile()
+
+
+@persistent
 def on_load_post(dummy):
     """Handler called after a .blend file is loaded."""
     global _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph
@@ -869,6 +904,10 @@ def register():
         bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update)
     if on_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(on_load_post)
+    if on_save_pre not in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.append(on_save_pre)
+    if on_save_post not in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.append(on_save_post)
     # Also set grid on addon enable
     bpy.app.timers.register(set_all_grid_scales_to_default, first_interval=0.1)
     # Start file browser watcher
@@ -892,7 +931,7 @@ def register():
 
 
 def unregister():
-    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph
+    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph, _was_first_save
 
     # Stop the file browser watcher timer
     _file_browser_watcher_running = False
@@ -907,6 +946,10 @@ def unregister():
         bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph_update)
     if on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post)
+    if on_save_pre in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.remove(on_save_pre)
+    if on_save_post in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.remove(on_save_post)
 
     bpy.utils.unregister_class(LEVELDESIGN_OT_force_apply_texture)
 
@@ -919,3 +962,4 @@ def unregister():
     _last_edit_object_name = None
     _active_image = None
     _file_loaded_into_edit_depsgraph = False
+    _was_first_save = False
