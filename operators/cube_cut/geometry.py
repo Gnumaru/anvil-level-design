@@ -177,9 +177,46 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
         local_x_trans, local_y_trans, local_z_trans
     )
 
-    # === STEP 1: Find edge-plane intersections and split edges ===
-    debug_log(f"\n[CubeCut] === STEP 1: Find edge-plane intersections ===")
-    edge_splits = _find_edge_plane_intersections(bm, cuboid)
+    # === STEP 1: Determine which faces will be cut (have interior intersections) ===
+    # We must do this BEFORE splitting edges, so we only split edges belonging to faces that will be cut
+    debug_log(f"\n[CubeCut] === STEP 1: Find cuboid-face intersections ===")
+    bm.faces.ensure_lookup_table()
+    face_interior_points = _find_cuboid_face_intersections(bm, cuboid)
+
+    # Apply selection filter: only cut selected faces (or all if none selected)
+    any_faces_selected = any(f.select for f in bm.faces if f.is_valid)
+    if any_faces_selected:
+        debug_log(f"[CubeCut] Selection mode: only cutting selected faces")
+    else:
+        debug_log(f"[CubeCut] No faces selected: cutting all intersecting faces")
+
+    # Determine which faces will actually be cut
+    faces_to_be_cut = set()
+    skipped_unselected_count = 0
+    for face_idx, points in face_interior_points.items():
+        face = bm.faces[face_idx] if face_idx < len(bm.faces) else None
+        if face is None or not face.is_valid:
+            continue
+        if not points:
+            continue
+
+        # Only cut selected faces (unless no faces are selected, then cut all)
+        if any_faces_selected and not face.select:
+            skipped_unselected_count += 1
+            debug_log(f"[CubeCut] Face {face_idx} skipped (not selected)")
+            continue
+
+        faces_to_be_cut.add(face)
+        debug_log(f"[CubeCut] Face {face_idx} will be cut ({len(points)} interior points)")
+
+    debug_log(f"[CubeCut] Faces to be cut: {len(faces_to_be_cut)}")
+    if skipped_unselected_count > 0:
+        debug_log(f"[CubeCut] Skipped {skipped_unselected_count} unselected faces")
+
+    # === STEP 2: Find edge-plane intersections and split edges ===
+    # Only split edges that belong to faces that will be cut
+    debug_log(f"\n[CubeCut] === STEP 2: Find edge-plane intersections ===")
+    edge_splits = _find_edge_plane_intersections(bm, cuboid, faces_to_be_cut)
     debug_log(f"[CubeCut] Found {len(edge_splits)} edges to split")
 
     # Split edges (must do this before face operations)
@@ -204,54 +241,31 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
             for loop in f.loops:
                 debug_log(f"[CubeCut]   Loop: vert={loop.vert.co[:]} -> edge={loop.edge.verts[0].co[:]}->{loop.edge.verts[1].co[:]}")
 
-    # === STEP 2: Find cuboid-face intersections and create interior vertices ===
-    debug_log(f"\n[CubeCut] === STEP 2: Find cuboid-face intersections ===")
-    # After edge splits, faces have new vertices on their boundary
-    # Now find where cuboid edges pierce face interiors
-    bm.faces.ensure_lookup_table()
-    face_interior_points = _find_cuboid_face_intersections(bm, cuboid)
-
-    # Create vertices at interior intersection points and track them per face
-    # Store actual face references (not indices) since indices become invalid after modifications
-    # NOTE: Only cut faces that are SELECTED - unselected faces with split edges will be re-quadrilated
-    # If NO faces are selected, cut all faces (standard Blender convention)
-    any_faces_selected = any(f.select for f in bm.faces if f.is_valid)
-    if any_faces_selected:
-        debug_log(f"[CubeCut] Selection mode: only cutting selected faces")
-    else:
-        debug_log(f"[CubeCut] No faces selected: cutting all intersecting faces")
-
+    # === STEP 3: Create interior vertices for faces to be cut ===
+    debug_log(f"\n[CubeCut] === STEP 3: Create interior vertices ===")
     face_interior_verts = []  # List of (face, interior_verts) tuples
-    faces_to_be_cut = set()  # Track which faces will be cut
-    skipped_unselected_count = 0
-    for face_idx, points in face_interior_points.items():
-        face = bm.faces[face_idx] if face_idx < len(bm.faces) else None
+    for face in faces_to_be_cut:
         if face is None or not face.is_valid:
             continue
 
-        # Only cut selected faces (unless no faces are selected, then cut all)
-        if any_faces_selected and not face.select:
-            skipped_unselected_count += 1
-            debug_log(f"[CubeCut] Face {face_idx} skipped (not selected)")
+        points = face_interior_points.get(face.index, [])
+        if not points:
             continue
 
         interior_verts = []
         for point in points:
             new_vert = bm.verts.new(point)
             interior_verts.append(new_vert)
-            debug_log(f"[CubeCut] VERTEX CREATED (interior): pos={point}, for face {face_idx}")
+            debug_log(f"[CubeCut] VERTEX CREATED (interior): pos={point}, for face {face.index}")
             debug_log(f"[CubeCut]   No edges created yet (floating vertex)")
 
         if interior_verts:
             face_interior_verts.append((face, interior_verts))
-            faces_to_be_cut.add(face)
 
     debug_log(f"[CubeCut] Total interior vertices created: {sum(len(v) for _, v in face_interior_verts)}")
-    if skipped_unselected_count > 0:
-        debug_log(f"[CubeCut] Skipped {skipped_unselected_count} unselected faces (will be re-quadrilated if needed)")
 
 
-    # === STEP 3: Connect interior vertices to face boundaries ===
+    # === STEP 4: Connect interior vertices to face boundaries ===
     # For faces with interior vertices, we need to split the face
     bm.verts.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
@@ -270,7 +284,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
         _connect_new_verts_to_face(bm, face, interior_verts, edge_verts_on_face, cuboid, me, ppm)
         faces_actually_cut.add(face)
 
-    # === STEP 4: Quadrilate n-gons created by edge splits ===
+    # === STEP 5: Quadrilate n-gons created by edge splits ===
     # Faces that had edges split but weren't cut are now n-gons and need to be quadrilated
     faces_to_quadrilate = []
     for face in faces_with_split_edges:
@@ -285,7 +299,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
             debug_log(f"[CubeCut] Face needs quadrilating: {len(face.verts)} verts")
 
     if faces_to_quadrilate:
-        debug_log(f"[CubeCut] === STEP 4: Quadrilating {len(faces_to_quadrilate)} n-gon faces ===")
+        debug_log(f"[CubeCut] === STEP 5: Quadrilating {len(faces_to_quadrilate)} n-gon faces ===")
         # Triangulate the n-gons first
         result = bmesh.ops.triangulate(bm, faces=faces_to_quadrilate)
         new_faces = result['faces']
@@ -301,7 +315,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
             )
             debug_log(f"[CubeCut] Joined triangles into quads where possible")
 
-    # === STEP 5: Cleanup ===
+    # === STEP 6: Cleanup ===
     # Remove loose vertices
     loose_verts = [v for v in bm.verts if v.is_valid and not v.link_faces]
     if loose_verts:
@@ -315,9 +329,17 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
     return (True, "Cut complete")
 
 
-def _find_edge_plane_intersections(bm, cuboid):
+def _find_edge_plane_intersections(bm, cuboid, faces_to_cut):
     """
     Find all points where mesh edges cross cuboid planes.
+
+    Only considers edges that belong to at least one face in faces_to_cut.
+    This prevents adding edge splits to faces that won't actually be cut.
+
+    Args:
+        bm: BMesh
+        cuboid: CuboidPlanes instance
+        faces_to_cut: Set of BMFace that will be cut (have interior intersections)
 
     Returns:
         dict: edge -> list of (intersection_point, plane_idx)
@@ -328,6 +350,11 @@ def _find_edge_plane_intersections(bm, cuboid):
 
     for edge in bm.edges:
         if not edge.is_valid:
+            continue
+
+        # Only split edges that belong to faces that will be cut
+        edge_belongs_to_cut_face = any(f in faces_to_cut for f in edge.link_faces)
+        if not edge_belongs_to_cut_face:
             continue
 
         v1_co = edge.verts[0].co
