@@ -23,7 +23,7 @@ class LEVELDESIGN_OT_walk_navigation_hold(Operator):
     """First-person camera navigation while holding right mouse button."""
     bl_idname = "leveldesign.walk_navigation_hold"
     bl_label = "First Person Camera (Hold)"
-    bl_options = {'REGISTER'}
+    bl_options = {'REGISTER', 'GRAB_CURSOR', 'BLOCKING'}
 
     def invoke(self, context, event):
         if context.area.type != 'VIEW_3D':
@@ -68,14 +68,16 @@ class LEVELDESIGN_OT_walk_navigation_hold(Operator):
         # Track which keys are held
         self.keys_held = set()
 
-        # Capture mouse at current position
+        # Store region/window for cursor restoration on exit
+        self._region = context.region
+        self._window = context.window
+
+        # Hide cursor during freelook
         context.window.cursor_set('NONE')
-        center_x = context.region.x + context.region.width // 2
-        center_y = context.region.y + context.region.height // 2
-        context.window.cursor_warp(center_x, center_y)
-        self.last_mouse_x = center_x
-        self.last_mouse_y = center_y
-        self._skip_first_mouse = True  # Skip first MOUSEMOVE to avoid warp-induced delta
+
+        # Track mouse position for delta calculation (using region coords which work with GRAB_CURSOR)
+        self._last_mouse_region_x = event.mouse_region_x
+        self._last_mouse_region_y = event.mouse_region_y
 
         # Add timer for smooth movement
         self._timer = context.window_manager.event_timer_add(1/60, window=context.window)
@@ -101,19 +103,12 @@ class LEVELDESIGN_OT_walk_navigation_hold(Operator):
         if event.type == 'ESC':
             return self._finish(context)
 
-        # Mouse look
+        # Mouse look - use mouse_region coords which accumulate correctly with GRAB_CURSOR
         if event.type == 'MOUSEMOVE':
-            # Skip first MOUSEMOVE to avoid spurious delta from cursor warp
-            if self._skip_first_mouse:
-                self._skip_first_mouse = False
-                center_x = context.region.x + context.region.width // 2
-                center_y = context.region.y + context.region.height // 2
-                self.last_mouse_x = center_x
-                self.last_mouse_y = center_y
-                return {'RUNNING_MODAL'}
-
-            dx = event.mouse_x - self.last_mouse_x
-            dy = event.mouse_y - self.last_mouse_y
+            dx = event.mouse_region_x - self._last_mouse_region_x
+            dy = event.mouse_region_y - self._last_mouse_region_y
+            self._last_mouse_region_x = event.mouse_region_x
+            self._last_mouse_region_y = event.mouse_region_y
 
             prefs = get_addon_prefs(context)
             sensitivity = prefs.mouse_sensitivity if prefs else 0.006
@@ -126,13 +121,6 @@ class LEVELDESIGN_OT_walk_navigation_hold(Operator):
 
             # Apply rotation
             rv3d.view_rotation = self._yaw_pitch_to_rotation(self.yaw, self.pitch)
-
-            # Warp cursor back to center
-            center_x = context.region.x + context.region.width // 2
-            center_y = context.region.y + context.region.height // 2
-            context.window.cursor_warp(center_x, center_y)
-            self.last_mouse_x = center_x
-            self.last_mouse_y = center_y
 
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
@@ -224,7 +212,12 @@ class LEVELDESIGN_OT_walk_navigation_hold(Operator):
         # Restore smooth view setting
         context.preferences.view.smooth_view = self.original_smooth_view
 
+        # Warp cursor to region center and restore visibility
+        center_x = self._region.x + self._region.width // 2
+        center_y = self._region.y + self._region.height // 2
+        self._window.cursor_warp(center_x, center_y)
         context.window.cursor_set('DEFAULT')
+
         context.window_manager.event_timer_remove(self._timer)
         context.area.tag_redraw()
         return {'FINISHED'}

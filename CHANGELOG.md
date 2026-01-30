@@ -4,6 +4,7 @@
 - Cube cut opposite face now cuts when exactly aligned with a mesh face
 - New mesh faces will be appropriately projected (extrusion was already working, bridging edges etc did not)
 - Fix regression causing geometry edits back to the original state in one modal operation distorts UVs (see comments in code)
+- Speculative mouse look reliability improvements
 
 ## 1.1.0
 
