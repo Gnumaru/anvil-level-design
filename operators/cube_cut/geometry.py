@@ -312,7 +312,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
     # Split edges (must do this before face operations)
     # Also track which faces had their edges split
-    split_verts, faces_with_split_edges = _split_edges_at_intersections(bm, edge_splits)
+    split_verts, faces_with_split_edges, vert_plane_map = _split_edges_at_intersections(bm, edge_splits)
     debug_log(f"[CubeCut] Created {len(split_verts)} split vertices")
     debug_log(f"[CubeCut] Faces with split edges: {len(faces_with_split_edges)}")
 
@@ -439,7 +439,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
     newly_created_faces = []
     for new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, uv_projection, material_index in face_data_list:
-        new_faces = _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, cuboid, me, ppm)
+        new_faces = _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, cuboid, me, ppm, vert_plane_map)
         if new_faces:
             for new_face in new_faces:
                 # Apply material from original face
@@ -587,9 +587,11 @@ def _split_edges_at_intersections(bm, edge_splits):
     Split edges at intersection points.
 
     Returns:
-        tuple: (newly created vertices, set of faces that had edges split)
+        tuple: (newly created vertices, set of faces that had edges split,
+                dict mapping each split vert to the set of cuboid plane indices it lies on)
     """
     new_verts = []
+    vert_plane_map = {}  # BMVert -> set of plane indices
     faces_with_split_edges = set()
 
     for edge, intersections in edge_splits.items():
@@ -646,6 +648,12 @@ def _split_edges_at_intersections(bm, edge_splits):
             new_vert.co = intersection_point.copy()  # Ensure exact position
             new_verts.append(new_vert)
 
+            # Track which cuboid plane(s) this vertex lies on (as a set,
+            # since a vertex at a cuboid edge/corner can be on multiple planes)
+            if new_vert not in vert_plane_map:
+                vert_plane_map[new_vert] = set()
+            vert_plane_map[new_vert].add(plane_idx)
+
             debug_log(f"[CubeCut] AFTER edge_split:")
             debug_log(f"[CubeCut]   new_vert pos={new_vert.co[:]}")
             debug_log(f"[CubeCut]   new_edge id={id(new_edge)} verts={[v.co[:] for v in new_edge.verts]}")
@@ -663,7 +671,7 @@ def _split_edges_at_intersections(bm, edge_splits):
                     debug_log(f"[CubeCut]   -> new_edge does NOT contain original_v1, keeping current_edge")
                     edges_to_keep.append(new_edge)
 
-    return new_verts, faces_with_split_edges
+    return new_verts, faces_with_split_edges, vert_plane_map
 
 
 def _find_cuboid_face_intersections(bm, cuboid):
@@ -851,7 +859,7 @@ def _should_delete_vertex_for_face(vertex, face, cuboid):
     return False  # Outside cuboid, keep it
 
 
-def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, cuboid, me, ppm):
+def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, cuboid, me, ppm, vert_plane_map):
     import math
 
     debug_log(f"[CubeCut] _verts_to_faces: new_verts={[v.co[:] for v in new_verts]}")
@@ -888,6 +896,22 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
         # UNLESS there are no interior verts (cutting off a piece, not making a hole)
         if v1 in exterior_set and v2 in exterior_set and are_adjacent_on_exterior(v1, v2) and len(verts_in_original_interior) > 0:
             debug_log(f"[CubeCut]   Skipping edge (both adjacent on exterior): {v1.co[:]} -> {v2.co[:]}")
+            continue
+
+        # Skip cross-hole edges between split vertices that share no cuboid plane.
+        # When the cuboid cuts through a face, each cuboid plane creates split
+        # vertices on the face edges. Valid closing edges connect splits from the
+        # SAME plane (sealing one side of the cut). Edges between splits from
+        # entirely DIFFERENT planes would bridge across the removed region.
+        # On quad faces this is implicitly prevented because both splits on the
+        # same original edge create an "already exists" barrier, but on triangles
+        # (or other odd faces) the splits land on different original edges with
+        # no such barrier. We use sets of plane indices (not single values) because
+        # a vertex at a cuboid edge or corner can belong to multiple planes.
+        v1_planes = vert_plane_map.get(v1)
+        v2_planes = vert_plane_map.get(v2)
+        if v1_planes is not None and v2_planes is not None and v1_planes.isdisjoint(v2_planes):
+            debug_log(f"[CubeCut]   Skipping cross-hole edge (no shared plane {v1_planes} vs {v2_planes}): {v1.co[:]} -> {v2.co[:]}")
             continue
 
         # Check if edge already exists
