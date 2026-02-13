@@ -1,7 +1,8 @@
 # Anvil Level Design Changelog
 
 ## 1.2.2
-- Add Box Builder!
+- Add BOX BUILDER
+- Fix an issue with undo and UVs
 
 ## 1.2.1
 

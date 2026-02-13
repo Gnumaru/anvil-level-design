@@ -48,6 +48,8 @@ _force_auto_hotspot = False
 
 # Track undo operations to skip depsgraph handling during undo
 _undo_in_progress = False
+# Track when cache was invalidated by undo/redo (not an actual topology change)
+_cache_invalidated_by_undo = False
 
 
 def _any_hotspot_geometry_changed(bm, me):
@@ -1120,11 +1122,12 @@ def on_undo_post(scene):
     Clears the undo flag via timer to ensure depsgraph update has completed.
     Invalidates face caches since geometry state has changed.
     """
-    global last_face_count, last_vertex_count
+    global last_face_count, last_vertex_count, _cache_invalidated_by_undo
     # Invalidate face caches - geometry state has changed
     face_data_cache.clear()
     last_face_count = 0
     last_vertex_count = 0
+    _cache_invalidated_by_undo = True
     # Use a short timer to ensure the depsgraph update triggered by undo
     # has completed before we clear the flag
     bpy.app.timers.register(_clear_undo_flag, first_interval=0.05)
@@ -1145,11 +1148,12 @@ def on_redo_post(scene):
     Clears the undo flag via timer to ensure depsgraph update has completed.
     Invalidates face caches since geometry state has changed.
     """
-    global last_face_count, last_vertex_count
+    global last_face_count, last_vertex_count, _cache_invalidated_by_undo
     # Invalidate face caches - geometry state has changed
     face_data_cache.clear()
     last_face_count = 0
     last_vertex_count = 0
+    _cache_invalidated_by_undo = True
     bpy.app.timers.register(_clear_undo_flag, first_interval=0.05)
 
 
@@ -1269,8 +1273,13 @@ def on_depsgraph_update(scene, depsgraph):
 
                     # Check if topology changed (subdivision, extrusion, etc.)
                     if current_face_count != last_face_count or current_vertex_count != last_vertex_count:
-                        # Topology changed - but skip projection if this is just switching objects
-                        if not is_fresh_start:
+                        global _cache_invalidated_by_undo
+                        is_undo_recovery = _cache_invalidated_by_undo
+                        _cache_invalidated_by_undo = False
+
+                        # Project new faces only on actual topology changes
+                        # (not after undo/redo cache invalidation or object switch)
+                        if not is_fresh_start and not is_undo_recovery:
                             _project_selected_faces_on_topology_change(context, bm)
                         cache_face_data(context)
                         update_ui_from_selection(context)
@@ -1281,7 +1290,7 @@ def on_depsgraph_update(scene, depsgraph):
                         # Apply auto-hotspotting if enabled (after cache is updated)
                         # Force because cache_face_data already cached the new faces,
                         # so the geometry-changed check would incorrectly skip them
-                        if not is_fresh_start and props.auto_hotspot:
+                        if not is_fresh_start and not is_undo_recovery and props.auto_hotspot:
                             _force_auto_hotspot = True
                             _apply_auto_hotspots()
                         return
