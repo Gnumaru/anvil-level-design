@@ -72,7 +72,7 @@ def snap_to_grid_on_face(hit_location, face_normal, grid_size):
         # Z-dominant: snap X and Y, solve for Z
         x_snap = round(hit_location.x / grid_size) * grid_size
         y_snap = round(hit_location.y / grid_size) * grid_size
-        z = p0.z - (n.x / n.z) * (x_snap - p0.x) - (n.y / n.z) * (y_snap - p0.z)
+        z = p0.z - (n.x / n.z) * (x_snap - p0.x) - (n.y / n.z) * (y_snap - p0.y)
         snapped = Vector((x_snap, y_snap, z))
 
     return snapped
@@ -158,6 +158,7 @@ def calculate_first_vertex_snap_3d(context, event):
             if (clamped - snapped).length_squared > 1e-10:
                 was_clamped = True
                 snapped = clamped
+
     else:
         # Without snapping, use the exact hit location (on the mesh surface)
         snapped = location.copy()
