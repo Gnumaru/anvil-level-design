@@ -7,6 +7,8 @@ All snapping calculations are isolated here for easy modification.
 import bpy
 import math
 from mathutils import Vector
+from mathutils.geometry import intersect_line_plane
+from bpy_extras.view3d_utils import region_2d_to_origin_3d, region_2d_to_vector_3d
 
 from . import utils
 
@@ -229,11 +231,12 @@ def calculate_second_vertex_snap(context, event, first_vertex, local_x, local_y,
 
 def calculate_depth_from_mouse_3d(context, event, first_vertex, second_vertex, local_z, initial_mouse_pos):
     """
-    Calculate depth based on geometric mouse movement in 3D view.
+    Calculate depth by intersecting the mouse ray with a plane containing
+    the depth axis, then projecting onto that axis.
 
-    Uses mouse movement projected onto the depth axis direction as seen from
-    the camera. Moving mouse "into" the face (toward face center when looking
-    at the face) gives negative depth, moving "away" gives positive depth.
+    The plane contains local_z and is oriented to face the camera, so lateral
+    mouse movement (perpendicular to the depth axis on screen) slides along
+    the plane without changing the depth value.
 
     Args:
         context: Blender context
@@ -241,70 +244,66 @@ def calculate_depth_from_mouse_3d(context, event, first_vertex, second_vertex, l
         first_vertex: First corner of rectangle
         second_vertex: Second corner of rectangle
         local_z: Depth axis direction (points "outward" from rectangle)
-        initial_mouse_pos: (x, y) tuple of mouse position when depth phase started
+        initial_mouse_pos: (x, y) tuple (unused, kept for API compatibility)
 
     Returns:
         float: Depth value (can be negative)
     """
-    from bpy_extras.view3d_utils import location_3d_to_region_2d
-
     region = context.region
     rv3d = context.region_data
 
     if rv3d is None:
         return 0.0
 
-    # Get rectangle center
-    rect_center = (first_vertex + second_vertex) / 2
+    # Mouse ray
+    coord = (event.mouse_region_x, event.mouse_region_y)
+    ray_origin = region_2d_to_origin_3d(region, rv3d, coord)
+    ray_dir = region_2d_to_vector_3d(region, rv3d, coord)
 
-    # Project rectangle center and a point along depth axis to screen space
-    # depth_dir_length tells us how many pixels = 1 world unit of depth
-    center_2d = location_3d_to_region_2d(region, rv3d, rect_center)
-    depth_point_3d = rect_center + local_z  # Point 1 unit in depth direction
-    depth_point_2d = location_3d_to_region_2d(region, rv3d, depth_point_3d)
-
-    if center_2d is None or depth_point_2d is None:
+    if ray_origin is None or ray_dir is None:
         return 0.0
 
-    # Get the screen-space vector for 1 unit of depth
-    depth_dir_2d = Vector((depth_point_2d[0] - center_2d[0], depth_point_2d[1] - center_2d[1]))
-    depth_dir_length = depth_dir_2d.length
+    # Depth axis line through the second vertex (opposite corner from start).
+    # The mouse is already at this point when depth phase begins, so anchoring
+    # here avoids a sudden jump.
+    depth_origin = second_vertex.copy()
 
-    # Minimum threshold to avoid division issues when looking edge-on
-    MIN_DEPTH_PROJECTION = 5.0  # pixels
-
-    if depth_dir_length < MIN_DEPTH_PROJECTION:
-        # Depth axis barely visible on screen - use fallback horizontal movement
-        # Scale based on view distance for consistent feel
-        if rv3d.is_perspective:
-            view_pos = rv3d.view_matrix.inverted().translation
-            dist = (view_pos - rect_center).length
-            if dist < 0.001:
-                dist = 10.0
-            pixels_per_unit = region.width / (dist * 2.0)
-        else:
-            pixels_per_unit = region.width / (rv3d.view_distance * 2)
-
-        if pixels_per_unit < 1.0:
-            pixels_per_unit = 50.0
-
-        # Use horizontal mouse movement as fallback
-        initial_x, initial_y = initial_mouse_pos
-        delta_x = event.mouse_region_x - initial_x
-        depth = delta_x / pixels_per_unit
+    # Build a plane that contains the depth axis and faces the camera.
+    # The normal is the component of view_dir perpendicular to local_z.
+    # This keeps local_z in the plane while making the plane face the camera,
+    # so mouse rays intersect it cleanly.
+    if rv3d.is_perspective:
+        view_pos = rv3d.view_matrix.inverted().translation
+        view_dir = (depth_origin - view_pos).normalized()
     else:
-        # Normal case: project mouse movement onto depth axis direction
-        depth_dir_2d /= depth_dir_length
+        view_dir = (rv3d.view_rotation @ Vector((0, 0, -1))).normalized()
 
-        # Calculate mouse delta from initial position
-        initial_x, initial_y = initial_mouse_pos
-        delta = Vector((event.mouse_region_x - initial_x, event.mouse_region_y - initial_y))
+    plane_normal = view_dir - view_dir.dot(local_z) * local_z
 
-        # Project mouse delta onto the depth direction in screen space
-        projected_delta = delta.dot(depth_dir_2d)
+    if plane_normal.length_squared < 1e-8:
+        return 0.0  # Looking along the depth axis
 
-        # depth_dir_length is pixels per world unit, so divide to get world units
-        depth = projected_delta / depth_dir_length
+    plane_normal.normalize()
+
+    # Intersect mouse ray with the plane through depth_origin.
+    hit = intersect_line_plane(ray_origin, ray_origin + ray_dir * 10000,
+                               depth_origin, plane_normal)
+
+    if hit is None:
+        return 0.0
+
+    # Discard intersections behind the camera — in perspective, the ray can
+    # wrap past the vanishing point and intersect behind the viewer, which
+    # causes the depth to suddenly invert.
+    if (hit - ray_origin).dot(ray_dir) < 0:
+        # The hit is behind the camera (past vanishing point). The depth from
+        # this hit would be inverted, so negate it to get the correct sign.
+        inverted_depth = (hit - depth_origin).dot(local_z)
+        return -2000.0 if inverted_depth > 0 else 2000.0
+
+    # Project onto local_z for the signed depth. Lateral mouse movement
+    # stays perpendicular to local_z in this plane, so it doesn't affect depth.
+    depth = (hit - depth_origin).dot(local_z)
 
     # Apply snapping
     grid_size = utils.get_grid_size(context)

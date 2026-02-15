@@ -4,7 +4,7 @@
 - Add BOX BUILDER
 - Fix an issue with undo and UVs
 - Cube Cut from orthogonal view has infinite depth
-- Fix CC and BB snapping bug
+- Improve CC and BB snapping (fix bug; improve mouse feel)
 
 ## 1.2.1
 
