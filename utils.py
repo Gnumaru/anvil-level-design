@@ -63,10 +63,10 @@ def get_local_x_from_verts_3d(verts):
 
 
 def compute_normal_from_verts(verts):
-    """Compute a normal vector from a list of vertices by finding 3 non-collinear points.
+    """Compute a normal vector from a list of vertices using Newell's method.
 
-    Searches through vertex triplets until finding three that are non-collinear,
-    then computes the normal from their cross product.
+    Sums cross-product contributions from all edges of the polygon, which
+    correctly handles concave polygons (unlike a simple 3-point cross product).
 
     Args:
         verts: List of BMVerts or objects with .co attribute (at least 3 elements)
@@ -74,6 +74,8 @@ def compute_normal_from_verts(verts):
     Returns:
         Normalized Vector3 normal, or None if all vertices are collinear or < 3 vertices.
     """
+    from mathutils import Vector
+
     if len(verts) < 3:
         return None
 
@@ -82,39 +84,19 @@ def compute_normal_from_verts(verts):
         return v.co if hasattr(v, 'co') else v
 
     n = len(verts)
-    p0 = get_pos(verts[0])
+    normal = Vector((0.0, 0.0, 0.0))
 
-    for i in range(1, n):
-        p1 = get_pos(verts[i])
-        e1 = p1 - p0
-        e1e1 = e1.dot(e1)
+    for i in range(n):
+        curr = get_pos(verts[i])
+        next_ = get_pos(verts[(i + 1) % n])
+        normal.x += (curr.y - next_.y) * (curr.z + next_.z)
+        normal.y += (curr.z - next_.z) * (curr.x + next_.x)
+        normal.z += (curr.x - next_.x) * (curr.y + next_.y)
 
-        # Skip if e1 is too short
-        if e1e1 < 1e-10:
-            continue
+    if normal.length < 1e-10:
+        return None
 
-        for j in range(i + 1, n):
-            p2 = get_pos(verts[j])
-            e2 = p2 - p0
-            e2e2 = e2.dot(e2)
-
-            # Skip if e2 is too short
-            if e2e2 < 1e-10:
-                continue
-
-            e1e2 = e1.dot(e2)
-            det = e1e1 * e2e2 - e1e2 * e1e2
-
-            # Check if vertices are non-collinear (det is non-zero)
-            if abs(det) < 1e-10:
-                continue
-
-            # Found valid triplet - compute normal
-            normal = e1.cross(e2)
-            if normal.length > 1e-10:
-                return normal.normalized()
-
-    return None
+    return normal.normalized()
 
 
 def get_local_x_from_verts_2d(verts):

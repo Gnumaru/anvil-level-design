@@ -524,7 +524,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
                     u_axis, v_axis, origin_uv, origin_pos, source_normal = uv_projection
                     apply_uv_projection_to_face(new_face, uv_layer, u_axis, v_axis, origin_uv, origin_pos, source_normal)
             newly_created_faces.extend(new_faces)
-
+    #
     # === STEP 6: Quadrilate n-gons created by edge splits ===
     # Faces that had edges split but weren't cut are now n-gons and need to be quadrilated
     # Also quadrilate any newly created faces from cutting that are n-gons
@@ -1136,14 +1136,6 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
     created_faces = []
 
     for v1, v2 in created_edges:
-        # Check if starting from v2 produces correct winding by examining the first step
-        first_next = find_next_vert_angular(v2, v1, v1)
-        if first_next is not None:
-            edge_dir = v2.co - v1.co
-            next_dir = first_next.co - v2.co
-            if edge_dir.cross(next_dir).dot(face_normal) < 0:
-                v1, v2 = v2, v1
-
         # Walk around edges to form a closed loop starting with this edge
         # Start at v1, go to v2, then continue in angular order until we return to v1
         face_verts = [v1, v2]
@@ -1167,6 +1159,13 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
             current = next_vert
 
         if len(face_verts) >= 3:
+            # Check if the polygon's normal matches the expected face normal
+            # If not, reverse the vertex order to correct the winding
+            poly_normal = compute_normal_from_verts([v.co for v in face_verts])
+            if poly_normal.dot(face_normal) < 0:
+                face_verts.reverse()
+                debug_log(f"[CubeCut]   Reversed winding for face with {len(face_verts)} verts")
+
             try:
                 new_face = bm.faces.new(face_verts)
                 created_faces.append(new_face)
