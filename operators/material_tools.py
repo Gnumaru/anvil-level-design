@@ -188,6 +188,19 @@ class LEVELDESIGN_OT_fix_alpha_bleed(Operator):
         return {'FINISHED'}
 
 
+class LEVELDESIGN_OT_set_default_interpolation(Operator):
+    """Set the default interpolation mode for new materials"""
+
+    bl_idname = "leveldesign.set_default_interpolation"
+    bl_label = "Set Default Interpolation"
+
+    interpolation: bpy.props.StringProperty()
+
+    def execute(self, context):
+        context.scene.level_design_props.default_interpolation = self.interpolation
+        return {'FINISHED'}
+
+
 class LEVELDESIGN_OT_cleanup_unused_materials(Operator):
     """Remove unused materials created by the addon (IMG_ prefix)"""
 
@@ -226,6 +239,7 @@ classes = (
     LEVELDESIGN_OT_set_interpolation_linear,
     LEVELDESIGN_OT_toggle_texture_alpha,
     LEVELDESIGN_OT_fix_alpha_bleed,
+    LEVELDESIGN_OT_set_default_interpolation,
     LEVELDESIGN_OT_cleanup_unused_materials,
 )
 

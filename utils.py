@@ -572,8 +572,20 @@ def is_texture_alpha_connected(mat):
     return False
 
 
+def get_default_material_settings():
+    """Get the default material settings from the current scene."""
+    props = bpy.context.scene.level_design_props
+    return {
+        'interpolation': props.default_interpolation,
+        'texture_as_alpha': props.default_texture_as_alpha,
+        'roughness': props.default_roughness,
+    }
+
+
 def create_material_with_image(image):
-    """Create a new material using the given image texture"""
+    """Create a new material using the given image texture with scene default settings"""
+    defaults = get_default_material_settings()
+
     mat = bpy.data.materials.new(name=f"IMG_{image.name}")
     mat.use_nodes = True
     mat.use_backface_culling = True
@@ -586,6 +598,9 @@ def create_material_with_image(image):
     tex = nt.nodes.new("ShaderNodeTexImage")
 
     tex.image = image
+    tex.interpolation = defaults['interpolation']
+
+    bsdf.inputs["Roughness"].default_value = defaults['roughness']
 
     tex.location = (-400, 0)
     bsdf.location = (-200, 0)
@@ -593,6 +608,10 @@ def create_material_with_image(image):
 
     nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
     nt.links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+
+    if defaults['texture_as_alpha']:
+        nt.links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
+        mat.blend_method = 'CLIP'
 
     return mat
 

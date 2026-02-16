@@ -67,11 +67,6 @@ class LEVELDESIGN_PT_uv_lock_panel(Panel):
                 icon='LOCKED' if obj.anvil_uv_lock else 'UNLOCKED',
             )
 
-            if obj.anvil_uv_lock:
-                layout.label(text="Texture locked to geometry", icon='INFO')
-            else:
-                layout.label(text="Texture at world scale", icon='INFO')
-
             if not in_edit_mode:
                 layout.label(text="(Edit Mode required)", icon='INFO')
         else:
@@ -308,7 +303,7 @@ class LEVELDESIGN_PT_texture_settings_panel(Panel):
     bl_idname = "LEVELDESIGN_PT_texture_settings_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Anvil'
+    bl_category = 'Anvil (Settings)'
 
     @classmethod
     def poll(cls, context):
@@ -343,6 +338,43 @@ class LEVELDESIGN_PT_texture_settings_panel(Panel):
             layout.label(text="(Requires Object Mode)", icon='INFO')
 
 
+class LEVELDESIGN_PT_default_material_settings_panel(Panel):
+    """Default Material Settings"""
+
+    bl_label = "Default Material Settings"
+    bl_idname = "LEVELDESIGN_PT_default_material_settings_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Anvil (Settings)'
+
+    @classmethod
+    def poll(cls, context):
+        return is_level_design_workspace()
+
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.level_design_props
+
+        # Interpolation toggle
+        row = layout.row(align=True)
+        row.operator(
+            "leveldesign.set_default_interpolation",
+            text="Closest",
+            depress=(props.default_interpolation == 'Closest'),
+        ).interpolation = 'Closest'
+        row.operator(
+            "leveldesign.set_default_interpolation",
+            text="Linear",
+            depress=(props.default_interpolation == 'Linear'),
+        ).interpolation = 'Linear'
+
+        # Texture as alpha
+        layout.prop(props, "default_texture_as_alpha", toggle=True)
+
+        # Roughness
+        layout.prop(props, "default_roughness")
+
+
 class LEVELDESIGN_PT_export_panel(Panel):
     """Export Panel"""
 
@@ -350,7 +382,7 @@ class LEVELDESIGN_PT_export_panel(Panel):
     bl_idname = "LEVELDESIGN_PT_export_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Anvil'
+    bl_category = 'Anvil (Export)'
 
     @classmethod
     def poll(cls, context):
@@ -385,6 +417,7 @@ classes = (
     LEVELDESIGN_PT_hotspotting_panel,
     LEVELDESIGN_PT_texture_preview_panel,
     LEVELDESIGN_PT_texture_settings_panel,
+    LEVELDESIGN_PT_default_material_settings_panel,
     LEVELDESIGN_PT_export_panel,
 )
 

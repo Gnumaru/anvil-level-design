@@ -34,6 +34,8 @@ Anvil LD manages materials to prevent duplicates. Use the Cleanup Unused Materia
 
 The currently selected image is previewed in the side panel; here the texture transparency channel can be linked to the shader, and roughness can be adjusted. 
 
+Default material settings for new textures could be adjusted on the Anvil (Settings) panel
+
 Fix Alpha Bleed is a utility tool that edits the source image to set transparent pixels to a specified colour, to fix some cases of visible edges on transparent cutout materials (the blender 'premultiply alpha' setting can fix this without editing the source image, but .GLB exports don't support this flag).
 
 Alt Left Mouse tries to seamlessly tile textures across different faces and around corners.

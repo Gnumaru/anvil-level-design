@@ -1,5 +1,9 @@
 # Anvil Level Design Changelog
 
+## 1.2.3
+- Reorganise N panels
+- Introduce default material settings
+
 ## 1.2.2
 - Add BOX BUILDER
 - Cube Cut and Box Builder can make rotated construction boxes by holding shift

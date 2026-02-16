@@ -441,6 +441,32 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         default=False,
     )
 
+    # === Default Material Settings ===
+    default_interpolation: EnumProperty(
+        name="Default Interpolation",
+        description="Interpolation mode for new materials",
+        items=[
+            ('Closest', "Closest", "No interpolation (pixelated)"),
+            ('Linear', "Linear", "Linear interpolation (smooth)"),
+        ],
+        default='Linear',
+    )
+
+    default_texture_as_alpha: BoolProperty(
+        name="Texture as Alpha",
+        description="Connect texture alpha to material alpha for new materials",
+        default=False,
+    )
+
+    default_roughness: FloatProperty(
+        name="Roughness",
+        description="Roughness value for new materials",
+        default=0.5,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+    )
+
     # === Export Properties (last used settings) ===
     last_export_filepath: StringProperty(
         name="Last Export Path",
