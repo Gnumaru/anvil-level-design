@@ -21,7 +21,10 @@ from ..utils import (
     get_all_hotspot_faces,
 )
 from ..properties import apply_uv_to_face
-from ..handlers import cache_single_face, get_active_image, set_active_image, redraw_ui_panels
+from ..handlers import (
+    cache_single_face, get_active_image, set_active_image, redraw_ui_panels,
+    update_ui_from_selection, update_active_image_from_face,
+)
 
 
 def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me, obj_matrix):
@@ -198,12 +201,22 @@ class apply_image_to_face(Operator):
 
         obj = context.object
         if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
-            return {'CANCELLED'}
+            return {'PASS_THROUGH'}
+
+        # Only work in face select mode
+        if not context.tool_settings.mesh_select_mode[2]:
+            return {'PASS_THROUGH'}
 
         image = get_active_image()
         if not image:
-            self.report({'WARNING'}, "No active texture (select a face or image in File Browser)")
-            return {'CANCELLED'}
+            return {'PASS_THROUGH'}
+
+        # Require exactly 1 face selected
+        bm_check = bmesh.from_edit_mesh(obj.data)
+        bm_check.faces.ensure_lookup_table()
+        selected_count = sum(1 for f in bm_check.faces if f.select)
+        if selected_count != 1:
+            return {'PASS_THROUGH'}
 
         # Raycast using BVHTree on the bmesh (scene.ray_cast returns wrong face indices in edit mode)
         region = context.region
@@ -330,16 +343,30 @@ class apply_image_to_face(Operator):
 
 
 class pick_image_from_face(Operator):
-    """Pick active image from hovered face (works across all visible objects)"""
+    """Pick texture from hovered face and apply to selected faces"""
     bl_idname = "leveldesign.pick_image_from_face"
-    bl_label = "Pick Image from Face"
-    bl_options = {'INTERNAL'}
+    bl_label = "Pick and Apply Texture"
+    bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
         return is_level_design_workspace()
 
     def invoke(self, context, event):
+        from ..hotspot_mapping.json_storage import is_texture_hotspottable
+        from .uv_tools import apply_hotspots_to_mesh
+
+        # Require edit mode with faces selected
+        edit_obj = context.object
+        if not edit_obj or edit_obj.type != 'MESH' or context.mode != 'EDIT_MESH':
+            return {'PASS_THROUGH'}
+
+        bm_edit = bmesh.from_edit_mesh(edit_obj.data)
+        bm_edit.faces.ensure_lookup_table()
+        selected_faces = [f for f in bm_edit.faces if f.select]
+        if not selected_faces:
+            return {'PASS_THROUGH'}
+
         # Get ray from mouse position
         region = context.region
         rv3d = context.region_data
@@ -418,21 +445,115 @@ class pick_image_from_face(Operator):
             return {'CANCELLED'}
 
         # Get material and extract image
-        me = hit_obj.data
-        mat = me.materials[hit_mat_index] if hit_mat_index < len(me.materials) else None
-        if not mat:
+        hit_me = hit_obj.data
+        hit_mat = hit_me.materials[hit_mat_index] if hit_mat_index < len(hit_me.materials) else None
+        if not hit_mat:
             self.report({'WARNING'}, "Face has no material")
             return {'CANCELLED'}
 
-        image = get_image_from_material(mat)
+        image = get_image_from_material(hit_mat)
         if not image:
             self.report({'WARNING'}, "Material has no image texture")
             return {'CANCELLED'}
 
-        # Set as active image
-        set_active_image(image)
+        # Apply the picked texture to all selected faces on the edit object
+        me = edit_obj.data
+        uv_layer = bm_edit.loops.layers.uv.verify()
+        props = context.scene.level_design_props
+        ppm = props.pixels_per_meter
+
+        # Check which selected faces previously had hotspottable textures
+        from ..utils import face_has_hotspot_material, any_connected_face_has_hotspot, get_all_hotspot_faces
+        faces_with_previous_hotspot = [f for f in selected_faces if face_has_hotspot_material(f, me)]
+        any_previous_was_hotspottable = len(faces_with_previous_hotspot) > 0
+
+        any_connected_has_hotspot = False
+        for f in selected_faces:
+            if any_connected_face_has_hotspot(f, me):
+                any_connected_has_hotspot = True
+                break
+
+        # Get or create material
+        mat = find_material_with_image(image)
+        if mat is None:
+            mat = create_material_with_image(image)
+
+        # Ensure material slot exists
+        if mat.name not in me.materials:
+            me.materials.append(mat)
+
+        mat_index = me.materials.find(mat.name)
+
+        # Assign material to all selected faces
+        for face in selected_faces:
+            face.material_index = mat_index
+
+        new_is_hotspottable = is_texture_hotspottable(image.name)
+
+        if props.auto_hotspot and new_is_hotspottable:
+            all_hotspot_faces = get_all_hotspot_faces(bm_edit, me)
+
+            if all_hotspot_faces:
+                selected_face_indices = {f.index for f in bm_edit.faces if f.select}
+                active_face_index = bm_edit.faces.active.index if bm_edit.faces.active else None
+
+                seam_mode = props.hotspot_seam_mode
+                allow_combined_faces = edit_obj.anvil_allow_combined_faces
+                size_weight = edit_obj.anvil_hotspot_size_weight
+
+                apply_hotspots_to_mesh(
+                    bm_edit, me, all_hotspot_faces, seam_mode, allow_combined_faces,
+                    edit_obj.matrix_world, ppm, size_weight
+                )
+
+                bm_edit.faces.ensure_lookup_table()
+                for face in bm_edit.faces:
+                    face.select = face.index in selected_face_indices
+                if active_face_index is not None and active_face_index < len(bm_edit.faces):
+                    bm_edit.faces.active = bm_edit.faces[active_face_index]
+
+                for face in all_hotspot_faces:
+                    if face.is_valid:
+                        cache_single_face(face, uv_layer, ppm, me)
+        elif props.auto_hotspot and not new_is_hotspottable and any_previous_was_hotspottable and any_connected_has_hotspot:
+            all_hotspot_faces = get_all_hotspot_faces(bm_edit, me)
+
+            if all_hotspot_faces:
+                selected_face_indices = {f.index for f in bm_edit.faces if f.select}
+                active_face_index = bm_edit.faces.active.index if bm_edit.faces.active else None
+
+                seam_mode = props.hotspot_seam_mode
+                allow_combined_faces = edit_obj.anvil_allow_combined_faces
+                size_weight = edit_obj.anvil_hotspot_size_weight
+
+                apply_hotspots_to_mesh(
+                    bm_edit, me, all_hotspot_faces, seam_mode, allow_combined_faces,
+                    edit_obj.matrix_world, ppm, size_weight
+                )
+
+                bm_edit.faces.ensure_lookup_table()
+                for face in bm_edit.faces:
+                    face.select = face.index in selected_face_indices
+                if active_face_index is not None and active_face_index < len(bm_edit.faces):
+                    bm_edit.faces.active = bm_edit.faces[active_face_index]
+
+                for face in all_hotspot_faces:
+                    if face.is_valid:
+                        cache_single_face(face, uv_layer, ppm, me)
+
+            from ..handlers import _apply_regular_uv_projection
+            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me)
+        else:
+            from ..handlers import _apply_regular_uv_projection
+            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me)
+
+        bmesh.update_edit_mesh(me)
+
+        # Update UI state
+        update_ui_from_selection(context)
+        update_active_image_from_face(context)
         redraw_ui_panels(context)
-        self.report({'INFO'}, f"Active image: {image.name}")
+        self.report({'INFO'}, f"Applied: {image.name}")
 
         return {'FINISHED'}
 

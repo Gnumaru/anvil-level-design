@@ -46,6 +46,43 @@ from .properties import set_updating_from_selection, sync_scale_tracking, apply_
 _auto_hotspot_pending = False
 _force_auto_hotspot = False
 
+# Multi-face selection state tracking
+_multi_face_mode = False
+_multi_face_unset_scale = False
+_multi_face_unset_rotation = False
+_multi_face_unset_offset = False
+
+
+def get_multi_face_mode():
+    return _multi_face_mode
+
+
+def is_multi_face_unset_scale():
+    return _multi_face_unset_scale
+
+
+def is_multi_face_unset_rotation():
+    return _multi_face_unset_rotation
+
+
+def is_multi_face_unset_offset():
+    return _multi_face_unset_offset
+
+
+def mark_multi_face_set_scale():
+    global _multi_face_unset_scale
+    _multi_face_unset_scale = False
+
+
+def mark_multi_face_set_rotation():
+    global _multi_face_unset_rotation
+    _multi_face_unset_rotation = False
+
+
+def mark_multi_face_set_offset():
+    global _multi_face_unset_offset
+    _multi_face_unset_offset = False
+
 # Track undo operations to skip depsgraph handling during undo
 _undo_in_progress = False
 # Track when cache was invalidated by undo/redo (not an actual topology change)
@@ -385,8 +422,54 @@ def cache_face_data(context):
     last_vertex_count = len(bm.verts)
 
 
+def _check_multi_face_consistency(selected_faces, uv_layer, ppm, me, first_transform):
+    """Check if all selected faces share the same transform values.
+
+    Clears the unset flags for any property group where all faces agree.
+    """
+    global _multi_face_unset_scale, _multi_face_unset_rotation, _multi_face_unset_offset
+
+    TOLERANCE = 0.01
+
+    scale_consistent = True
+    rotation_consistent = True
+    offset_consistent = True
+
+    for face in selected_faces[1:]:
+        transform = derive_transform_from_uvs(face, uv_layer, ppm, me)
+        if not transform:
+            continue
+
+        if scale_consistent:
+            if (abs(transform['scale_u'] - first_transform['scale_u']) > TOLERANCE or
+                    abs(transform['scale_v'] - first_transform['scale_v']) > TOLERANCE):
+                scale_consistent = False
+
+        if rotation_consistent:
+            if abs(transform['rotation'] - first_transform['rotation']) > TOLERANCE:
+                rotation_consistent = False
+
+        if offset_consistent:
+            if (abs(transform['offset_x'] - first_transform['offset_x']) > TOLERANCE or
+                    abs(transform['offset_y'] - first_transform['offset_y']) > TOLERANCE):
+                offset_consistent = False
+
+        # Early out if all are inconsistent
+        if not scale_consistent and not rotation_consistent and not offset_consistent:
+            break
+
+    if scale_consistent:
+        _multi_face_unset_scale = False
+    if rotation_consistent:
+        _multi_face_unset_rotation = False
+    if offset_consistent:
+        _multi_face_unset_offset = False
+
+
 def update_ui_from_selection(context):
     """Update UI properties when selection changes"""
+    global _multi_face_mode, _multi_face_unset_scale, _multi_face_unset_rotation, _multi_face_unset_offset
+
     if context.mode != 'EDIT_MESH':
         return
 
@@ -405,6 +488,17 @@ def update_ui_from_selection(context):
     props = context.scene.level_design_props
 
     selected_faces = [f for f in bm.faces if f.select]
+
+    if len(selected_faces) > 1:
+        _multi_face_mode = True
+        _multi_face_unset_scale = True
+        _multi_face_unset_rotation = True
+        _multi_face_unset_offset = True
+    else:
+        _multi_face_mode = False
+        _multi_face_unset_scale = False
+        _multi_face_unset_rotation = False
+        _multi_face_unset_offset = False
 
     set_updating_from_selection(True)
 
@@ -429,6 +523,10 @@ def update_ui_from_selection(context):
                     props.texture_rotation = transform['rotation']
                     props.texture_offset_x = transform['offset_x']
                     props.texture_offset_y = transform['offset_y']
+
+                    # For multi-face: check if all faces share the same values
+                    if _multi_face_mode and transform:
+                        _check_multi_face_consistency(selected_faces, uv_layer, ppm, me, transform)
             else:
                 # Default material - show neutral values
                 props.texture_scale_u = 1.0
@@ -705,17 +803,34 @@ def check_selection_changed(bm):
 
 
 def update_active_image_from_face(context):
-    """Update the active image based on the active face's material."""
+    """Update the active image based on the active face's material.
+
+    Clears the active image if not in edit mode, no faces are selected,
+    or the active face has no image material.
+    """
     try:
         obj = context.object
         if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
+            set_active_image(None)
+            return
+
+        # Require face select mode
+        if not context.tool_settings.mesh_select_mode[2]:
+            set_active_image(None)
             return
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
 
+        # Check if any faces are selected
+        selected_faces = [f for f in bm.faces if f.select]
+        if not selected_faces:
+            set_active_image(None)
+            return
+
         active_face = bm.faces.active
         if not active_face:
+            set_active_image(None)
             return
 
         # Get the material on this face
@@ -726,8 +841,36 @@ def update_active_image_from_face(context):
             image = get_image_from_material(mat)
             if image:
                 set_active_image(image)
+            else:
+                set_active_image(None)
+        else:
+            set_active_image(None)
     except Exception:
         pass  # Silently fail to avoid disrupting user workflow
+
+
+def get_selected_faces_share_image(obj, bm, me):
+    """Check if all selected faces share the same image texture.
+
+    Returns (shared, image) where shared is True if all selected faces
+    have the same image, and image is that shared image (or None).
+    """
+    selected_faces = [f for f in bm.faces if f.select]
+    if not selected_faces:
+        return False, None
+
+    first_image = None
+    for face in selected_faces:
+        mat_index = face.material_index
+        mat = me.materials[mat_index] if mat_index < len(me.materials) else None
+        image = get_image_from_material(mat) if mat else None
+
+        if first_image is None:
+            first_image = image
+        elif image != first_image:
+            return False, None
+
+    return True, first_image
 
 
 def apply_texture_from_file_browser():
@@ -754,13 +897,6 @@ def apply_texture_from_file_browser():
         if not os.path.isfile(current_path):
             return
 
-        # Load the image and set as active
-        try:
-            image = bpy.data.images.load(current_path, check_existing=True)
-            set_active_image(image)
-        except RuntimeError:
-            return
-
         # Only apply to faces if in edit mode on a mesh with selected faces
         if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
             return
@@ -770,6 +906,12 @@ def apply_texture_from_file_browser():
         selected_faces = [f for f in bm.faces if f.select]
 
         if not selected_faces:
+            return
+
+        # Load the image (only after confirming faces are selected)
+        try:
+            image = bpy.data.images.load(current_path, check_existing=True)
+        except RuntimeError:
             return
 
         uv_layer = bm.loops.layers.uv.verify()
@@ -880,6 +1022,9 @@ def apply_texture_from_file_browser():
 
         # Update UI to reflect the new UVs
         update_ui_from_selection(context)
+        # Derive active image from the face (now that it has the new material)
+        update_active_image_from_face(context)
+        redraw_ui_panels(context)
 
     except Exception as e:
         print(f"Anvil Level Design: Error applying texture from file browser: {e}")
@@ -1378,7 +1523,7 @@ def register():
 
 
 def unregister():
-    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph, _was_first_save, _auto_hotspot_pending, _undo_in_progress
+    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph, _was_first_save, _auto_hotspot_pending, _undo_in_progress, _multi_face_mode, _multi_face_unset_scale, _multi_face_unset_rotation, _multi_face_unset_offset
 
     # Stop the file browser watcher timer
     _file_browser_watcher_running = False
@@ -1420,3 +1565,7 @@ def unregister():
     _active_image = None
     _file_loaded_into_edit_depsgraph = False
     _was_first_save = False
+    _multi_face_mode = False
+    _multi_face_unset_scale = False
+    _multi_face_unset_rotation = False
+    _multi_face_unset_offset = False

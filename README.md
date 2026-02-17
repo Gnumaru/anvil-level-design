@@ -26,9 +26,9 @@ You can see and remap addon hotkeys in addon preferences.
 
 Select a face and Alt Left Mouse button to apply the same material to another face.
 
-Select an image file in the file browser and Alt Left Mouse button to apply the image as a material to a face.
+With a face selected, choose an image file in the file browser to apply it.
 
-Pick a material from a face without selecting it (including from different objects) using Alt Right Mouse
+With a face selected, use Alt Right Mouse to pick a texture from another face (including from different objects).
 
 Anvil LD manages materials to prevent duplicates. Use the Cleanup Unused Materials buttons if unused materials become bothersome.
 

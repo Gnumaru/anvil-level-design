@@ -10,7 +10,14 @@ from ..utils import (
     is_texture_alpha_connected,
     is_level_design_workspace,
 )
-from ..handlers import get_active_image
+from ..handlers import (
+    get_active_image,
+    get_multi_face_mode,
+    is_multi_face_unset_scale,
+    is_multi_face_unset_rotation,
+    is_multi_face_unset_offset,
+    get_selected_faces_share_image,
+)
 
 
 class LEVELDESIGN_PT_grid_panel(Panel):
@@ -91,28 +98,37 @@ class LEVELDESIGN_PT_uv_settings_panel(Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.level_design_props
-        has_selection = get_selected_face_count(context) > 0
+        in_face_mode = (context.mode == 'EDIT_MESH' and
+                        context.tool_settings.mesh_select_mode[2])
+        has_selection = in_face_mode and get_selected_face_count(context) > 0
+        multi_face = has_selection and get_multi_face_mode()
 
         col = layout.column(align=True)
+
         col.enabled = has_selection
 
-        # Scale row with link toggle - always show the same UI
-        row = col.row(align=True)
-        row.prop(props, "texture_scale_u")
-        row.prop(props, "texture_scale_v")
-        row.prop(
+        # Scale row with link toggle
+        scale_row = col.row(align=True)
+        scale_row.alert = multi_face and is_multi_face_unset_scale()
+        scale_row.prop(props, "texture_scale_u")
+        scale_row.prop(props, "texture_scale_v")
+        scale_row.prop(
             props,
             "texture_scale_linked",
             text="",
             icon='LINKED' if props.texture_scale_linked else 'UNLINKED',
         )
 
-        col.prop(props, "texture_rotation")
+        # Rotation
+        rot_row = col.row(align=True)
+        rot_row.alert = multi_face and is_multi_face_unset_rotation()
+        rot_row.prop(props, "texture_rotation")
 
         # Offset row
-        row = col.row(align=True)
-        row.prop(props, "texture_offset_x")
-        row.prop(props, "texture_offset_y")
+        off_row = col.row(align=True)
+        off_row.alert = multi_face and is_multi_face_unset_offset()
+        off_row.prop(props, "texture_offset_x")
+        off_row.prop(props, "texture_offset_y")
 
 
 class LEVELDESIGN_PT_uv_shortcuts_panel(Panel):
@@ -219,11 +235,33 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
         return is_level_design_workspace()
 
     def draw(self, context):
+        import bmesh
+
         layout = self.layout
 
-        image = get_active_image()
+        in_face_mode = (context.mode == 'EDIT_MESH' and
+                        context.tool_settings.mesh_select_mode[2])
+        image = get_active_image() if in_face_mode else None
+        multi_face = in_face_mode and get_multi_face_mode()
 
-        if image:
+        # In multi-face mode, check if all selected faces share the same image
+        show_multi_texture_placeholder = False
+        if multi_face and image is not None:
+            obj = context.object
+            if obj and obj.type == 'MESH' and context.mode == 'EDIT_MESH':
+                bm = bmesh.from_edit_mesh(obj.data)
+                bm.faces.ensure_lookup_table()
+                shared, shared_image = get_selected_faces_share_image(obj, bm, obj.data)
+                if not shared:
+                    show_multi_texture_placeholder = True
+                    image = None  # Don't show preview for mixed textures
+
+        if show_multi_texture_placeholder:
+            layout.label(text="Multiple textures")
+            box = layout.box()
+            box.scale_y = 8.0
+            box.label(text="")
+        elif image:
             layout.label(text=image.name)
             if image.preview:
                 icon_id = image.preview.icon_id
@@ -294,6 +332,9 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
             )
         else:
             layout.label(text="No texture selected")
+            box = layout.box()
+            box.scale_y = 8.0
+            box.label(text="")
 
 
 class LEVELDESIGN_PT_texture_settings_panel(Panel):

@@ -253,6 +253,9 @@ def update_texture_scale(self, context):
     if _updating_linked_scale or get_updating_from_selection():
         return
 
+    from .handlers import mark_multi_face_set_scale
+    mark_multi_face_set_scale()
+
     # Push undo if this is a new edit session (not mid-drag)
     current_time = time.time()
     if current_time - _last_scale_update_time > _UNDO_PUSH_THRESHOLD:
@@ -289,6 +292,9 @@ def update_texture_rotation(self, context):
     if _normalizing_rotation or get_updating_from_selection():
         return
 
+    from .handlers import mark_multi_face_set_rotation
+    mark_multi_face_set_rotation()
+
     # Push undo if this is a new edit session (not mid-drag)
     current_time = time.time()
     if current_time - _last_rotation_update_time > _UNDO_PUSH_THRESHOLD:
@@ -314,6 +320,9 @@ def update_texture_offset(self, context):
 
     if _normalizing_offset or get_updating_from_selection():
         return
+
+    from .handlers import mark_multi_face_set_offset
+    mark_multi_face_set_offset()
 
     # Push undo if this is a new edit session (not mid-drag)
     current_time = time.time()

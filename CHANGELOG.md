@@ -3,6 +3,10 @@
 ## 1.2.3
 - Reorganise N panels
 - Introduce default material settings
+- Improve clarity of UI when multiple faces with conflicting textures and UV settings
+- Alt right click and file browser selection can now only apply images to selected faces (removed the concept of 'active image' when faces aren't selected)
+- Alt left click to apply texture to face only works when a single face is selected
+- Vertex and Edge select mode are always treated as 'no faces selected' for the purposes of the Anvil material workflow
 
 ## 1.2.2
 - Add BOX BUILDER
