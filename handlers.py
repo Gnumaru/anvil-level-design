@@ -1283,15 +1283,26 @@ def on_undo_post(scene):
     Clears the undo flag via timer to ensure depsgraph update has completed.
     Invalidates face caches since geometry state has changed.
     """
-    global last_face_count, last_vertex_count, _cache_invalidated_by_undo
+    global last_face_count, last_vertex_count, _cache_invalidated_by_undo, _last_selected_face_indices, _last_active_face_index
     # Invalidate face caches - geometry state has changed
     face_data_cache.clear()
     last_face_count = 0
     last_vertex_count = 0
     _cache_invalidated_by_undo = True
+    # Reset selection tracking so the next update detects a change
+    _last_selected_face_indices = set()
+    _last_active_face_index = -1
     # Use a short timer to ensure the depsgraph update triggered by undo
     # has completed before we clear the flag
     bpy.app.timers.register(_clear_undo_flag, first_interval=0.05)
+    # Refresh UI panels immediately
+    try:
+        context = bpy.context
+        update_ui_from_selection(context)
+        update_active_image_from_face(context)
+        redraw_ui_panels(context)
+    except Exception:
+        pass
 
 
 @persistent
@@ -1309,13 +1320,24 @@ def on_redo_post(scene):
     Clears the undo flag via timer to ensure depsgraph update has completed.
     Invalidates face caches since geometry state has changed.
     """
-    global last_face_count, last_vertex_count, _cache_invalidated_by_undo
+    global last_face_count, last_vertex_count, _cache_invalidated_by_undo, _last_selected_face_indices, _last_active_face_index
     # Invalidate face caches - geometry state has changed
     face_data_cache.clear()
     last_face_count = 0
     last_vertex_count = 0
     _cache_invalidated_by_undo = True
+    # Reset selection tracking so the next update detects a change
+    _last_selected_face_indices = set()
+    _last_active_face_index = -1
     bpy.app.timers.register(_clear_undo_flag, first_interval=0.05)
+    # Refresh UI panels immediately
+    try:
+        context = bpy.context
+        update_ui_from_selection(context)
+        update_active_image_from_face(context)
+        redraw_ui_panels(context)
+    except Exception:
+        pass
 
 
 @persistent
