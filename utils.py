@@ -5,7 +5,7 @@ from mathutils import Vector
 
 
 # Global debug logging toggle for the addon
-DEBUG_LOGGING = True
+DEBUG_LOGGING = False
 
 
 def debug_log(msg):
