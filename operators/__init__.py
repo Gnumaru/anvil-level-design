@@ -9,6 +9,7 @@ from . import pixels_per_meter
 from . import modal_draw
 from . import cube_cut
 from . import box_builder
+from . import backface_select
 
 
 def register():
@@ -23,9 +24,11 @@ def register():
     modal_draw.register()
     cube_cut.register()
     box_builder.register()
+    backface_select.register()
 
 
 def unregister():
+    backface_select.unregister()
     box_builder.unregister()
     cube_cut.unregister()
     modal_draw.unregister()
