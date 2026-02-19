@@ -112,6 +112,10 @@ It is important to have a wide variety of aspect ratios and sizes in your textur
 
 ### Geometry Tools
 
+#### Selection
+
+Anvil overrides some selection behaviours to ignore culled backfaces when not in x-ray mode.
+
 #### Cube Cut
 
 Press C in edit mode to enter cube cut mode.

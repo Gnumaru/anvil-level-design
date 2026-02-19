@@ -1,5 +1,8 @@
 # Anvil Level Design Changelog
 
+## 1.2.5
+- Selecting, texture application, cube cut and box builder all now ignore culled backfaces
+
 ## 1.2.4
 - Fix hotspot mapping orientation type icon sizing (probably)
 
