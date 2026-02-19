@@ -66,6 +66,28 @@ def register():
     kmi.properties.loop = True
     _addon_keymaps.append((km, kmi))
 
+    # Object mode keymaps
+    km_obj = kc.keymaps.new(name='Object Mode', space_type='EMPTY')
+
+    # Plain click
+    kmi = km_obj.keymap_items.new(
+        operator.LEVELDESIGN_OT_backface_object_select.bl_idname,
+        'LEFTMOUSE', 'CLICK',
+        head=True
+    )
+    kmi.properties.extend = False
+    _addon_keymaps.append((km_obj, kmi))
+
+    # Shift+click (extend selection)
+    kmi = km_obj.keymap_items.new(
+        operator.LEVELDESIGN_OT_backface_object_select.bl_idname,
+        'LEFTMOUSE', 'CLICK',
+        shift=True,
+        head=True
+    )
+    kmi.properties.extend = True
+    _addon_keymaps.append((km_obj, kmi))
+
 
 def unregister():
     for km, kmi in _addon_keymaps:

@@ -439,9 +439,58 @@ class LEVELDESIGN_OT_backface_select(Operator):
         return {'FINISHED'}
 
 
+class LEVELDESIGN_OT_backface_object_select(Operator):
+    """Select objects through backface-culled faces"""
+    bl_idname = "leveldesign.backface_object_select"
+    bl_label = "Backface-Aware Object Select"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    extend: bpy.props.BoolProperty()
+
+    @classmethod
+    def poll(cls, context):
+        if not is_level_design_workspace():
+            return False
+        return context.mode == 'OBJECT'
+
+    def invoke(self, context, event):
+        from .raycast import raycast_scene_skip_backfaces
+
+        region = context.region
+        rv3d = context.region_data
+        if rv3d is None:
+            return {'PASS_THROUGH'}
+
+        coord = (event.mouse_region_x, event.mouse_region_y)
+        view_vector = view3d_utils.region_2d_to_vector_3d(region, rv3d, coord)
+        ray_origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, coord)
+
+        depsgraph = context.evaluated_depsgraph_get()
+        hit, location, normal, face_index, obj, matrix = raycast_scene_skip_backfaces(
+            depsgraph, context.scene, ray_origin, view_vector, max_iterations=64
+        )
+
+        if not hit:
+            if not self.extend:
+                bpy.ops.object.select_all(action='DESELECT')
+            return {'FINISHED'}
+
+        original_obj = obj.original
+
+        if not self.extend:
+            bpy.ops.object.select_all(action='DESELECT')
+
+        original_obj.select_set(not original_obj.select_get() if self.extend else True)
+        context.view_layer.objects.active = original_obj
+
+        return {'FINISHED'}
+
+
 def register():
     bpy.utils.register_class(LEVELDESIGN_OT_backface_select)
+    bpy.utils.register_class(LEVELDESIGN_OT_backface_object_select)
 
 
 def unregister():
+    bpy.utils.unregister_class(LEVELDESIGN_OT_backface_object_select)
     bpy.utils.unregister_class(LEVELDESIGN_OT_backface_select)
