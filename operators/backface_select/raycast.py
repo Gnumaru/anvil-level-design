@@ -35,6 +35,7 @@ def raycast_bvh_skip_backfaces(bvh, ray_origin_local, ray_direction_local,
     Returns (location, normal, face_index, distance) or
             (None, None, None, None) if no visible face is hit.
     """
+
     origin = ray_origin_local.copy()
     total_distance = 0.0
     epsilon = 0.0001
@@ -70,6 +71,7 @@ def raycast_bvh_skip_backfaces_polys(bvh, ray_origin_local, ray_direction_local,
     Returns (location, normal, face_index, distance) or
             (None, None, None, None) if no visible face is hit.
     """
+
     origin = ray_origin_local.copy()
     total_distance = 0.0
     epsilon = 0.0001
@@ -103,6 +105,7 @@ def raycast_scene_skip_backfaces(depsgraph, scene, origin, direction,
     Returns (hit, location, normal, face_index, object, matrix) matching
     the format of scene.ray_cast().
     """
+
     current_origin = origin.copy()
     epsilon = 0.0001
 

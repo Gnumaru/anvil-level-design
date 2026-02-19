@@ -116,6 +116,10 @@ It is important to have a wide variety of aspect ratios and sizes in your textur
 
 Anvil overrides some selection behaviours to ignore culled backfaces when not in x-ray mode.
 
+This works for box select and lasso select when single clicking, shift clicking, and alt clicking on items. 
+
+Due to blender api limitations it does not work for box selecting or lasso-ing items, and it does not work with circle select or the tweak tool.
+
 #### Cube Cut
 
 Press C in edit mode to enter cube cut mode.

@@ -194,6 +194,19 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                                             kmi.properties.direction == kmi_addon.properties.direction):
                                             kmi_user = kmi
                                             break
+                                    elif kmi_addon.idname in ("leveldesign.backface_select",
+                                                              "leveldesign.backface_object_select"):
+                                        # Match on extend + loop properties
+                                        props_match = True
+                                        for prop_name in ("extend", "loop"):
+                                            if (hasattr(kmi_addon.properties, prop_name) and
+                                                hasattr(kmi.properties, prop_name)):
+                                                if getattr(kmi_addon.properties, prop_name) != getattr(kmi.properties, prop_name):
+                                                    props_match = False
+                                                    break
+                                        if props_match:
+                                            kmi_user = kmi
+                                            break
                                     else:
                                         kmi_user = kmi
                                         break
@@ -206,6 +219,21 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                             display_name = f"{base_name} - {kmi_addon.properties.view_type.title()}"
                         elif kmi_addon.idname == "leveldesign.freelook_movement_key" and hasattr(kmi_addon.properties, "direction"):
                             display_name = f"Freelook {kmi_addon.properties.direction.title()}"
+                        elif kmi_addon.idname == "leveldesign.backface_select":
+                            extend = getattr(kmi_addon.properties, "extend", False)
+                            loop = getattr(kmi_addon.properties, "loop", False)
+                            if loop and extend:
+                                suffix = "Extend Loop"
+                            elif loop:
+                                suffix = "Loop"
+                            elif extend:
+                                suffix = "Extend"
+                            else:
+                                suffix = "Click"
+                            display_name = f"Select ({suffix})"
+                        elif kmi_addon.idname == "leveldesign.backface_object_select":
+                            extend = getattr(kmi_addon.properties, "extend", False)
+                            display_name = f"Object Select ({'Extend' if extend else 'Click'})"
                         else:
                             # Add keymap context in brackets for mode-based differentiation
                             display_name = f"{base_name} ({km_addon.name})"

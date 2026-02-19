@@ -251,7 +251,7 @@ def _raycast_element_aware(bvh, ray_origin_local, ray_direction_local,
     return None, None, None
 
 
-def _do_loop_select(bm, me, face, hit_point, extend, target_edge_override):
+def _do_edge_loop_select(bm, me, face, hit_point, extend, target_edge_override):
     """Perform edge loop selection from the nearest edge on the hit face."""
     if target_edge_override is not None:
         target_edge = target_edge_override
@@ -260,7 +260,6 @@ def _do_loop_select(bm, me, face, hit_point, extend, target_edge_override):
     if target_edge is None:
         return
 
-    # Save current selection if extending
     saved_vert_sel = None
     saved_edge_sel = None
     saved_face_sel = None
@@ -269,7 +268,6 @@ def _do_loop_select(bm, me, face, hit_point, extend, target_edge_override):
         saved_edge_sel = {e.index for e in bm.edges if e.select}
         saved_face_sel = {f.index for f in bm.faces if f.select}
 
-    # Deselect all, select target edge, update mesh for the operator
     for v in bm.verts:
         v.select = False
     for e in bm.edges:
@@ -283,17 +281,14 @@ def _do_loop_select(bm, me, face, hit_point, extend, target_edge_override):
     bm.select_flush_mode()
     bmesh.update_edit_mesh(me)
 
-    # Use Blender's loop select
     bpy.ops.mesh.loop_multi_select(ring=False)
 
     if extend:
-        # Re-fetch bmesh after operator call
         bm = bmesh.from_edit_mesh(me)
         bm.verts.ensure_lookup_table()
         bm.edges.ensure_lookup_table()
         bm.faces.ensure_lookup_table()
 
-        # Restore saved selection on top of loop
         for v in bm.verts:
             if v.index in saved_vert_sel:
                 v.select = True
@@ -306,6 +301,67 @@ def _do_loop_select(bm, me, face, hit_point, extend, target_edge_override):
 
         bm.select_flush_mode()
         bmesh.update_edit_mesh(me)
+
+
+def _do_face_loop_select(bm, me, face, hit_point, extend, target_edge_override):
+    """Perform face loop selection from the nearest edge on the hit face.
+
+    A face loop is the strip of faces along an edge ring. We find the edge ring
+    from the nearest edge, then select faces that have 2+ edges in the ring.
+    """
+    if target_edge_override is not None:
+        target_edge = target_edge_override
+    else:
+        target_edge = _nearest_edge_on_face(hit_point, face)
+    if target_edge is None:
+        return
+
+    saved_face_sel = None
+    if extend:
+        saved_face_sel = {f.index for f in bm.faces if f.select}
+
+    # Deselect all, select target edge, get edge ring
+    for v in bm.verts:
+        v.select = False
+    for e in bm.edges:
+        e.select = False
+    for f in bm.faces:
+        f.select = False
+
+    target_edge.select = True
+    for v in target_edge.verts:
+        v.select = True
+    bm.select_flush_mode()
+    bmesh.update_edit_mesh(me)
+
+    # Get edge ring (face loops correspond to edge rings)
+    bpy.ops.mesh.loop_multi_select(ring=True)
+
+    # Re-fetch bmesh, collect ring edge indices
+    bm = bmesh.from_edit_mesh(me)
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    ring_edges = {e.index for e in bm.edges if e.select}
+
+    # Deselect all edges/verts
+    for v in bm.verts:
+        v.select = False
+    for e in bm.edges:
+        e.select = False
+
+    # Select faces that have 2+ edges in the ring (the face loop)
+    for f in bm.faces:
+        edge_count = sum(1 for e in f.edges if e.index in ring_edges)
+        if edge_count >= 2:
+            f.select = True
+
+    if extend:
+        for f in bm.faces:
+            if f.index in saved_face_sel:
+                f.select = True
+
+    bm.select_flush_mode()
+    bmesh.update_edit_mesh(me)
 
 
 class LEVELDESIGN_OT_backface_select(Operator):
@@ -377,20 +433,27 @@ class LEVELDESIGN_OT_backface_select(Operator):
 
         hit_point = location
 
-        # Alt+click: loop select (works in all modes)
+        # Alt+click: loop select
         if self.loop:
+            if is_vert_mode:
+                # No loop select in vertex mode — pass through to Blender default
+                return {'PASS_THROUGH'}
+
             # Determine the target edge for loop select
             if culled_element is not None:
                 if is_edge_mode:
                     loop_edge = culled_element
                 else:
-                    # Vert mode: pick the screen-nearest edge from the culled face
                     loop_edge, _ = _screen_nearest_edge_on_face(
                         face, region, rv3d, obj.matrix_world, mouse_2d
                     )
             else:
                 loop_edge = None
-            _do_loop_select(bm, me, face, hit_point, self.extend, loop_edge)
+
+            if is_face_mode:
+                _do_face_loop_select(bm, me, face, hit_point, self.extend, loop_edge)
+            else:
+                _do_edge_loop_select(bm, me, face, hit_point, self.extend, loop_edge)
             return {'FINISHED'}
 
         # Plain or Shift click
