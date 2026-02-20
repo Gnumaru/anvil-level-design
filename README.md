@@ -120,6 +120,8 @@ This works for box select and lasso select when single clicking, shift clicking,
 
 Due to blender api limitations it does not work for box selecting or lasso-ing items, and it does not work with circle select or the tweak tool.
 
+Ctrl Left mouse paint selects, which is similar to circle select (hold and drag to add crossed items to the selection) but respects backface culling.
+
 #### Cube Cut
 
 Press C in edit mode to enter cube cut mode.
