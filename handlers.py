@@ -1375,6 +1375,14 @@ def on_save_post(dummy):
 def on_load_post(dummy):
     """Handler called after a .blend file is loaded."""
     global _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph
+    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index
+    # Invalidate face caches - file state has changed
+    face_data_cache.clear()
+    last_face_count = 0
+    last_vertex_count = 0
+    # Reset selection tracking so the next depsgraph update detects the current selection
+    _last_selected_face_indices = set()
+    _last_active_face_index = -1
     # Reset watcher state on file load (modal was killed when file loaded)
     _file_browser_watcher_running = False
     # Reset last file browser path so first click applies regardless of previous session
