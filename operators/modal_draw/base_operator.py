@@ -187,6 +187,11 @@ class ModalDrawBase:
         # Header text
         self._update_header(context)
 
+        # Show preview immediately at current mouse position
+        self._last_mouse_region_pos = (event.mouse_region_x, event.mouse_region_y)
+        self._handle_mouse_move(context, event)
+        utils.tag_redraw_all_3d_views()
+
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
