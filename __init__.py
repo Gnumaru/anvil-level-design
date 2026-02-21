@@ -161,13 +161,40 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
         row.operator("leveldesign.restore_default_keybindings", text="Restore Defaults")
         layout.label(text="Context Menu is a default Blender item but is here because by default this addon remaps it", icon='INFO')
 
+        # Category definitions: order matters for display
+        CATEGORY_ORDER = ["Navigation", "Selection", "UV", "Tools", "Other"]
+        CATEGORY_MAP = {
+            "leveldesign.walk_navigation_hold": "Navigation",
+            "leveldesign.freelook_movement_key": "Navigation",
+            "leveldesign.ortho_view": "Navigation",
+            "leveldesign.ortho_pan": "Navigation",
+            "leveldesign.context_menu": "Navigation",
+            "leveldesign.backface_select": "Selection",
+            "leveldesign.backface_object_select": "Selection",
+            "leveldesign.backface_paint_select": "Selection",
+            "leveldesign.select_linked": "Selection",
+            "leveldesign.select_invalid_uvs": "Selection",
+            "leveldesign.face_uv_mode": "UV",
+            "leveldesign.face_aligned_project": "UV",
+            "leveldesign.align_uv": "UV",
+            "leveldesign.fit_to_face": "UV",
+            "leveldesign.force_apply_texture": "UV",
+            "leveldesign.apply_image_to_face": "UV",
+            "leveldesign.pick_image_from_face": "UV",
+            "leveldesign.grid_scale_up": "Tools",
+            "leveldesign.grid_scale_down": "Tools",
+            "leveldesign.line_mode_activate": "Tools",
+            "leveldesign.box_builder": "Tools",
+            "leveldesign.cube_cut": "Tools",
+        }
+
         wm = context.window_manager
         kc_addon = wm.keyconfigs.addon
         kc_user = wm.keyconfigs.user
         if kc_addon:
             # Collect all addon keymap items with context
             # We iterate addon keymaps to find our items, then look up the user's version
-            keymap_entries = []
+            categorized_entries = {cat: [] for cat in CATEGORY_ORDER}
             for km_addon in kc_addon.keymaps:
                 # Find the corresponding user keymap
                 km_user = kc_user.keymaps.get(km_addon.name) if kc_user else None
@@ -268,19 +295,24 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                             # Add keymap context in brackets for mode-based differentiation
                             display_name = f"{base_name} ({km_addon.name})"
 
-                        keymap_entries.append((display_name, km_addon, kmi_display))
+                        category = CATEGORY_MAP.get(kmi_addon.idname, "Other")
+                        categorized_entries[category].append((display_name, km_addon, kmi_display))
 
-            # Sort alphabetically by display name
-            keymap_entries.sort(key=lambda x: x[0].lower())
+            # Draw categorized entries
+            for category in CATEGORY_ORDER:
+                entries = categorized_entries[category]
+                if not entries:
+                    continue
+                entries.sort(key=lambda x: x[0].lower())
 
-            # Draw sorted entries
-            for display_name, km, kmi in keymap_entries:
-                col = layout.column()
-                row = col.row(align=True)
-                row.label(text=display_name)
-                row.prop(kmi, "map_type", text="")
-                row.prop(kmi, "type", text="", full_event=True)
-                row.prop(kmi, "active", text="", emboss=False)
+                box = layout.box()
+                box.label(text=category)
+                for display_name, km, kmi in entries:
+                    row = box.row(align=True)
+                    row.label(text=display_name)
+                    row.prop(kmi, "map_type", text="")
+                    row.prop(kmi, "type", text="", full_event=True)
+                    row.prop(kmi, "active", text="", emboss=False)
 
 
 def register():

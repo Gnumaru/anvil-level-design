@@ -7,6 +7,8 @@
 - Cube cut and box builder grids should appear immediately (before mouse move)
 - Add keybindings (default none) for UV shortcuts
 - (Hidden) select invalid UVs
+- Gated some tools to Level Design / Hotspot Mapping workspace that were missed
+- Organise the keybindings section in the addon preferences into sections
 
 ## 1.2.5
 - Selecting, texture application, cube cut and box builder all now ignore culled backfaces
