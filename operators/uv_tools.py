@@ -1203,7 +1203,7 @@ class LEVELDESIGN_OT_face_aligned_project(Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.object and context.object.type == 'MESH' and context.mode in {'EDIT_MESH', 'OBJECT'}
+        return is_level_design_workspace() and context.object and context.object.type == 'MESH' and context.mode in {'EDIT_MESH', 'OBJECT'}
 
     def execute(self, context):
         obj = context.object
@@ -1312,7 +1312,7 @@ class LEVELDESIGN_OT_align_uv(Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.object and context.object.type == 'MESH' and context.mode in {'EDIT_MESH', 'OBJECT'}
+        return is_level_design_workspace() and context.object and context.object.type == 'MESH' and context.mode in {'EDIT_MESH', 'OBJECT'}
 
     def execute(self, context):
         obj = context.object
@@ -1394,7 +1394,7 @@ class LEVELDESIGN_OT_fit_to_face(Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.object and context.object.type == 'MESH' and context.mode in {'EDIT_MESH', 'OBJECT'}
+        return is_level_design_workspace() and context.object and context.object.type == 'MESH' and context.mode in {'EDIT_MESH', 'OBJECT'}
 
     def execute(self, context):
         obj = context.object

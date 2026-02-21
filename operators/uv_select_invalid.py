@@ -2,6 +2,8 @@ import bpy
 import bmesh
 from bpy.types import Operator
 
+from ..utils import is_level_design_workspace
+
 
 class LEVELDESIGN_OT_select_invalid_uvs(Operator):
     """Select all faces with zero-area UVs"""
@@ -11,7 +13,7 @@ class LEVELDESIGN_OT_select_invalid_uvs(Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.object and context.object.type == 'MESH' and context.mode in {'EDIT_MESH', 'OBJECT'}
+        return is_level_design_workspace() and context.object and context.object.type == 'MESH' and context.mode in {'EDIT_MESH', 'OBJECT'}
 
     def execute(self, context):
         obj = context.object

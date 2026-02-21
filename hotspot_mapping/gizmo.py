@@ -161,6 +161,9 @@ def _check_tool_change():
         if not context or not context.workspace:
             return 0.25
 
+        if not is_hotspot_mapping_workspace():
+            return 0.25
+
         tool = context.workspace.tools.from_space_image_mode('VIEW')
         current_idname = tool.idname if tool else None
 
