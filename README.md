@@ -175,7 +175,6 @@ Hold shift on first click to start with a line (allows rotated built boxes).
 
 Hold ctrl to lock the axis, allowing you to move the cursor off a given face while keeping the same draw plane.
 
-
 ### Camera and Viewport Tools
 
 Hotkeys are intended to be blender default.
@@ -253,3 +252,10 @@ For a more convenient experience I recommend you consider adjusting the followin
 * Box selection, lasso selection, circle selection, and individual selection in tweak mode all do respect backface culling. This limitation is primarily due to the ways we can override existing operators
 * Blender has built in UV correct: correct face attributes. It defaults to off. It doesn't work well when extruding faces orthoganally
 * Blender has built in UV correct: correct UV (vertex and edge slide). It defaults to on. It mostly works well but has a few annoyances (sometimes just doesn't work; base UV is affected by initial move when using the G hotkey). It also (guess) causes face data to move in memory, causing crashes when Anvil UV is working. UV correct is not exposed via Python, so we disable it by directly accessing blender memory. Brittle!
+
+## Undocumented
+
+Ok, the fact it's here means it's documented. This section is for stuff that is experimental / may be removed.
+
+* UV Shortcuts can be keybound but currently don't have defaults
+* THere is a hidden select 0 area UVs operator that can be keybound

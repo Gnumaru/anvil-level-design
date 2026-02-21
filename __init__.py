@@ -262,6 +262,8 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                             display_name = f"UV Align ({direction.title()})"
                         elif kmi_addon.idname == "leveldesign.fit_to_face":
                             display_name = "Fit to Face"
+                        elif kmi_addon.idname == "leveldesign.select_invalid_uvs":
+                            display_name = "Select Invalid UVs"
                         else:
                             # Add keymap context in brackets for mode-based differentiation
                             display_name = f"{base_name} ({km_addon.name})"

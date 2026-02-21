@@ -11,6 +11,7 @@ from . import cube_cut
 from . import box_builder
 from . import backface_select
 from . import select_linked
+from . import uv_select_invalid
 
 
 def register():
@@ -27,9 +28,11 @@ def register():
     box_builder.register()
     backface_select.register()
     select_linked.register()
+    uv_select_invalid.register()
 
 
 def unregister():
+    uv_select_invalid.unregister()
     select_linked.unregister()
     backface_select.unregister()
     box_builder.unregister()

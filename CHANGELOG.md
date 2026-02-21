@@ -6,6 +6,7 @@
 - Prevent cube cut and box builder being active at the same time
 - Cube cut and box builder grids should appear immediately (before mouse move)
 - Add keybindings (default none) for UV shortcuts
+- (Hidden) select invalid UVs
 
 ## 1.2.5
 - Selecting, texture application, cube cut and box builder all now ignore culled backfaces
