@@ -1932,6 +1932,29 @@ def register():
         )
         addon_keymaps.append((km, kmi))
 
+        # UV shortcut keymaps (unbound by default)
+        kmi = km.keymap_items.new(
+            "leveldesign.face_aligned_project",
+            'NONE', 'PRESS',
+            head=True
+        )
+        addon_keymaps.append((km, kmi))
+
+        kmi = km.keymap_items.new(
+            "leveldesign.align_uv",
+            'NONE', 'PRESS',
+            head=True
+        )
+        kmi.properties.direction = 'CENTER'
+        addon_keymaps.append((km, kmi))
+
+        kmi = km.keymap_items.new(
+            "leveldesign.fit_to_face",
+            'NONE', 'PRESS',
+            head=True
+        )
+        addon_keymaps.append((km, kmi))
+
 
 def unregister():
     # Remove keymaps

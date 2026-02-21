@@ -5,6 +5,7 @@
 - Hold Ctrl at the start of a box build or cube cut to lock the axis
 - Prevent cube cut and box builder being active at the same time
 - Cube cut and box builder grids should appear immediately (before mouse move)
+- Add keybindings (default none) for UV shortcuts
 
 ## 1.2.5
 - Selecting, texture application, cube cut and box builder all now ignore culled backfaces

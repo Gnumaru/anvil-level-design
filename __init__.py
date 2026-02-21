@@ -200,6 +200,12 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                                             kmi.properties.normal_mode == kmi_addon.properties.normal_mode):
                                             kmi_user = kmi
                                             break
+                                    elif kmi_addon.idname == "leveldesign.align_uv":
+                                        if (hasattr(kmi.properties, "direction") and
+                                            hasattr(kmi_addon.properties, "direction") and
+                                            kmi.properties.direction == kmi_addon.properties.direction):
+                                            kmi_user = kmi
+                                            break
                                     elif kmi_addon.idname in ("leveldesign.backface_select",
                                                               "leveldesign.backface_object_select"):
                                         # Match on extend + loop properties
@@ -249,6 +255,13 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                         elif kmi_addon.idname == "leveldesign.backface_object_select":
                             extend = getattr(kmi_addon.properties, "extend", False)
                             display_name = f"Object Select ({'Extend' if extend else 'Click'})"
+                        elif kmi_addon.idname == "leveldesign.face_aligned_project":
+                            display_name = "Face Aligned Project"
+                        elif kmi_addon.idname == "leveldesign.align_uv":
+                            direction = getattr(kmi_addon.properties, "direction", "CENTER")
+                            display_name = f"UV Align ({direction.title()})"
+                        elif kmi_addon.idname == "leveldesign.fit_to_face":
+                            display_name = "Fit to Face"
                         else:
                             # Add keymap context in brackets for mode-based differentiation
                             display_name = f"{base_name} ({km_addon.name})"
