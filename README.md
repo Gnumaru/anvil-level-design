@@ -8,7 +8,7 @@ Anvil LD is particularly inspired by Trenchbroom.
 
 Anvil LD is a hobby project. It is likely buggy.
 
-## Installation & Use
+## Installation
 
 Download the zip from github: on the main github screen click code -> Download zip.
 
@@ -16,9 +16,21 @@ Edit -> Preferences -> v arrow -> Install From Disk -> Select the zip file
 
 (For the avoidance of doubt, the zip should contain \_\_init.py\_\_ at the root.)
 
+## Quick Start
+
 Anvil adds new workspaces 'Hotspot Mapping' and 'Level Design.' You must be in those workspaces to use Anvil features. If you lose them, go to addon preferences -> Anvil -> Create X Workspace.
 
-You can see and remap addon hotkeys in addon preferences.
+You can remap addon hotkeys in the addon preferences; they are collected there for your convenience. Common keys to remap or turn off are camera and texture application tools.
+
+Move around using the right mouse button.
+Press B to experiment with adding cubes. Object and edit mode.
+Press L to select connected faces; useful when added multiple cubes in edit mode and want to select them separately.
+Press C to experiment with cutting cubes. Edit mode only.
+Apply your first texture by highlighting a face and choosing an image in the file browser.
+Select a textured face and Alt Left Click another face to copy the texture over. 
+Select a textured face and press T to enter Texture Mode; move the mouse to different edges to snap the texture to that edge.
+
+More details below!
 
 ## Features
 
