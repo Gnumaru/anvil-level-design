@@ -1,5 +1,8 @@
 # Anvil Level Design Changelog
 
+## 1.2.8
+- Swapped Level Design and Hotspot Mapping workspaces
+
 ## 1.2.7
 - Add debug logging
 
