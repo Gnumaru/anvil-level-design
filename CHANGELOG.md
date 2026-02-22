@@ -1,5 +1,8 @@
 # Anvil Level Design Changelog
 
+## 1.2.7
+- Add debug logging
+
 ## 1.2.6
 - Add Anvil's own SELECT CONNECTED
 - Hold Ctrl at the start of a box build or cube cut to lock the axis
