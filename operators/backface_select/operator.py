@@ -502,6 +502,21 @@ class LEVELDESIGN_OT_backface_select(Operator):
         return {'FINISHED'}
 
 
+def _resolve_select_target(depsgraph, hit_obj):
+    """Resolve a raycast hit to the object that should be selected.
+
+    If the hit object is part of a collection instance, returns the
+    instancing empty. Otherwise returns the original object.
+    """
+    hit_original = hit_obj.original
+    for instance in depsgraph.object_instances:
+        if not instance.is_instance:
+            continue
+        if instance.object.original == hit_original:
+            return instance.parent.original
+    return hit_original
+
+
 class LEVELDESIGN_OT_backface_object_select(Operator):
     """Select objects through backface-culled faces"""
     bl_idname = "leveldesign.backface_object_select"
@@ -538,13 +553,13 @@ class LEVELDESIGN_OT_backface_object_select(Operator):
                 bpy.ops.object.select_all(action='DESELECT')
             return {'FINISHED'}
 
-        original_obj = obj.original
+        select_obj = _resolve_select_target(depsgraph, obj)
 
         if not self.extend:
             bpy.ops.object.select_all(action='DESELECT')
 
-        original_obj.select_set(not original_obj.select_get() if self.extend else True)
-        context.view_layer.objects.active = original_obj
+        select_obj.select_set(not select_obj.select_get() if self.extend else True)
+        context.view_layer.objects.active = select_obj
 
         return {'FINISHED'}
 

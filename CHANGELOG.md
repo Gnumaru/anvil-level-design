@@ -2,6 +2,7 @@
 
 ## 1.2.8
 - Swapped Level Design and Hotspot Mapping workspaces
+- Fix selecting instances (I hope)
 
 ## 1.2.7
 - Add debug logging
