@@ -30,7 +30,7 @@ def set_correct_uv_slide(enabled: bool):
         else:
             flag_ptr.contents.value &= ~_UVCALC_TRANSFORM_CORRECT_SLIDE
     except Exception as e:
-        print(f"Anvil Level Design: Failed to set correct_uv_slide (see method comments): {e}")
+        print(f"Anvil Level Design: Failed to set correct_uv_slide — offset {_UVCALC_FLAG_OFFSET} may be wrong for this platform/Blender version: {e}")
 
 from .utils import (
     get_image_from_material, derive_transform_from_uvs,
@@ -570,6 +570,7 @@ def apply_world_scale_uvs(obj, scene):
 
     # Skip if mesh data is not available or being modified
     if me is None or not me.is_editmode:
+        debug_log("[WorldScale] Skip: mesh not available or not in edit mode")
         return
 
     # Track modal operators to detect operation boundaries
@@ -583,20 +584,28 @@ def apply_world_scale_uvs(obj, scene):
     in_modal_operation = bool(current_modals)
     _tracked_modal_operators = current_modals
 
+    if current_modals:
+        debug_log(f"[WorldScale] Active modals: {current_modals}")
+    if modal_just_ended:
+        debug_log("[WorldScale] Modal just ended")
+
     try:
         bm = bmesh.from_edit_mesh(me)
     except (ReferenceError, RuntimeError):
         # BMesh is invalid or being modified
+        debug_log("[WorldScale] Skip: BMesh invalid or being modified")
         return
 
     # Validate BMesh state
     if not bm.is_valid:
+        debug_log("[WorldScale] Skip: BMesh not valid")
         return
 
     # Ensure lookup tables are valid before accessing faces
     try:
         bm.faces.ensure_lookup_table()
     except (ReferenceError, RuntimeError):
+        debug_log("[WorldScale] Skip: lookup table failed")
         return
 
     uv_layer = bm.loops.layers.uv.verify()
@@ -605,21 +614,31 @@ def apply_world_scale_uvs(obj, scene):
 
     # Iterate using indices to be more resilient during topology changes
     face_indices = list(range(len(bm.faces)))
+    uv_applied_count = 0
+    uv_restored_count = 0
+    skipped_no_cache = 0
+    skipped_hotspot = 0
+    skipped_no_selection = 0
+    skipped_vert_mismatch = 0
+    skipped_no_move = 0
     for face_idx in face_indices:
         # Wrap each face access in try/except to handle race conditions
         # during modal operators like loop cut
         try:
             # Re-validate after potential changes
             if not bm.is_valid or face_idx >= len(bm.faces):
+                debug_log(f"[WorldScale] Abort: BMesh invalidated at face {face_idx}")
                 return
 
             face = bm.faces[face_idx]
 
             if face.index not in face_data_cache:
+                skipped_no_cache += 1
                 continue
 
             # Skip faces with hotspottable materials
             if face_has_hotspot_material(face, me):
+                skipped_hotspot += 1
                 continue
 
             cached = face_data_cache[face.index]
@@ -630,10 +649,12 @@ def apply_world_scale_uvs(obj, scene):
             # Skip faces not relevant to current operation
             # A face is relevant if any of its vertices are selected
             if not any(v.select for v in face.verts):
+                skipped_no_selection += 1
                 continue
 
             current_verts = [v.co.copy() for v in face.verts]
             if len(current_verts) != len(cached_verts):
+                skipped_vert_mismatch += 1
                 continue
 
             # Check if vertices actually moved - skip if geometry unchanged
@@ -658,6 +679,9 @@ def apply_world_scale_uvs(obj, scene):
                         for loop, cached_uv in zip(face.loops, cached_uvs):
                             loop[uv_layer].uv = cached_uv.copy()
                         bmesh.update_edit_mesh(me)
+                        uv_restored_count += 1
+                else:
+                    skipped_no_move += 1
                 continue
 
             # Get cached transform (defaults if not cached)
@@ -716,20 +740,28 @@ def apply_world_scale_uvs(obj, scene):
             # Re-project UVs using apply_uv_to_face which properly handles rotation
             apply_uv_to_face(face, uv_layer, scale_u, scale_v, rotation, offset_x, offset_y,
                              mat, ppm, me)
+            uv_applied_count += 1
 
             # Only update cache when NOT in a modal operation
             # During modal ops, we keep the baseline stable so returning to original
             # position gives original UVs
             if not in_modal_operation:
                 cache_single_face(face, uv_layer, ppm, me)
+                debug_log(f"[WorldScale] Face {face.index}: applied UVs + cached (s={scale_u:.3f},{scale_v:.3f} r={rotation:.1f} o={offset_x:.3f},{offset_y:.3f})")
+            else:
+                debug_log(f"[WorldScale] Face {face.index}: applied UVs (modal, no cache) (s={scale_u:.3f},{scale_v:.3f} r={rotation:.1f} o={offset_x:.3f},{offset_y:.3f})")
 
         except (ReferenceError, RuntimeError, OSError):
             # BMesh data became invalid during iteration (e.g., during loop cut)
+            debug_log("[WorldScale] Abort: BMesh exception during face iteration")
             return
+
+    debug_log(f"[WorldScale] Done: applied={uv_applied_count} restored={uv_restored_count} | skipped: no_cache={skipped_no_cache} hotspot={skipped_hotspot} no_sel={skipped_no_selection} vert_mismatch={skipped_vert_mismatch} no_move={skipped_no_move} | modal={in_modal_operation} modal_just_ended={modal_just_ended}")
 
     # Refresh cache when modal operation just ended
     # This ensures the baseline is updated with final geometry state
     if modal_just_ended:
+        debug_log("[WorldScale] Refreshing full cache (modal just ended)")
         cache_face_data(bpy.context)
 
 
@@ -1446,19 +1478,24 @@ def on_depsgraph_update(scene, depsgraph):
 
                     # Skip if mesh data is not available
                     if me is None or not me.is_editmode:
+                        debug_log(f"[Depsgraph] Skip: mesh not available or not in edit mode")
                         continue
 
                     # Track if this is an actual geometry update (not just tab switch, etc.)
                     is_geometry_update = update.is_updated_geometry
+                    is_transform_update = getattr(update, 'is_updated_transform', False)
+                    debug_log(f"[Depsgraph] Update for '{obj.name}': geometry={is_geometry_update} transform={is_transform_update}")
 
                     try:
                         bm = bmesh.from_edit_mesh(me)
                     except (ReferenceError, RuntimeError):
                         # BMesh is invalid or being modified by modal operator
+                        debug_log(f"[Depsgraph] Skip: BMesh invalid/being modified")
                         continue
 
                     # Validate BMesh state
                     if not bm.is_valid:
+                        debug_log(f"[Depsgraph] Skip: BMesh not valid")
                         continue
 
                     current_face_count = len(bm.faces)
@@ -1471,12 +1508,16 @@ def on_depsgraph_update(scene, depsgraph):
                     is_fresh_start = (obj.name != _last_edit_object_name)
                     _last_edit_object_name = obj.name
 
+                    if is_fresh_start:
+                        debug_log(f"[Depsgraph] Fresh edit session for '{obj.name}'")
+
                     # On file load, allow active image sync even if fresh start
                     # (to restore state from previous session)
                     allow_active_image_update = not is_fresh_start or _file_loaded_into_edit_depsgraph
 
                     # Check if topology changed (subdivision, extrusion, etc.)
                     if current_face_count != last_face_count or current_vertex_count != last_vertex_count:
+                        debug_log(f"[Depsgraph] Topology changed: faces {last_face_count}->{current_face_count} verts {last_vertex_count}->{current_vertex_count}")
                         global _cache_invalidated_by_undo
                         is_undo_recovery = _cache_invalidated_by_undo
                         _cache_invalidated_by_undo = False
@@ -1486,6 +1527,7 @@ def on_depsgraph_update(scene, depsgraph):
                         if not is_fresh_start and not is_undo_recovery:
                             _project_new_selected_faces_on_topology_change(context, bm)
                         cache_face_data(context)
+                        debug_log(f"[Depsgraph] Cache rebuilt ({len(face_data_cache)} faces)")
                         update_ui_from_selection(context)
                         # Only update active image if allowed
                         if allow_active_image_update:
@@ -1500,7 +1542,9 @@ def on_depsgraph_update(scene, depsgraph):
                         return
 
                     # Check if selection changed
-                    if check_selection_changed(bm):
+                    selection_changed = check_selection_changed(bm)
+                    if selection_changed:
+                        debug_log(f"[Depsgraph] Selection changed")
                         update_ui_from_selection(context)
                         # Only update active image if allowed
                         if allow_active_image_update:
@@ -1508,11 +1552,14 @@ def on_depsgraph_update(scene, depsgraph):
 
                     # Store data before any transform if cache is empty
                     if not face_data_cache and context.mode == 'EDIT_MESH':
+                        debug_log(f"[Depsgraph] Cache empty, rebuilding")
                         cache_face_data(context)
 
                     if obj.anvil_uv_lock:
+                        debug_log(f"[Depsgraph] Applying UV lock")
                         apply_uv_lock(obj, scene)
                     else:
+                        debug_log(f"[Depsgraph] Applying world-scale UVs (cache size={len(face_data_cache)})")
                         apply_world_scale_uvs(obj, scene)
 
                     if not is_fresh_start and props.auto_hotspot:

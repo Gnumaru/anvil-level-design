@@ -4,12 +4,12 @@ import math
 from mathutils import Vector
 
 
-# Global debug logging toggle for the addon
+# Global debug logging toggle for the addon (hardcoded fallback, overridden by UI checkbox)
 DEBUG_LOGGING = False
 
 
 def debug_log(msg):
-    """Print debug message if logging is enabled."""
+    """Print debug message if logging is enabled via the Debug panel."""
     if DEBUG_LOGGING:
         print(msg)
 

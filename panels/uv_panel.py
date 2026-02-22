@@ -1,6 +1,7 @@
 import bpy
-from bpy.types import Panel
+from bpy.types import Panel, Operator
 
+from .. import utils as _utils_module
 from ..utils import (
     get_selected_face_count,
     get_texture_node_from_material,
@@ -455,6 +456,43 @@ class LEVELDESIGN_PT_export_panel(Panel):
             layout.label(text="Use File > Export > GLB Scaled first")
 
 
+class LEVELDESIGN_OT_toggle_debug_logging(Operator):
+    """Toggle debug logging to the console"""
+
+    bl_idname = "leveldesign.toggle_debug_logging"
+    bl_label = "Toggle Debug Logging"
+
+    def execute(self, context):
+        _utils_module.DEBUG_LOGGING = not _utils_module.DEBUG_LOGGING
+        state = "enabled" if _utils_module.DEBUG_LOGGING else "disabled"
+        print(f"Anvil Level Design: Debug logging {state}")
+        return {'FINISHED'}
+
+
+class LEVELDESIGN_PT_debug_panel(Panel):
+    """Debug options"""
+
+    bl_label = "Debug"
+    bl_idname = "LEVELDESIGN_PT_debug_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Anvil (Settings)'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context):
+        return is_level_design_workspace()
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator(
+            "leveldesign.toggle_debug_logging",
+            text="Debug Logging",
+            depress=_utils_module.DEBUG_LOGGING,
+            icon='CONSOLE',
+        )
+
+
 classes = (
     LEVELDESIGN_PT_grid_panel,
     LEVELDESIGN_PT_uv_lock_panel,
@@ -465,6 +503,8 @@ classes = (
     LEVELDESIGN_PT_texture_settings_panel,
     LEVELDESIGN_PT_default_material_settings_panel,
     LEVELDESIGN_PT_export_panel,
+    LEVELDESIGN_OT_toggle_debug_logging,
+    LEVELDESIGN_PT_debug_panel,
 )
 
 
