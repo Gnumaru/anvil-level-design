@@ -1442,6 +1442,9 @@ def on_load_post(dummy):
     bpy.app.timers.register(disable_correct_uv_slide, first_interval=0.1)
     # Clear the file loaded flag after 1 second (fallback if depsgraph doesn't fire)
     bpy.app.timers.register(_clear_file_loaded_flag, first_interval=1.0)
+    # Print debug logging status on file load
+    state = "ENABLED" if DEBUG_LOGGING else "DISABLED"
+    print(f"Anvil Level Design: Debug logging is {state}")
 
 
 @persistent
