@@ -11,7 +11,7 @@ DEBUG_LOGGING = False
 def debug_log(msg):
     """Print debug message if logging is enabled via the Debug panel."""
     if DEBUG_LOGGING:
-        print(msg)
+        print(msg, flush=True)
 
 
 LEVEL_DESIGN_WORKSPACE_NAME = "Level Design"

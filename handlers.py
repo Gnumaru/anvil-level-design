@@ -30,7 +30,7 @@ def set_correct_uv_slide(enabled: bool):
         else:
             flag_ptr.contents.value &= ~_UVCALC_TRANSFORM_CORRECT_SLIDE
     except Exception as e:
-        print(f"Anvil Level Design: Failed to set correct_uv_slide — offset {_UVCALC_FLAG_OFFSET} may be wrong for this platform/Blender version: {e}")
+        print(f"Anvil Level Design: Failed to set correct_uv_slide — offset {_UVCALC_FLAG_OFFSET} may be wrong for this platform/Blender version: {e}", flush=True)
 
 from .utils import (
     get_image_from_material, derive_transform_from_uvs,
@@ -209,7 +209,7 @@ def _apply_auto_hotspots_deferred():
         bmesh.update_edit_mesh(me)
 
     except Exception as e:
-        print(f"Anvil Level Design: Auto-hotspot error: {e}")
+        print(f"Anvil Level Design: Auto-hotspot error: {e}", flush=True)
         import traceback
         traceback.print_exc()
 
@@ -1072,7 +1072,7 @@ def apply_texture_from_file_browser():
         redraw_ui_panels(context)
 
     except Exception as e:
-        print(f"Anvil Level Design: Error applying texture from file browser: {e}")
+        print(f"Anvil Level Design: Error applying texture from file browser: {e}", flush=True)
 
 
 def _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me):
@@ -1396,7 +1396,7 @@ def on_save_pre(dummy):
     _was_first_save = not bpy.data.filepath
 
     if bpy.data.filepath:
-        print("Anvil Level Design: Making all paths relative (pre save)")
+        print("Anvil Level Design: Making all paths relative (pre save)", flush=True)
         bpy.ops.file.make_paths_relative()
 
 
@@ -1410,9 +1410,9 @@ def on_save_post(dummy):
 
     if _was_first_save:
         _was_first_save = False
-        print("Anvil Level Design: Making all paths relative (post save, for first save)")
+        print("Anvil Level Design: Making all paths relative (post save, for first save)", flush=True)
         bpy.ops.file.make_paths_relative()
-        print("Anvil Level Design: Triggering second save to apply relative paths")
+        print("Anvil Level Design: Triggering second save to apply relative paths", flush=True)
         bpy.ops.wm.save_mainfile()
 
 
@@ -1442,9 +1442,6 @@ def on_load_post(dummy):
     bpy.app.timers.register(disable_correct_uv_slide, first_interval=0.1)
     # Clear the file loaded flag after 1 second (fallback if depsgraph doesn't fire)
     bpy.app.timers.register(_clear_file_loaded_flag, first_interval=1.0)
-    # Print debug logging status on file load
-    state = "ENABLED" if DEBUG_LOGGING else "DISABLED"
-    print(f"Anvil Level Design: Debug logging is {state}")
 
 
 @persistent
@@ -1571,7 +1568,7 @@ def on_depsgraph_update(scene, depsgraph):
                     _file_loaded_into_edit_depsgraph = False
                     break
     except Exception as e:
-        print(f"Anvil Level Design: Error in depsgraph handler: {e}")
+        print(f"Anvil Level Design: Error in depsgraph handler: {e}", flush=True)
 
 
 def register():

@@ -315,14 +315,10 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                     row.prop(kmi, "active", text="", emboss=False)
 
 
-def _print_debug_status():
+def register():
     from .utils import DEBUG_LOGGING
     state = "ENABLED" if DEBUG_LOGGING else "DISABLED"
-    print(f"Anvil Level Design: Debug logging is {state}")
-
-
-def register():
-    _print_debug_status()
+    print(f"Anvil Level Design: Debug logging is {state}", flush=True)
     bpy.utils.register_class(LEVELDESIGN_OT_freelook_movement_key)
     bpy.utils.register_class(LEVELDESIGN_OT_restore_default_keybindings)
     bpy.utils.register_class(LevelDesignPreferences)

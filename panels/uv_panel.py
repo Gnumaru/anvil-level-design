@@ -465,7 +465,7 @@ class LEVELDESIGN_OT_toggle_debug_logging(Operator):
     def execute(self, context):
         _utils_module.DEBUG_LOGGING = not _utils_module.DEBUG_LOGGING
         state = "enabled" if _utils_module.DEBUG_LOGGING else "disabled"
-        print(f"Anvil Level Design: Debug logging {state}")
+        print(f"Anvil Level Design: Debug logging {state}", flush=True)
         return {'FINISHED'}
 
 

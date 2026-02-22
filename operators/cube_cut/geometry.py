@@ -373,7 +373,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
             key = (round(v.co.x, 5), round(v.co.y, 5), round(v.co.z, 5))
             if key in seen_positions:
                 print(f"Level Design Tools: Error - Face {face.index} has duplicate vertices at {v.co[:]}. "
-                      f"Run Mesh > Clean Up > Merge by Distance first.")
+                      f"Run Mesh > Clean Up > Merge by Distance first.", flush=True)
                 debug_log(f"[CubeCut] ABORTING: Face {face.index} has duplicate verts at {key}")
                 bmesh.update_edit_mesh(me)
                 return (False, "Face has duplicate vertices - run Merge by Distance first")
@@ -472,7 +472,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
         # Skip if only interior verts and 2 or fewer unique (can't form a valid hole)
         if num_edge_unique == 0 and num_interior_unique <= 2:
-            print(f"Level Design Tools: Skipping face {face.index} - only {num_interior_unique} unique interior verts, cannot form valid shape")
+            print(f"Level Design Tools: Skipping face {face.index} - only {num_interior_unique} unique interior verts, cannot form valid shape", flush=True)
             # Remove orphaned interior vertices
             for v in interior_verts:
                 if v.is_valid:
@@ -481,7 +481,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
         # Skip if only edge verts, 2 or fewer unique, and no deleted verts (cut doesn't remove anything)
         if num_interior_unique == 0 and num_edge_unique <= 2 and num_deleted == 0:
-            print(f"Level Design Tools: Skipping face {face.index} - only {num_edge_unique} unique edge verts with no deleted verts, cannot form valid shape")
+            print(f"Level Design Tools: Skipping face {face.index} - only {num_edge_unique} unique edge verts with no deleted verts, cannot form valid shape", flush=True)
             # Remove orphaned interior vertices
             for v in interior_verts:
                 if v.is_valid:
@@ -1069,7 +1069,7 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
 
         if dot_with_bisector >= threshold - EPSILON:
             # The best vertex is inside (or on) the angle between connected edges - ERROR
-            print(f"Level Design Tools: Error - Interior vertex {interior_vert.co[:]} closest exterior vertex {best_vert.co[:]} is inside the cut angle")
+            print(f"Level Design Tools: Error - Interior vertex {interior_vert.co[:]} closest exterior vertex {best_vert.co[:]} is inside the cut angle", flush=True)
             continue
 
         # Create edge to the best exterior vertex

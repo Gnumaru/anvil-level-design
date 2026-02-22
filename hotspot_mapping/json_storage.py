@@ -80,7 +80,7 @@ def load_hotspots():
         props.hotspots_json = json.dumps(data)
         return data
     except (json.JSONDecodeError, IOError) as e:
-        print(f"Anvil Hotspots: Error reading hotspots.json: {e}")
+        print(f"Anvil Hotspots: Error reading hotspots.json: {e}", flush=True)
         return _create_empty_data()
 
 
@@ -117,7 +117,7 @@ def save_hotspots(data, sync_to_disk=True):
         debug_log(f"[Hotspots] Saved to: {filepath}")
         return True
     except IOError as e:
-        print(f"Anvil Hotspots: Error writing hotspots.json: {e}")
+        print(f"Anvil Hotspots: Error writing hotspots.json: {e}", flush=True)
         return False
 
 
@@ -140,7 +140,7 @@ def sync_from_file():
         scene.hotspot_mapping_props.hotspots_json = json.dumps(data)
         debug_log(f"[Hotspots] Synced from file: {filepath}")
     except (json.JSONDecodeError, IOError) as e:
-        print(f"Anvil Hotspots: Error syncing from hotspots.json: {e}")
+        print(f"Anvil Hotspots: Error syncing from hotspots.json: {e}", flush=True)
 
 
 def sync_to_file():
@@ -166,7 +166,7 @@ def sync_to_file():
             json.dump(data, f, indent=2)
         debug_log(f"[Hotspots] Synced to file: {filepath}")
     except (json.JSONDecodeError, IOError) as e:
-        print(f"Anvil Hotspots: Error syncing to hotspots.json: {e}")
+        print(f"Anvil Hotspots: Error syncing to hotspots.json: {e}", flush=True)
 
 
 def _create_empty_data():
