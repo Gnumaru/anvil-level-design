@@ -31,6 +31,8 @@ Select a textured face and Alt Left Click another face to copy the texture over.
 Select a textured face and press T to enter Texture Mode; move the mouse to different edges to snap the texture to that edge.
 Extrude some faces to see the auto UVing do its magic.
 
+*Do not resize items using the scale operator unless you also want the textures to scale.*
+
 More details below!
 
 ## Features

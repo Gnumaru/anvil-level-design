@@ -63,11 +63,14 @@ class LEVELDESIGN_PT_uv_lock_panel(Panel):
         layout = self.layout
         obj = context.object
         in_edit_mode = context.mode == 'EDIT_MESH'
+        has_mesh = obj and obj.type == 'MESH'
+
+        if not in_edit_mode:
+            layout.label(text="(Edit Mode required)", icon='INFO')
 
         row = layout.row()
-
-        if obj and obj.type == 'MESH':
-            row.enabled = in_edit_mode
+        row.enabled = in_edit_mode and has_mesh
+        if has_mesh:
             row.prop(
                 obj,
                 "anvil_uv_lock",
@@ -75,13 +78,14 @@ class LEVELDESIGN_PT_uv_lock_panel(Panel):
                 toggle=True,
                 icon='LOCKED' if obj.anvil_uv_lock else 'UNLOCKED',
             )
-
-            if not in_edit_mode:
-                layout.label(text="(Edit Mode required)", icon='INFO')
         else:
-            row.enabled = False
-            row.label(text="UV Lock")
-            layout.label(text="Select a mesh object", icon='INFO')
+            row.prop(
+                context.scene.level_design_props,
+                "uv_lock_placeholder",
+                text="UV Lock",
+                toggle=True,
+                icon='UNLOCKED',
+            )
 
 
 class LEVELDESIGN_PT_uv_settings_panel(Panel):
@@ -105,6 +109,24 @@ class LEVELDESIGN_PT_uv_settings_panel(Panel):
         has_selection = in_face_mode and get_selected_face_count(context) > 0
         multi_face = has_selection and get_multi_face_mode()
         all_hotspot = has_selection and get_all_selected_hotspot()
+
+        # Warn if non-uniform object scale paired with non-uniform UV scale
+        obj = context.object
+        if obj and obj.type == 'MESH':
+            s = obj.scale
+            obj_non_uniform = (abs(s.x - s.y) > 1e-4
+                               or abs(s.x - s.z) > 1e-4)
+            uv_non_uniform = abs(props.texture_scale_u
+                                 - props.texture_scale_v) > 1e-4
+            if obj_non_uniform and uv_non_uniform:
+                col_warn = layout.column(align=True)
+                col_warn.label(
+                    text="Non-Uniform object scale.",
+                    icon='ERROR',
+                )
+                col_warn.label(
+                    text="Apply Object Scale (Ctrl+A).",
+                )
 
         if all_hotspot:
             layout.label(text="Hotspot texture", icon='INFO')
