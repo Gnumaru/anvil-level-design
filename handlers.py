@@ -356,6 +356,9 @@ _last_file_browser_path = None
 # Updated by: file browser selection, user clicking a face
 # Used by: Alt+Click apply, UI panel preview
 _active_image = None
+# The previously active image, shown as a disabled preview when no texture is selected.
+# Updated whenever a new image is selected from the file browser.
+_previous_image = None
 # Specifically for the case where faces start as selected e.g. initial cube on file creation.
 # Guard flag: when True, depsgraph should not overwrite _active_image
 # (set by apply_texture_from_file_browser which runs in a timer context
@@ -379,14 +382,41 @@ def get_active_image():
         return None
 
 
+def get_previous_image():
+    """Get the previously active image for display when no texture is selected.
+
+    Returns None if the stored reference has been invalidated (e.g. by undo).
+    """
+    global _previous_image
+    if _previous_image is None:
+        return None
+    try:
+        _previous_image.name
+        return _previous_image
+    except ReferenceError:
+        _previous_image = None
+        return None
+
+
 def set_active_image(image):
     """Set the currently active image for texture operations.
+
+    When a non-None image is set, it is also saved as the previous image
+    so the panel can show a disabled preview when no texture is selected.
 
     Note: Does not call redraw_ui_panels here to avoid requiring a context parameter.
     Callers should call redraw_ui_panels(context) if an immediate UI update is needed.
     """
     global _active_image
+    if image is not None:
+        set_previous_image(image)
     _active_image = image
+
+
+def set_previous_image(image):
+    """Set the previous image for display when no texture is selected."""
+    global _previous_image
+    _previous_image = image
 
 
 def cache_single_face(face, uv_layer, ppm=None, me=None):
@@ -1019,6 +1049,17 @@ def apply_texture_from_file_browser():
         if not os.path.isfile(current_path):
             return
 
+        # Load the image early so we can update the previous image preview
+        # even when faces aren't selected
+        try:
+            image = bpy.data.images.load(current_path, check_existing=True)
+        except RuntimeError:
+            return
+
+        # Always update previous image when a file is selected in the browser
+        set_previous_image(image)
+        redraw_ui_panels(context)
+
         # Only apply to faces if in edit mode on a mesh with selected faces
         if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
             return
@@ -1028,12 +1069,6 @@ def apply_texture_from_file_browser():
         selected_faces = [f for f in bm.faces if f.select]
 
         if not selected_faces:
-            return
-
-        # Load the image (only after confirming faces are selected)
-        try:
-            image = bpy.data.images.load(current_path, check_existing=True)
-        except RuntimeError:
             return
 
         uv_layer = bm.loops.layers.uv.verify()

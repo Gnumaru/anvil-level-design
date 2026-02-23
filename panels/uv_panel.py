@@ -12,6 +12,7 @@ from ..utils import (
 from ..operators.grid_tools import get_unit_label
 from ..handlers import (
     get_active_image,
+    get_previous_image,
     get_multi_face_mode,
     is_multi_face_unset_scale,
     is_multi_face_unset_rotation,
@@ -372,10 +373,29 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
                 "leveldesign.fix_alpha_bleed", icon='IMAGE_RGB_ALPHA'
             )
         else:
-            layout.label(text="No texture selected")
-            box = layout.box()
-            box.scale_y = 8.0
-            box.label(text="")
+            prev_image = get_previous_image()
+            if prev_image:
+                layout.enabled = False
+                layout.label(text=prev_image.name)
+                if prev_image.preview:
+                    icon_id = prev_image.preview.icon_id
+                    if icon_id:
+                        layout.template_icon(icon_value=icon_id, scale=8.0)
+                    else:
+                        prev_image.preview_ensure()
+                        box = layout.box()
+                        box.scale_y = 8.0
+                        box.label(text="")
+                else:
+                    prev_image.preview_ensure()
+                    box = layout.box()
+                    box.scale_y = 8.0
+                    box.label(text="")
+            else:
+                layout.label(text="No texture selected")
+                box = layout.box()
+                box.scale_y = 8.0
+                box.label(text="")
 
 
 class LEVELDESIGN_PT_texture_settings_panel(Panel):
