@@ -1,7 +1,6 @@
 import bpy
 from bpy.types import Panel, Operator
 
-from .. import utils as _utils_module
 from ..utils import (
     get_selected_face_count,
     get_texture_node_from_material,
@@ -499,8 +498,9 @@ class LEVELDESIGN_OT_toggle_debug_logging(Operator):
     bl_label = "Toggle Debug Logging"
 
     def execute(self, context):
-        _utils_module.DEBUG_LOGGING = not _utils_module.DEBUG_LOGGING
-        state = "enabled" if _utils_module.DEBUG_LOGGING else "disabled"
+        props = context.scene.level_design_props
+        props.debug_logging = not props.debug_logging
+        state = "enabled" if props.debug_logging else "disabled"
         print(f"Anvil Level Design: Debug logging {state}", flush=True)
         return {'FINISHED'}
 
@@ -524,7 +524,7 @@ class LEVELDESIGN_PT_debug_panel(Panel):
         layout.operator(
             "leveldesign.toggle_debug_logging",
             text="Debug Logging",
-            depress=_utils_module.DEBUG_LOGGING,
+            depress=context.scene.level_design_props.debug_logging,
             icon='CONSOLE',
         )
 

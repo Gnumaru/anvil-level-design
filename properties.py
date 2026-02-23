@@ -366,6 +366,12 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
     # Dummy prop so the UV Lock button renders even with no object selected
     uv_lock_placeholder: BoolProperty(name="UV Lock", default=False)
 
+    debug_logging: BoolProperty(
+        name="Debug Logging",
+        description="Enable debug logging to the console",
+        default=False,
+    )
+
     # === UV Tools Properties ===
     pixels_per_meter: IntProperty(
         name="Pixels per Meter",

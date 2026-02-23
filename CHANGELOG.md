@@ -6,6 +6,7 @@
 - Don't show cube cut and box builder grid overlay in ortho views (grid is already there)
 - Fix initial texture application setting incorrect UV scale
 - Improve reliability of image texture preview
+- Debug logging is now a scene property
 
 ## 1.2.8
 - Swapped Level Design and Hotspot Mapping workspaces
