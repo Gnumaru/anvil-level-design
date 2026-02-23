@@ -10,6 +10,7 @@
 - Texture preview shows previous image selected (disabled)
 - New boxes from box builder are textured with the previously selected texture
 - Selecting a texture in the file browser will apply it to an entire object while in object mode
+- Fix pick texture (alt right mouse) crash
 
 ## 1.2.8
 - Swapped Level Design and Hotspot Mapping workspaces

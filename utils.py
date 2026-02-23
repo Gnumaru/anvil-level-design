@@ -529,7 +529,7 @@ def find_material_with_image(image):
 
 def get_image_from_material(mat):
     """Return the first image used by a material, or None"""
-    if not mat or not mat.use_nodes:
+    if not mat or not mat.use_nodes or not mat.node_tree:
         return None
     for node in mat.node_tree.nodes:
         if node.type == 'TEX_IMAGE' and node.image:
@@ -539,7 +539,7 @@ def get_image_from_material(mat):
 
 def get_principled_bsdf_from_material(mat):
     """Return the Principled BSDF node from a material, or None"""
-    if not mat or not mat.use_nodes:
+    if not mat or not mat.use_nodes or not mat.node_tree:
         return None
     for node in mat.node_tree.nodes:
         if node.type == 'BSDF_PRINCIPLED':
@@ -549,7 +549,7 @@ def get_principled_bsdf_from_material(mat):
 
 def get_texture_node_from_material(mat):
     """Return the first TEX_IMAGE node from a material, or None"""
-    if not mat or not mat.use_nodes:
+    if not mat or not mat.use_nodes or not mat.node_tree:
         return None
     for node in mat.node_tree.nodes:
         if node.type == 'TEX_IMAGE':
@@ -559,7 +559,7 @@ def get_texture_node_from_material(mat):
 
 def is_texture_alpha_connected(mat):
     """Check if the texture's alpha output is connected to the BSDF alpha input"""
-    if not mat or not mat.use_nodes:
+    if not mat or not mat.use_nodes or not mat.node_tree:
         return False
     tex = get_texture_node_from_material(mat)
     bsdf = get_principled_bsdf_from_material(mat)
