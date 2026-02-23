@@ -10,7 +10,7 @@ from mathutils import Vector
 
 from ..texture_apply import set_uv_from_other_face
 from ...properties import apply_uv_to_face
-from ...handlers import cache_single_face, get_active_image
+from ...handlers import cache_single_face, get_active_image, get_previous_image
 from ...utils import find_material_with_image, create_material_with_image, debug_log
 
 
@@ -210,8 +210,10 @@ def _apply_material_and_uvs(bm, new_faces, source_face, uv_layer, ppm, me, obj):
             face.material_index = mat_idx
             set_uv_from_other_face(source_face, face, uv_layer, ppm, me, obj_matrix)
     else:
-        # Default: use active image
+        # Default: use active image, falling back to previous image
         image = get_active_image()
+        if image is None:
+            image = get_previous_image()
         if image is None:
             return
 
@@ -325,6 +327,8 @@ def execute_box_builder_object_mode(first_vertex, second_vertex, depth,
 
     # Apply material and UVs via edit mode (apply_uv_to_face requires edit mesh)
     image = get_active_image()
+    if image is None:
+        image = get_previous_image()
     if image is not None:
         mat = find_material_with_image(image)
         if mat is None:

@@ -8,6 +8,7 @@
 - Improve reliability of image texture preview
 - Debug logging is now a scene property
 - Texture preview shows previous image selected (disabled)
+- New boxes from box builder are textured with the previously selected texture
 
 ## 1.2.8
 - Swapped Level Design and Hotspot Mapping workspaces
