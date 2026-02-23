@@ -307,10 +307,14 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
                     layout.template_icon(icon_value=icon_id, scale=8.0)
                 else:
                     image.preview_ensure()
-                    layout.label(text="(Loading preview...)")
+                    box = layout.box()
+                    box.scale_y = 8.0
+                    box.label(text="")
             else:
                 image.preview_ensure()
-                layout.label(text="(Loading preview...)")
+                box = layout.box()
+                box.scale_y = 8.0
+                box.label(text="")
 
             # Material settings
             mat = find_material_with_image(image)
