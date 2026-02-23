@@ -1060,16 +1060,31 @@ def apply_texture_from_file_browser():
         set_previous_image(image)
         redraw_ui_panels(context)
 
-        # Only apply to faces if in edit mode on a mesh with selected faces
-        if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
+        # Only apply to faces if on a mesh in edit or object mode
+        if not obj or obj.type != 'MESH':
             return
 
-        bm = bmesh.from_edit_mesh(obj.data)
-        bm.faces.ensure_lookup_table()
-        selected_faces = [f for f in bm.faces if f.select]
+        in_edit_mode = (context.mode == 'EDIT_MESH')
+        in_object_mode = (context.mode == 'OBJECT')
 
-        if not selected_faces:
+        if not in_edit_mode and not in_object_mode:
             return
+
+        # In object mode, only apply if the object is actually selected
+        if in_object_mode and not obj.select_get():
+            return
+
+        if in_edit_mode:
+            bm = bmesh.from_edit_mesh(obj.data)
+            bm.faces.ensure_lookup_table()
+            selected_faces = [f for f in bm.faces if f.select]
+            if not selected_faces:
+                return
+        else:
+            bm = bmesh.new()
+            bm.from_mesh(obj.data)
+            bm.faces.ensure_lookup_table()
+            selected_faces = list(bm.faces)
 
         uv_layer = bm.loops.layers.uv.verify()
         props = context.scene.level_design_props
@@ -1188,7 +1203,12 @@ def apply_texture_from_file_browser():
             # Regular UV projection
             _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, obj.data, face_old_info)
 
-        bmesh.update_edit_mesh(obj.data)
+        if in_edit_mode:
+            bmesh.update_edit_mesh(obj.data)
+        else:
+            bm.to_mesh(obj.data)
+            bm.free()
+            obj.data.update()
 
         # Update UI to reflect the new UVs
         update_ui_from_selection(context)
