@@ -509,6 +509,18 @@ class pick_image_from_face(Operator):
 
         mat_index = me.materials.find(mat.name)
 
+        # Capture old material info BEFORE assigning new material
+        face_old_info = {}
+        for f in selected_faces:
+            f_mat_idx = f.material_index
+            f_mat = me.materials[f_mat_idx] if f_mat_idx < len(me.materials) else None
+            f_img = get_image_from_material(f_mat)
+            face_old_info[f.index] = {
+                'mat': f_mat,
+                'has_image': f_img is not None,
+                'tex_dims': get_texture_dimensions_from_material(f_mat, ppm),
+            }
+
         # Assign material to all selected faces
         for face in selected_faces:
             face.material_index = mat_index
@@ -567,10 +579,10 @@ class pick_image_from_face(Operator):
                         cache_single_face(face, uv_layer, ppm, me)
 
             from ..handlers import _apply_regular_uv_projection
-            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me)
+            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me, face_old_info)
         else:
             from ..handlers import _apply_regular_uv_projection
-            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me)
+            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me, face_old_info)
 
         bmesh.update_edit_mesh(me)
 

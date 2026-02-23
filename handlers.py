@@ -1053,7 +1053,20 @@ def apply_texture_from_file_browser():
 
         mat_index = obj.data.materials.find(mat.name)
 
-        # Assign material to all selected faces first
+        # Capture old material info BEFORE assigning new material
+        # (needed by _apply_regular_uv_projection to detect blank-to-textured transitions)
+        face_old_info = {}
+        for f in selected_faces:
+            f_mat_idx = f.material_index
+            f_mat = obj.data.materials[f_mat_idx] if f_mat_idx < len(obj.data.materials) else None
+            f_img = get_image_from_material(f_mat)
+            face_old_info[f.index] = {
+                'mat': f_mat,
+                'has_image': f_img is not None,
+                'tex_dims': get_texture_dimensions_from_material(f_mat, ppm),
+            }
+
+        # Assign material to all selected faces
         for target_face in selected_faces:
             target_face.material_index = mat_index
 
@@ -1125,11 +1138,11 @@ def apply_texture_from_file_browser():
                         cache_single_face(face, uv_layer, ppm, obj.data)
 
             # Apply regular UV projection to the selected faces (non-hotspot texture)
-            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, obj.data)
+            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, obj.data, face_old_info)
         else:
             # Either auto_hotspot is off, or it's a non-hotspot texture without hotspot neighbors
             # Regular UV projection
-            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, obj.data)
+            _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, obj.data, face_old_info)
 
         bmesh.update_edit_mesh(obj.data)
 
@@ -1143,7 +1156,7 @@ def apply_texture_from_file_browser():
         print(f"Anvil Level Design: Error applying texture from file browser: {e}", flush=True)
 
 
-def _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me):
+def _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me, face_old_info):
     """Apply regular UV projection to selected faces, preserving transform where possible.
 
     Args:
@@ -1152,19 +1165,9 @@ def _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me):
         mat: Material to use for texture dimensions
         ppm: Pixels per meter setting
         me: Mesh data
+        face_old_info: Dict mapping face index to old material info (captured before
+            material assignment). Each entry has 'mat', 'has_image', 'tex_dims'.
     """
-    # Capture old material info for transform preservation
-    face_old_info = {}
-    for f in selected_faces:
-        f_mat_idx = f.material_index
-        f_mat = me.materials[f_mat_idx] if f_mat_idx < len(me.materials) else None
-        f_img = get_image_from_material(f_mat)
-        face_old_info[f.index] = {
-            'mat': f_mat,
-            'has_image': f_img is not None,
-            'tex_dims': get_texture_dimensions_from_material(f_mat, ppm),
-        }
-
     for target_face in selected_faces:
         # Get current transform to preserve it
         current_transform = derive_transform_from_uvs(target_face, uv_layer, ppm, me)
