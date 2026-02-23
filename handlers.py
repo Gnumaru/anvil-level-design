@@ -1106,14 +1106,10 @@ def apply_texture_from_file_browser():
         if mat is None:
             mat = create_material_with_image(image)
 
-        # Ensure material slot exists
-        if mat.name not in obj.data.materials:
-            obj.data.materials.append(mat)
-
-        mat_index = obj.data.materials.find(mat.name)
-
-        # Capture old material info BEFORE assigning new material
-        # (needed by _apply_regular_uv_projection to detect blank-to-textured transitions)
+        # Capture old material info BEFORE adding the new material slot.
+        # If captured after append, objects with zero materials would see
+        # face.material_index 0 resolve to the NEW material, incorrectly
+        # reporting has_image=True and preventing the scale/rotation/offset reset.
         face_old_info = {}
         for f in selected_faces:
             f_mat_idx = f.material_index
@@ -1124,6 +1120,12 @@ def apply_texture_from_file_browser():
                 'has_image': f_img is not None,
                 'tex_dims': get_texture_dimensions_from_material(f_mat, ppm),
             }
+
+        # Ensure material slot exists (after capturing old info)
+        if mat.name not in obj.data.materials:
+            obj.data.materials.append(mat)
+
+        mat_index = obj.data.materials.find(mat.name)
 
         # Assign material to all selected faces
         for target_face in selected_faces:
@@ -1249,12 +1251,13 @@ def _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me, face_ol
         new_tex_dims = get_texture_dimensions_from_material(mat, ppm)
 
         # Reapply the preserved transform with the new texture
-        if current_transform:
-            # Reset scale to 1,1 if old material had no image (default material)
-            # or if texture dimensions changed
-            if not old_has_image or old_tex_dims != new_tex_dims:
+        if current_transform and old_has_image:
+            # Had a previous image - preserve or reset transform
+            if old_tex_dims != new_tex_dims:
+                # Texture dimensions changed - reset scale but keep rotation/offset
                 scale_u, scale_v = 1.0, 1.0
             else:
+                # Same texture dimensions - preserve everything
                 scale_u = current_transform['scale_u']
                 scale_v = current_transform['scale_v']
 
@@ -1267,7 +1270,8 @@ def _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me, face_ol
             )
             cache_single_face(target_face, uv_layer, ppm, me)
         else:
-            # Use default values when transform can't be derived
+            # Blank face (no previous image) or transform can't be derived
+            # - use clean defaults
             apply_uv_to_face(
                 target_face, uv_layer,
                 1.0, 1.0,  # scale

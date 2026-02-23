@@ -503,13 +503,10 @@ class pick_image_from_face(Operator):
         if mat is None:
             mat = create_material_with_image(image)
 
-        # Ensure material slot exists
-        if mat.name not in me.materials:
-            me.materials.append(mat)
-
-        mat_index = me.materials.find(mat.name)
-
-        # Capture old material info BEFORE assigning new material
+        # Capture old material info BEFORE adding the new material slot.
+        # If captured after append, objects with zero materials would see
+        # face.material_index 0 resolve to the NEW material, incorrectly
+        # reporting has_image=True and preventing the scale/rotation/offset reset.
         face_old_info = {}
         for f in selected_faces:
             f_mat_idx = f.material_index
@@ -520,6 +517,12 @@ class pick_image_from_face(Operator):
                 'has_image': f_img is not None,
                 'tex_dims': get_texture_dimensions_from_material(f_mat, ppm),
             }
+
+        # Ensure material slot exists (after capturing old info)
+        if mat.name not in me.materials:
+            me.materials.append(mat)
+
+        mat_index = me.materials.find(mat.name)
 
         # Assign material to all selected faces
         for face in selected_faces:
