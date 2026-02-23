@@ -356,6 +356,11 @@ _last_file_browser_path = None
 # Updated by: file browser selection, user clicking a face
 # Used by: Alt+Click apply, UI panel preview
 _active_image = None
+# Specifically for the case where faces start as selected e.g. initial cube on file creation.
+# Guard flag: when True, depsgraph should not overwrite _active_image
+# (set by apply_texture_from_file_browser which runs in a timer context
+# where context.tool_settings may not reflect the 3D viewport state)
+_active_image_just_set = False
 
 
 def get_active_image():
@@ -921,6 +926,10 @@ def update_active_image_from_face(context):
     Clears the active image if not in edit mode, no faces are selected,
     or the active face has no image material.
     """
+    global _active_image_just_set
+    if _active_image_just_set:
+        _active_image_just_set = False
+        return
     try:
         obj = context.object
         if not obj or obj.type != 'MESH' or context.mode != 'EDIT_MESH':
@@ -1148,8 +1157,12 @@ def apply_texture_from_file_browser():
 
         # Update UI to reflect the new UVs
         update_ui_from_selection(context)
-        # Derive active image from the face (now that it has the new material)
-        update_active_image_from_face(context)
+        # Set the active image directly since we know what was just applied
+        # (update_active_image_from_face relies on bm.faces.active and
+        # context.tool_settings which may be unreliable in timer context)
+        global _active_image_just_set
+        set_active_image(image)
+        _active_image_just_set = True
         redraw_ui_panels(context)
 
     except Exception as e:
@@ -1726,7 +1739,7 @@ def register():
 
 
 def unregister():
-    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph, _was_first_save, _auto_hotspot_pending, _undo_in_progress, _multi_face_mode, _multi_face_unset_scale, _multi_face_unset_rotation, _multi_face_unset_offset, _all_selected_hotspot
+    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _active_image_just_set, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph, _was_first_save, _auto_hotspot_pending, _undo_in_progress, _multi_face_mode, _multi_face_unset_scale, _multi_face_unset_rotation, _multi_face_unset_offset, _all_selected_hotspot
 
     # Clear msgbus subscriptions
     bpy.msgbus.clear_by_owner(_msgbus_owner)
@@ -1769,6 +1782,7 @@ def unregister():
     _last_active_face_index = -1
     _last_edit_object_name = None
     _active_image = None
+    _active_image_just_set = False
     _file_loaded_into_edit_depsgraph = False
     _was_first_save = False
     _multi_face_mode = False

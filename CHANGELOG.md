@@ -3,6 +3,7 @@
 ## 1.2.9
 - Anvil grid scales with scene length unit
 - Fix initial texture application setting incorrect UV scale
+- Improve reliability of image texture preview
 
 ## 1.2.8
 - Swapped Level Design and Hotspot Mapping workspaces
