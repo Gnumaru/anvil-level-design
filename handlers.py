@@ -228,33 +228,36 @@ def _apply_auto_hotspots():
 def _get_best_neighbor_face(face, selected_faces_set):
     """Find the best neighboring face to use as UV source.
 
-    Prefers neighbors that are facing sideways (wall-like) over up/down (floor/ceiling).
-    A sideways face has a more horizontal normal (small Z component).
-    Only considers unselected neighbors (which have existing good UVs).
+    Priority 1: Prefer neighbors facing a similar direction (positive normal dot product).
+    Priority 2: Among those, prefer sideways (wall-like) faces over floor/ceiling.
+
+    Falls back to negative-dot-product neighbors (with sideways scoring) if
+    no similar-facing neighbor exists.
     """
-    best_neighbor = None
-    best_score = -1  # Higher = more sideways
+    best_similar = None
+    best_similar_score = -1
+    best_fallback = None
+    best_fallback_score = -1
 
     for edge in face.edges:
-        # Get the neighbor face through this edge
         for linked_face in edge.link_faces:
             if linked_face == face or not linked_face.is_valid:
                 continue
-            # Skip selected faces (they're also new and don't have good UVs)
             if linked_face in selected_faces_set:
                 continue
 
-            # Score by how sideways the neighbor is facing
-            # Walls have normals like (1,0,0) or (0,1,0) - Z near 0
-            # Floors/ceilings have normals like (0,0,1) - Z near 1
-            neighbor_normal = linked_face.normal
-            sideways_score = 1.0 - abs(neighbor_normal.z)
+            sideways_score = 1.0 - abs(linked_face.normal.z)
 
-            if sideways_score > best_score:
-                best_score = sideways_score
-                best_neighbor = linked_face
+            if face.normal.dot(linked_face.normal) > 0:
+                if sideways_score > best_similar_score:
+                    best_similar_score = sideways_score
+                    best_similar = linked_face
+            else:
+                if sideways_score > best_fallback_score:
+                    best_fallback_score = sideways_score
+                    best_fallback = linked_face
 
-    return best_neighbor
+    return best_similar if best_similar else best_fallback
 
 
 def _project_new_selected_faces_on_topology_change(context, bm):
@@ -612,6 +615,15 @@ def apply_world_scale_uvs(obj, scene):
     props = scene.level_design_props
     ppm = props.pixels_per_meter
 
+    # Check if we're in an extrude operation - non-selected faces need special handling
+    is_extrude = 'MESH_OT_extrude_region_move' in current_modals
+    if is_extrude:
+        from .operators.texture_apply import set_uv_from_other_face
+        # Exclude faces that are affected by the extrude: selected faces AND
+        # non-selected faces that have selected vertices (they'll be updated too)
+        extrude_affected_faces_set = {f for f in bm.faces
+                                      if f.select or any(v.select for v in f.verts)}
+
     # Iterate using indices to be more resilient during topology changes
     face_indices = list(range(len(bm.faces)))
     uv_applied_count = 0
@@ -682,6 +694,21 @@ def apply_world_scale_uvs(obj, scene):
                         uv_restored_count += 1
                 else:
                     skipped_no_move += 1
+                continue
+
+            # During extrude, non-selected faces should copy UVs from an
+            # adjacent non-selected face rather than using cached-transform
+            # re-projection. This keeps their texture consistent with neighbors.
+            if is_extrude and not face.select:
+                source_face = _get_best_neighbor_face(face, extrude_affected_faces_set)
+                if source_face:
+                    set_uv_from_other_face(source_face, face, uv_layer, ppm, me, obj.matrix_world)
+                    uv_applied_count += 1
+                else:
+                    # No valid neighbor - fall back to world-space projection
+                    mat = me.materials[face.material_index] if face.material_index < len(me.materials) else None
+                    apply_uv_to_face(face, uv_layer, 1.0, 1.0, 0.0, 0.0, 0.0, mat, ppm, me)
+                    uv_applied_count += 1
                 continue
 
             # Get cached transform (defaults if not cached)
