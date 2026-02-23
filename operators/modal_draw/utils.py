@@ -492,7 +492,23 @@ def project_point_onto_plane(point, plane_point, plane_normal):
 
 
 def get_grid_size(context):
-    """Get the current grid size from the viewport overlay."""
+    """Get the grid size for snapping, matching Blender's unit-aware floor grid.
+
+    Blender's floor grid renders at unit-native intervals (e.g. 1 inch, 1 foot)
+    which may differ from overlay.grid_scale.  We compute the snap step from
+    anvil_grid_scale and the real unit size in meters so that snap positions
+    land on the same world-space lines the floor grid shows.
+    """
+    scene = context.scene
+    if hasattr(scene, 'level_design_props'):
+        anvil_scale = scene.level_design_props.anvil_grid_scale
+        if anvil_scale > 0:
+            from ..grid_tools import get_snap_unit_size
+            us = scene.unit_settings
+            return anvil_scale * get_snap_unit_size(
+                us.system, us.length_unit, us.scale_length
+            )
+    # Fallback
     space = context.space_data
     if space and hasattr(space, 'overlay'):
         return space.overlay.grid_scale

@@ -49,6 +49,39 @@ def get_unit_factor(unit_system, length_unit):
     return _UNIT_FACTORS.get((unit_system, length_unit), 1.0)
 
 
+# Maps (unit_system, length_unit) to the actual unit size in meters.
+# Used by the modal tools (cube cut, box builder) to compute snap grid size
+# independently of overlay.grid_scale, so snap positions match Blender's
+# unit-aware floor grid.
+_SNAP_UNIT_METERS = {
+    ('METRIC', 'KILOMETERS'): 1000.0,
+    ('METRIC', 'METERS'): 1.0,
+    ('METRIC', 'CENTIMETERS'): 0.01,
+    ('METRIC', 'MILLIMETERS'): 0.001,
+    ('METRIC', 'MICROMETERS'): 0.000001,
+    ('IMPERIAL', 'MILES'): 1609.344,
+    ('IMPERIAL', 'FEET'): 0.3048,
+    ('IMPERIAL', 'INCHES'): 0.0254,
+    ('IMPERIAL', 'THOU'): 0.0000254,
+}
+
+
+def get_snap_unit_size(unit_system, length_unit, scale_length):
+    """Return the snap grid unit size (in Blender units) for the given settings.
+
+    This converts the display unit size from meters to Blender units using
+    scale_length, so snap points land on the same positions Blender draws
+    its floor grid lines.
+    """
+    unit_meters = _SNAP_UNIT_METERS.get((unit_system, length_unit))
+    if unit_meters is None:
+        # ADAPTIVE or NONE — no unit-specific adjustment
+        return 1.0
+    if scale_length > 0:
+        return unit_meters / scale_length
+    return unit_meters
+
+
 def get_unit_label(unit_system, length_unit):
     """Return a lowercase display label for the given unit settings, or empty string."""
     return _UNIT_LABELS.get((unit_system, length_unit), '')

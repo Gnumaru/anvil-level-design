@@ -2,6 +2,7 @@
 
 ## 1.2.9
 - Anvil grid scales with scene length unit
+- Fix cube cut and box builder snap/overlay not aligning with Blender grid for imperial units
 - Fix initial texture application setting incorrect UV scale
 - Improve reliability of image texture preview
 
