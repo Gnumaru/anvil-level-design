@@ -232,7 +232,13 @@ class ModalDrawPreview:
         The grid shows world-aligned grid positions on the face. For each grid
         coordinate pair, we find the exact point on the face that has those
         coordinates (line-plane intersection along the dominant axis).
+
+        Only draws in perspective views — ortho views already have Blender's
+        floor grid for reference.
         """
+        rv3d = bpy.context.region_data
+        if rv3d is not None and not rv3d.is_perspective:
+            return
         if self._snap_point is None:
             return
         if self._face_plane_point is None or self._face_plane_normal is None:
