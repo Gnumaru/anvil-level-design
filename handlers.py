@@ -46,6 +46,9 @@ from .properties import set_updating_from_selection, sync_scale_tracking, apply_
 _auto_hotspot_pending = False
 _force_auto_hotspot = False
 
+# Msgbus subscription owner for unit setting changes
+_msgbus_owner = object()
+
 # Multi-face selection state tracking
 _multi_face_mode = False
 _multi_face_unset_scale = False
@@ -1352,13 +1355,14 @@ def consolidate_duplicate_materials():
 
 
 def set_all_grid_scales_to_default():
-    """Set grid scale to 1 on all 3D views."""
-    for window in bpy.context.window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == 'VIEW_3D':
-                for space in area.spaces:
-                    if space.type == 'VIEW_3D':
-                        space.overlay.grid_scale = 1.0
+    """Set anvil grid scale to 1 and apply with unit conversion on all 3D views."""
+    from .operators.grid_tools import apply_anvil_grid_scale
+
+    scene = bpy.context.scene
+    if hasattr(scene, 'level_design_props'):
+        scene.level_design_props.anvil_grid_scale = 1.0
+    unit_settings = scene.unit_settings
+    apply_anvil_grid_scale(1.0, unit_settings.system, unit_settings.length_unit)
 
 
 def disable_correct_uv_slide():
@@ -1505,6 +1509,8 @@ def on_load_post(dummy):
     bpy.app.timers.register(start_file_browser_watcher, first_interval=0.2)
     # Disable correct_uv for slide operations
     bpy.app.timers.register(disable_correct_uv_slide, first_interval=0.1)
+    # Re-subscribe to unit settings (msgbus subscriptions are lost on file load)
+    bpy.app.timers.register(_subscribe_unit_settings, first_interval=0.1)
     # Clear the file loaded flag after 1 second (fallback if depsgraph doesn't fire)
     bpy.app.timers.register(_clear_file_loaded_flag, first_interval=1.0)
 
@@ -1636,6 +1642,42 @@ def on_depsgraph_update(scene, depsgraph):
         print(f"Anvil Level Design: Error in depsgraph handler: {e}", flush=True)
 
 
+def _on_unit_settings_changed():
+    """Msgbus callback: re-apply anvil grid scale when unit settings change."""
+    from .operators.grid_tools import apply_anvil_grid_scale
+
+    try:
+        scene = bpy.context.scene
+        if not hasattr(scene, 'level_design_props'):
+            return
+        anvil_scale = scene.level_design_props.anvil_grid_scale
+        if anvil_scale == 0.0:
+            anvil_scale = 1.0
+        unit_settings = scene.unit_settings
+        apply_anvil_grid_scale(anvil_scale, unit_settings.system, unit_settings.length_unit)
+    except Exception:
+        pass
+
+
+def _subscribe_unit_settings():
+    """Subscribe to unit setting changes via bpy.msgbus."""
+    try:
+        bpy.msgbus.subscribe_rna(
+            key=(bpy.types.UnitSettings, "system"),
+            owner=_msgbus_owner,
+            args=(),
+            notify=_on_unit_settings_changed,
+        )
+        bpy.msgbus.subscribe_rna(
+            key=(bpy.types.UnitSettings, "length_unit"),
+            owner=_msgbus_owner,
+            args=(),
+            notify=_on_unit_settings_changed,
+        )
+    except Exception:
+        pass
+
+
 def register():
     bpy.utils.register_class(LEVELDESIGN_OT_force_apply_texture)
 
@@ -1676,9 +1718,15 @@ def register():
     # Disable correct_uv for slide operations via direct memory access
     bpy.app.timers.register(disable_correct_uv_slide, first_interval=0.1)
 
+    # Subscribe to unit setting changes (via timer for context availability)
+    bpy.app.timers.register(_subscribe_unit_settings, first_interval=0.1)
+
 
 def unregister():
     global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name, _last_material_count, _active_image, _file_browser_watcher_running, _last_file_browser_path, _file_loaded_into_edit_depsgraph, _was_first_save, _auto_hotspot_pending, _undo_in_progress, _multi_face_mode, _multi_face_unset_scale, _multi_face_unset_rotation, _multi_face_unset_offset, _all_selected_hotspot
+
+    # Clear msgbus subscriptions
+    bpy.msgbus.clear_by_owner(_msgbus_owner)
 
     # Stop the file browser watcher timer
     _file_browser_watcher_running = False

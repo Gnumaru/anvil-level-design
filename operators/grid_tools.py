@@ -14,6 +14,51 @@ GRID_SCALES = [
     512, 1024
 ]
 
+# Maps (unit_system, length_unit) to the factor for blender_grid_scale = anvil_scale * factor
+_UNIT_FACTORS = {
+    ('NONE', ''): 1.0,
+    ('METRIC', 'ADAPTIVE'): 1.0,
+    ('METRIC', 'KILOMETERS'): 1000.0,
+    ('METRIC', 'METERS'): 1.0,
+    ('METRIC', 'CENTIMETERS'): 0.01,
+    ('METRIC', 'MILLIMETERS'): 0.001,
+    ('METRIC', 'MICROMETERS'): 0.000001,
+    ('IMPERIAL', 'ADAPTIVE'): 1.0,
+    ('IMPERIAL', 'MILES'): 5280.0,
+    ('IMPERIAL', 'FEET'): 1.0,
+    ('IMPERIAL', 'INCHES'): 1.0 / 12.0,
+    ('IMPERIAL', 'THOU'): 1.0 / 12000.0,
+}
+
+# Maps (unit_system, length_unit) to a human-readable label
+_UNIT_LABELS = {
+    ('METRIC', 'KILOMETERS'): 'kilometers',
+    ('METRIC', 'METERS'): 'meters',
+    ('METRIC', 'CENTIMETERS'): 'centimeters',
+    ('METRIC', 'MILLIMETERS'): 'millimeters',
+    ('METRIC', 'MICROMETERS'): 'micrometers',
+    ('IMPERIAL', 'MILES'): 'miles',
+    ('IMPERIAL', 'FEET'): 'feet',
+    ('IMPERIAL', 'INCHES'): 'inches',
+    ('IMPERIAL', 'THOU'): 'thou',
+}
+
+
+def get_unit_factor(unit_system, length_unit):
+    """Return the conversion factor for the given unit settings."""
+    return _UNIT_FACTORS.get((unit_system, length_unit), 1.0)
+
+
+def get_unit_label(unit_system, length_unit):
+    """Return a lowercase display label for the given unit settings, or empty string."""
+    return _UNIT_LABELS.get((unit_system, length_unit), '')
+
+
+def apply_anvil_grid_scale(anvil_scale, unit_system, length_unit):
+    """Compute blender grid scale from anvil scale and unit settings, then apply."""
+    factor = get_unit_factor(unit_system, length_unit)
+    set_all_grid_scales(anvil_scale * factor)
+
 
 def find_closest_scale(value):
     return min(range(len(GRID_SCALES)), key=lambda i: abs(GRID_SCALES[i] - value))
@@ -47,15 +92,16 @@ class LEVELDESIGN_OT_grid_scale_up(Operator):
         return is_level_design_workspace()
 
     def execute(self, context):
-        overlays = get_all_3d_view_overlays()
-        if not overlays:
-            return {'CANCELLED'}
-
-        # Use current viewport's scale as reference
-        current_scale = overlays[0].grid_scale
+        props = context.scene.level_design_props
+        current_scale = props.anvil_grid_scale
+        if current_scale == 0.0:
+            current_scale = 1.0
         idx = find_closest_scale(current_scale)
         idx = min(idx + 1, len(GRID_SCALES) - 1)
-        set_all_grid_scales(GRID_SCALES[idx])
+        new_scale = GRID_SCALES[idx]
+        props.anvil_grid_scale = new_scale
+        unit_settings = context.scene.unit_settings
+        apply_anvil_grid_scale(new_scale, unit_settings.system, unit_settings.length_unit)
         return {'FINISHED'}
 
 
@@ -69,15 +115,16 @@ class LEVELDESIGN_OT_grid_scale_down(Operator):
         return is_level_design_workspace()
 
     def execute(self, context):
-        overlays = get_all_3d_view_overlays()
-        if not overlays:
-            return {'CANCELLED'}
-
-        # Use current viewport's scale as reference
-        current_scale = overlays[0].grid_scale
+        props = context.scene.level_design_props
+        current_scale = props.anvil_grid_scale
+        if current_scale == 0.0:
+            current_scale = 1.0
         idx = find_closest_scale(current_scale)
         idx = max(idx - 1, 0)
-        set_all_grid_scales(GRID_SCALES[idx])
+        new_scale = GRID_SCALES[idx]
+        props.anvil_grid_scale = new_scale
+        unit_settings = context.scene.unit_settings
+        apply_anvil_grid_scale(new_scale, unit_settings.system, unit_settings.length_unit)
         return {'FINISHED'}
 
 

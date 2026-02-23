@@ -523,6 +523,13 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         default=True,
     )
 
+    anvil_grid_scale: FloatProperty(
+        name="Anvil Grid Scale",
+        description="Logical grid scale used by Anvil",
+        min=0.0001,
+        max=100000.0,
+    )
+
 
 def register():
     bpy.utils.register_class(LevelDesignProperties)

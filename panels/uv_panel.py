@@ -5,12 +5,12 @@ from .. import utils as _utils_module
 from ..utils import (
     get_selected_face_count,
     get_texture_node_from_material,
-    get_viewport_grid_settings,
     find_material_with_image,
     get_principled_bsdf_from_material,
     is_texture_alpha_connected,
     is_level_design_workspace,
 )
+from ..operators.grid_tools import get_unit_label
 from ..handlers import (
     get_active_image,
     get_multi_face_mode,
@@ -38,11 +38,21 @@ class LEVELDESIGN_PT_grid_panel(Panel):
     def draw(self, context):
         layout = self.layout
 
-        overlay = get_viewport_grid_settings(context)
-        if overlay:
-            box = layout.box()
+        props = context.scene.level_design_props
+        anvil_scale = props.anvil_grid_scale
+        if anvil_scale == 0.0:
+            anvil_scale = 1.0
+        unit_settings = context.scene.unit_settings
+        label = get_unit_label(unit_settings.system, unit_settings.length_unit)
+
+        box = layout.box()
+        if label:
             box.label(
-                text=f"Grid Size: {overlay.grid_scale}  [ / ]", icon='GRID'
+                text=f"Grid Size: {anvil_scale}  ({label})  [ / ]", icon='GRID'
+            )
+        else:
+            box.label(
+                text=f"Grid Size: {anvil_scale}  [ / ]", icon='GRID'
             )
 
 

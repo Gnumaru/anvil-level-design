@@ -191,6 +191,8 @@ A useful hotkey to remember is numpad . to focus objects.
 
 Use '[' and ']' to double and half the grid size.
 
+The grid size is relative to the blender scene length unit (i.e. if you choose unit inches, 1 Anvil grid unit will equal 1 inch).
+
 ### Exporting
 
 Right now there are no bespoke export behaviours. This means you can work with Blender and your game engine as you normally would.
