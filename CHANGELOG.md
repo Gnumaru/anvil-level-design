@@ -5,7 +5,7 @@
 - Fix selecting instances (I hope)
 - Make it clearer that scaling objects is not the appropriate way to use Anvil
 - Very minor UV lock styling fix
-- Improve extrusion UV handling
+- Improve extrusion UV handling (maintain non default scales)
 
 ## 1.2.7
 - Add debug logging

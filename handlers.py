@@ -289,6 +289,17 @@ def _project_new_selected_faces_on_topology_change(context, bm):
     normal_faces = [f for f in selected_faces
                     if not face_has_hotspot_material(f, me) and f.index not in face_data_cache]
 
+    # Save pre-projection UVs for selected faces. If the next depsgraph tick
+    # reveals an extrude modal, these are restored (Blender's extrude already
+    # copies correct UVs from the original face).
+    global _pre_projection_uvs
+    _pre_projection_uvs = {}
+    for face in selected_faces:
+        try:
+            _pre_projection_uvs[face.index] = [loop[uv_layer].uv.copy() for loop in face.loops]
+        except (ReferenceError, RuntimeError):
+            pass
+
     # Apply normal UVs (world-space projection from neighbors)
     projected_count = 0
     for face in normal_faces:
@@ -330,6 +341,9 @@ _last_edit_object_name = None
 _file_loaded_into_edit_depsgraph = False
 # Track modal operators for UV world-scale baseline
 _tracked_modal_operators = set()
+# Pre-projection UVs saved before topology change projection, keyed by face index.
+# If the next depsgraph tick reveals an extrude modal, these are restored.
+_pre_projection_uvs = None
 # Track the file browser watcher modal operator
 _file_browser_watcher_running = False
 # Track the previously selected file browser path (to avoid reapplying same image)
@@ -614,6 +628,30 @@ def apply_world_scale_uvs(obj, scene):
     uv_layer = bm.loops.layers.uv.verify()
     props = scene.level_design_props
     ppm = props.pixels_per_meter
+
+    # If we saved pre-projection UVs and an extrude modal appeared, restore them.
+    # Blender's extrude copies correct UVs from the original face; our topology
+    # change projection overwrote them, so we undo that here.
+    global _pre_projection_uvs
+    if _pre_projection_uvs is not None:
+        if 'MESH_OT_extrude_region_move' in current_modals:
+            restored = 0
+            for face_idx, saved_uvs in _pre_projection_uvs.items():
+                try:
+                    if face_idx < len(bm.faces):
+                        face = bm.faces[face_idx]
+                        loops = list(face.loops)
+                        if len(loops) == len(saved_uvs):
+                            for loop, uv in zip(loops, saved_uvs):
+                                loop[uv_layer].uv = uv.copy()
+                            restored += 1
+                except (ReferenceError, RuntimeError):
+                    pass
+            if restored > 0:
+                bmesh.update_edit_mesh(me)
+                cache_face_data(bpy.context)
+                debug_log(f"[WorldScale] Restored {restored} pre-projection UVs (extrude detected)")
+        _pre_projection_uvs = None
 
     # Check if we're in an extrude operation - non-selected faces need special handling
     is_extrude = 'MESH_OT_extrude_region_move' in current_modals
