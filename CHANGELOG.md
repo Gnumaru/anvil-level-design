@@ -1,5 +1,8 @@
 # Anvil Level Design Changelog
 
+## 1.2.10
+- Instance selection also works on collection instances
+
 ## 1.2.9
 - Anvil grid scales with scene length unit
 - Fix cube cut and box builder snap/overlay not aligning with Blender grid for imperial units

@@ -502,19 +502,34 @@ class LEVELDESIGN_OT_backface_select(Operator):
         return {'FINISHED'}
 
 
-def _resolve_select_target(depsgraph, hit_obj):
+def _resolve_select_target(depsgraph, hit_obj, hit_matrix):
     """Resolve a raycast hit to the object that should be selected.
 
     If the hit object is part of a collection instance, returns the
     instancing empty. Otherwise returns the original object.
+    Uses the hit matrix from scene.ray_cast() to distinguish between
+    multiple instances of the same collection.
     """
     hit_original = hit_obj.original
     for instance in depsgraph.object_instances:
         if not instance.is_instance:
             continue
-        if instance.object.original == hit_original:
+        if instance.object.original != hit_original:
+            continue
+        # Compare the instance matrix to the hit matrix to identify
+        # which specific collection instance was clicked
+        if _matrices_equal(instance.matrix_world, hit_matrix):
             return instance.parent.original
     return hit_original
+
+
+def _matrices_equal(a, b, epsilon=1e-4):
+    """Compare two matrices for approximate equality."""
+    for i in range(4):
+        for j in range(4):
+            if abs(a[i][j] - b[i][j]) > epsilon:
+                return False
+    return True
 
 
 class LEVELDESIGN_OT_backface_object_select(Operator):
@@ -553,7 +568,7 @@ class LEVELDESIGN_OT_backface_object_select(Operator):
                 bpy.ops.object.select_all(action='DESELECT')
             return {'FINISHED'}
 
-        select_obj = _resolve_select_target(depsgraph, obj)
+        select_obj = _resolve_select_target(depsgraph, obj, matrix)
 
         if not self.extend:
             bpy.ops.object.select_all(action='DESELECT')
