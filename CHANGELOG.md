@@ -2,6 +2,8 @@
 
 ## 1.2.10
 - Instance selection also works on collection instances
+- Fix hotspotting overzealously rejecting combining faces
+- Fix switching to a new object with selected face fails to update UV settings panel / applies old scale
 
 ## 1.2.9
 - Anvil grid scales with scene length unit

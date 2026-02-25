@@ -187,11 +187,12 @@ def _apply_auto_hotspots_deferred():
         seam_mode = props.hotspot_seam_mode
         allow_combined_faces = obj.anvil_allow_combined_faces
         size_weight = obj.anvil_hotspot_size_weight
+        seam_angle = obj.anvil_hotspot_seam_angle
 
         debug_log(f"[AutoHotspot] Processing {len(all_hotspot_faces)} hotspot faces")
         result = apply_hotspots_to_mesh(
             bm, me, all_hotspot_faces, seam_mode, allow_combined_faces,
-            obj.matrix_world, props.pixels_per_meter, size_weight
+            obj.matrix_world, props.pixels_per_meter, size_weight, seam_angle
         )
         debug_log(f"[AutoHotspot] Applied: {result}")
 
@@ -1148,11 +1149,12 @@ def apply_texture_from_file_browser():
                 seam_mode = props.hotspot_seam_mode
                 allow_combined_faces = obj.anvil_allow_combined_faces
                 size_weight = obj.anvil_hotspot_size_weight
+                seam_angle = obj.anvil_hotspot_seam_angle
 
                 debug_log(f"[FileBrowser] Applying hotspots to {len(all_hotspot_faces)} faces (all hotspot faces)")
                 apply_hotspots_to_mesh(
                     bm, obj.data, all_hotspot_faces, seam_mode, allow_combined_faces,
-                    obj.matrix_world, ppm, size_weight
+                    obj.matrix_world, ppm, size_weight, seam_angle
                 )
 
                 # Restore selection state
@@ -1179,11 +1181,12 @@ def apply_texture_from_file_browser():
                 seam_mode = props.hotspot_seam_mode
                 allow_combined_faces = obj.anvil_allow_combined_faces
                 size_weight = obj.anvil_hotspot_size_weight
+                seam_angle = obj.anvil_hotspot_seam_angle
 
                 debug_log(f"[FileBrowser] Re-hotspotting {len(all_hotspot_faces)} faces (island structure changed)")
                 apply_hotspots_to_mesh(
                     bm, obj.data, all_hotspot_faces, seam_mode, allow_combined_faces,
-                    obj.matrix_world, ppm, size_weight
+                    obj.matrix_world, ppm, size_weight, seam_angle
                 )
 
                 # Restore selection state
@@ -1593,7 +1596,7 @@ def on_load_post(dummy):
 @persistent
 def on_depsgraph_update(scene, depsgraph):
     """Consolidated depsgraph update handler"""
-    global last_face_count, _file_loaded_into_edit_depsgraph, _force_auto_hotspot
+    global last_face_count, _file_loaded_into_edit_depsgraph, _force_auto_hotspot, _last_selected_face_indices, _last_active_face_index, _last_edit_object_name
 
     # Skip all depsgraph handling during undo operations
     if _undo_in_progress:
@@ -1614,6 +1617,11 @@ def on_depsgraph_update(scene, depsgraph):
             return
 
         props = scene.level_design_props
+
+        # Clear edit session tracking when not in edit mode so that
+        # re-entering edit mode (even on the same object) is detected as fresh
+        if context.mode != 'EDIT_MESH' and _last_edit_object_name is not None:
+            _last_edit_object_name = None
 
         # Handle mesh updates (UV lock, world-scale UVs)
         for update in depsgraph.updates:
@@ -1650,12 +1658,17 @@ def on_depsgraph_update(scene, depsgraph):
                     # Detect fresh edit session (entering edit mode or switching objects)
                     # This must happen before topology/selection checks to prevent
                     # updating active image when user didn't explicitly click a face
-                    global _last_edit_object_name
                     is_fresh_start = (obj.name != _last_edit_object_name)
                     _last_edit_object_name = obj.name
 
                     if is_fresh_start:
                         debug_log(f"[Depsgraph] Fresh edit session for '{obj.name}'")
+                        # Rebuild cache for the new object and reset selection tracking
+                        # so check_selection_changed detects the current selection as new
+                        cache_face_data(context)
+                        _last_selected_face_indices = set()
+                        _last_active_face_index = -1
+                        debug_log(f"[Depsgraph] Cache rebuilt for new object ({len(face_data_cache)} faces)")
 
                     # On file load, allow active image sync even if fresh start
                     # (to restore state from previous session)
