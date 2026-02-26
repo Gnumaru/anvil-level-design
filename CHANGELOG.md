@@ -2,6 +2,7 @@
 
 ## 1.2.11
 - Fix duplicating objects resets UVs
+- When box is built in edit mode, box is selected
 
 ## 1.2.10
 - Instance selection also works on collection instances

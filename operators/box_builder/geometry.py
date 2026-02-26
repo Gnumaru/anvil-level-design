@@ -97,6 +97,18 @@ def execute_box_builder(first_vertex, second_vertex, depth, local_x, local_y, lo
     # Apply material and UVs
     _apply_material_and_uvs(bm, new_faces, source_face, uv_layer, ppm, me, obj)
 
+    # Select only the newly created box geometry
+    for f in bm.faces:
+        f.select = False
+    for e in bm.edges:
+        e.select = False
+    for v in bm.verts:
+        v.select = False
+    for f in new_faces:
+        if f.is_valid:
+            f.select = True
+    bm.select_flush(True)
+
     bmesh.update_edit_mesh(me)
 
     if is_zero_depth:
