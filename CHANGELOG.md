@@ -1,5 +1,8 @@
 # Anvil Level Design Changelog
 
+## 1.2.11
+- Fix duplicating objects resets UVs
+
 ## 1.2.10
 - Instance selection also works on collection instances
 - Fix hotspotting overzealously rejecting combining faces

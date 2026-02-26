@@ -668,12 +668,12 @@ def apply_world_scale_uvs(obj, scene):
     props = scene.level_design_props
     ppm = props.pixels_per_meter
 
-    # If we saved pre-projection UVs and an extrude modal appeared, restore them.
-    # Blender's extrude copies correct UVs from the original face; our topology
+    # If we saved pre-projection UVs and an extrude/duplicate modal appeared, restore them.
+    # Blender's extrude and duplicate copy correct UVs from the original face; our topology
     # change projection overwrote them, so we undo that here.
     global _pre_projection_uvs
     if _pre_projection_uvs is not None:
-        if 'MESH_OT_extrude_region_move' in current_modals:
+        if 'MESH_OT_extrude_region_move' in current_modals or 'MESH_OT_duplicate_move' in current_modals:
             restored = 0
             for face_idx, saved_uvs in _pre_projection_uvs.items():
                 try:
@@ -689,7 +689,7 @@ def apply_world_scale_uvs(obj, scene):
             if restored > 0:
                 bmesh.update_edit_mesh(me)
                 cache_face_data(bpy.context)
-                debug_log(f"[WorldScale] Restored {restored} pre-projection UVs (extrude detected)")
+                debug_log(f"[WorldScale] Restored {restored} pre-projection UVs (extrude/duplicate detected)")
         _pre_projection_uvs = None
 
     # Check if we're in an extrude operation - non-selected faces need special handling
