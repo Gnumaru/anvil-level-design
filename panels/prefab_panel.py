@@ -226,7 +226,10 @@ class LEVELDESIGN_PT_prefab_library_prefabs_panel(Panel):
                 and context.scene.anvil_prefab_mode == 'LIBRARY')
 
     def draw(self, context):
-        from ..prefabs.assets import iter_scene_prefab_assets
+        from ..prefabs.assets import (
+            iter_scene_prefab_assets,
+            prefab_dependency_conflicts,
+        )
 
         layout = self.layout
         scene = context.scene
@@ -257,6 +260,19 @@ class LEVELDESIGN_PT_prefab_library_prefabs_panel(Panel):
             layout.label(text="No prefab assets", icon='INFO')
             return
 
+        asset_objects = [
+            obj for obj in scene.collection.all_objects
+            if obj.asset_data is not None
+        ]
+        dependency_conflicts = prefab_dependency_conflicts(asset_objects)
+        if dependency_conflicts:
+            warning = layout.box()
+            warning.alert = True
+            warning.label(
+                text="Prefab assets cannot share a mesh or collection.",
+                icon='ERROR',
+            )
+
         list_box = layout.box()
         for asset_type, asset_name in assets:
             asset_object = next(
@@ -270,7 +286,7 @@ class LEVELDESIGN_PT_prefab_library_prefabs_panel(Panel):
                 asset_object is not None and len(asset_object.modifiers) > 0
             )
             row = list_box.row(align=True)
-            row.alert = has_top_level_modifier
+            row.alert = has_top_level_modifier or asset_name in dependency_conflicts
             if has_top_level_modifier:
                 row.operator(
                     "leveldesign.prefab_top_level_modifier_warning",

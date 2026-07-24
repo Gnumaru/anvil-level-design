@@ -59,10 +59,6 @@ def _purge_all():
     props = bpy.context.scene.level_design_props
     props.weld_mode = 'NONE'
     props.weld_depth = 0.0
-    props.weld_prefab_library_index = -1
-    props.weld_prefab_object_name = ""
-    props.weld_prefab_asset_type = "OBJECT"
-    props.weld_prefab_rotation = 0.0
     props.prefab_inherit_normal = True
     props.prefab_random_scale_enabled = False
     props.prefab_random_scale_min = (1.0, 1.0, 1.0)

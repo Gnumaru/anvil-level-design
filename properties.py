@@ -755,31 +755,6 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         default=0.0,
     )
 
-    weld_prefab_library_index: IntProperty(
-        name="Weld Prefab Library Index",
-        description="Prefab library index for Repeat Prefab",
-        default=-1,
-    )
-
-    weld_prefab_object_name: StringProperty(
-        name="Weld Prefab Object Name",
-        description="Prefab object name for Repeat Prefab",
-        default="",
-    )
-
-    weld_prefab_asset_type: StringProperty(
-        name="Weld Prefab Asset Type",
-        description="Prefab asset type for Repeat Prefab",
-        default="OBJECT",
-    )
-
-    weld_prefab_rotation: FloatProperty(
-        name="Weld Prefab Rotation",
-        description="Placement rotation for Repeat Prefab",
-        default=0.0,
-    )
-
-
 def register():
     bpy.utils.register_class(AnvilUVMapSettings)
     bpy.utils.register_class(AnvilPrefabObjectName)

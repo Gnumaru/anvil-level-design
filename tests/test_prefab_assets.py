@@ -1,3 +1,4 @@
+import json
 import os
 
 import bpy
@@ -6,6 +7,12 @@ from .base_test import AnvilTestCase
 from ..operators.prefab_ops import (
     _make_all_free_objects_assets,
     _scan_library_prefab_assets,
+)
+from ..prefabs.assets import (
+    get_prefab_asset_reference,
+    make_prefab_asset_references_relative,
+    resolve_prefab_from_object,
+    set_prefab_asset_reference,
 )
 
 
@@ -58,6 +65,40 @@ def _write_instanced_hierarchy_prefab(filepath, object_name):
 
 
 class PrefabAssetsTest(AnvilTestCase):
+
+    def test_prefab_resolution_invalid_stored_reference_preserves_actionable_error(self):
+        obj = _new_object("InvalidPrefabReference")
+        set_prefab_asset_reference(obj, "not-json")
+
+        resolved_prefab, error = resolve_prefab_from_object(bpy.context.scene, obj)
+
+        self.assertIsNone(resolved_prefab)
+        self.assertEqual(error, "Invalid prefab asset reference")
+
+    def test_prefab_asset_reference_save_migration_uses_project_relative_library_path(self):
+        output_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "test_outputs"),
+        )
+        blend_filepath = os.path.join(output_root, "portable_project", "level.blend")
+        library_filepath = os.path.join(
+            output_root,
+            "portable_project",
+            "prefabs",
+            "library.blend",
+        )
+        obj = _new_object("PortableReference")
+        absolute_reference = json.dumps(
+            [library_filepath, "PortablePrefab"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        set_prefab_asset_reference(obj, absolute_reference)
+
+        updated_count = make_prefab_asset_references_relative(blend_filepath)
+
+        stored_values = json.loads(get_prefab_asset_reference(obj))
+        self.assertEqual(updated_count, 1)
+        self.assertEqual(stored_values, ["//prefabs/library.blend", "PortablePrefab"])
 
     def test_prefab_instantiate_action_settings_hide_source_fields_and_use_readable_names(self):
         properties = bpy.ops.leveldesign.prefab_instantiate.get_rna_type().properties

@@ -71,10 +71,6 @@ _STR_TO_MODE = {
     'FOLDED_PLANE': 4,
     'PREFAB': 5,
 }
-_PREFAB_LIBRARY_INDEX_PROP = _AW + "prefab_library_index"
-_PREFAB_OBJECT_NAME_PROP = _AW + "prefab_object_name"
-_PREFAB_ASSET_TYPE_PROP = _AW + "prefab_asset_type"
-_PREFAB_ROTATION_PROP = _AW + "prefab_rotation"
 _repeat_prefab_override = None
 
 
@@ -238,30 +234,6 @@ def _set_weld_mode_on_mesh(me, mode):
 def _get_weld_mode_from_mesh(me):
     """Read weld mode from a Mesh custom property (object mode only)."""
     return me.get(_AW + "mode", "NONE")
-
-
-def _set_repeat_prefab_on_object_id(obj, library_index, object_name, asset_type, rotation):
-    """Store repeat-prefab weld state as Object custom properties."""
-    obj[_AW + "mode"] = 'PREFAB'
-    obj[_PREFAB_LIBRARY_INDEX_PROP] = int(library_index)
-    obj[_PREFAB_OBJECT_NAME_PROP] = object_name
-    obj[_PREFAB_ASSET_TYPE_PROP] = asset_type
-    obj[_PREFAB_ROTATION_PROP] = float(rotation)
-
-
-def _get_weld_mode_from_object_id(obj):
-    """Read weld mode from Object custom properties."""
-    return obj.get(_AW + "mode", "NONE")
-
-
-def _get_repeat_prefab_from_object_id(obj):
-    """Read repeat-prefab metadata from Object custom properties."""
-    return (
-        int(obj.get(_PREFAB_LIBRARY_INDEX_PROP, -1)),
-        obj.get(_PREFAB_OBJECT_NAME_PROP, ""),
-        obj.get(_PREFAB_ASSET_TYPE_PROP, "OBJECT"),
-        float(obj.get(_PREFAB_ROTATION_PROP, 0.0)),
-    )
 
 
 def _clear_weld_on_mesh(me):
@@ -555,17 +527,12 @@ def set_weld_from_box_builder_object_mode(obj):
     _set_weld_mode_on_mesh(obj.data, 'INVERT')
 
 
-def set_repeat_prefab_override(scene, library_index, object_name, asset_type, rotation):
-    """Set transient Repeat Prefab state without writing undoable mesh data."""
+def set_repeat_prefab_override(scene, asset_reference, active_object):
+    """Keep one transient asset reference while a placement is pending."""
     global _repeat_prefab_override
 
-    _repeat_prefab_override = (int(library_index), object_name, asset_type, float(rotation))
-    props = scene.level_design_props
-    props.weld_mode = 'PREFAB'
-    props.weld_prefab_library_index = int(library_index)
-    props.weld_prefab_object_name = object_name
-    props.weld_prefab_asset_type = asset_type
-    props.weld_prefab_rotation = float(rotation)
+    _repeat_prefab_override = (asset_reference, active_object)
+    scene.level_design_props.weld_mode = 'PREFAB'
 
 
 def clear_repeat_prefab_override():
@@ -574,18 +541,29 @@ def clear_repeat_prefab_override():
     _repeat_prefab_override = None
 
 
-def set_repeat_prefab_on_object(obj, scene, library_index, object_name, asset_type, rotation):
-    """Store durable Repeat Prefab state on a placed prefab object."""
-    if obj is not None:
-        _set_repeat_prefab_on_object_id(obj, library_index, object_name, asset_type, rotation)
+def _repeat_prefab_override_reference(active_object):
+    if _repeat_prefab_override is None:
+        return ""
+
+    asset_reference, override_active_object = _repeat_prefab_override
+    try:
+        if active_object == override_active_object:
+            return asset_reference
+    except ReferenceError:
+        pass
 
     clear_repeat_prefab_override()
-    props = scene.level_design_props
-    props.weld_mode = 'PREFAB'
-    props.weld_prefab_library_index = int(library_index)
-    props.weld_prefab_object_name = object_name
-    props.weld_prefab_asset_type = asset_type
-    props.weld_prefab_rotation = float(rotation)
+    return ""
+
+
+def set_repeat_prefab_on_object(obj, scene, asset_reference):
+    """Store the one durable source-asset reference on a placed prefab."""
+    if obj is not None:
+        from ..prefabs.assets import set_prefab_asset_reference
+        set_prefab_asset_reference(obj, asset_reference)
+
+    clear_repeat_prefab_override()
+    scene.level_design_props.weld_mode = 'PREFAB'
 
 
 # ---------------------------------------------------------------------------
@@ -609,26 +587,18 @@ def sync_weld_props(context, bm):
         return
 
     props = context.scene.level_design_props
-    if _repeat_prefab_override is not None:
-        library_index, object_name, asset_type, rotation = _repeat_prefab_override
+    obj = context.active_object
+    if _repeat_prefab_override_reference(obj):
         props.weld_mode = 'PREFAB'
-        props.weld_prefab_library_index = library_index
-        props.weld_prefab_object_name = object_name
-        props.weld_prefab_asset_type = asset_type
-        props.weld_prefab_rotation = rotation
         return
 
-    obj = context.active_object
-    if obj is not None and _get_weld_mode_from_object_id(obj) == 'PREFAB':
-        library_index, object_name, asset_type, rotation = _get_repeat_prefab_from_object_id(obj)
+    from ..prefabs.assets import find_prefab_asset_reference_owner
+    repeat_prefab_owner = find_prefab_asset_reference_owner(obj)
+    if repeat_prefab_owner is not None:
         props.weld_mode = 'PREFAB'
         props.weld_depth = 0.0
         props.weld_direction = (0.0, 0.0, 0.0)
         props.weld_back_plane_offset = 0.0
-        props.weld_prefab_library_index = library_index
-        props.weld_prefab_object_name = object_name
-        props.weld_prefab_asset_type = asset_type
-        props.weld_prefab_rotation = rotation
         return
 
     if not obj or obj.type != 'MESH':
@@ -704,6 +674,76 @@ class MESH_OT_context_weld(bpy.types.Operator):
         if not hasattr(context.scene, 'level_design_props'):
             return {'CANCELLED'}
 
+        if context.mode != 'EDIT_MESH':
+            from ..prefabs.assets import (
+                find_prefab_asset_reference_owner,
+                resolve_prefab_asset_reference,
+                resolve_prefab_from_object,
+            )
+            active_object = context.active_object
+            has_stored_reference = (
+                find_prefab_asset_reference_owner(active_object) is not None
+            )
+            resolved_prefab, resolution_error = resolve_prefab_from_object(
+                context.scene,
+                active_object,
+            )
+            should_report_resolution_error = (
+                has_stored_reference
+                or resolution_error == "Selected object matches multiple prefab assets"
+            )
+            if resolved_prefab is None:
+                override_reference = _repeat_prefab_override_reference(
+                    active_object,
+                )
+                if override_reference:
+                    resolved_prefab, resolution_error = resolve_prefab_asset_reference(
+                        context.scene,
+                        override_reference,
+                    )
+                    should_report_resolution_error = True
+                    if resolved_prefab is not None:
+                        resolved_prefab["repeat_object"] = None
+
+            if resolved_prefab is not None:
+                last_prefab_properties = context.window_manager.operator_properties_last(
+                    "leveldesign.prefab_instantiate"
+                )
+                repeat_object_name = resolved_prefab["asset_name"]
+                repeat_name_suffix = ""
+                repeat_make_fully_local = False
+                if (last_prefab_properties is not None
+                        and last_prefab_properties.library_index
+                        == resolved_prefab["library_index"]
+                        and last_prefab_properties.source_object_name
+                        == resolved_prefab["asset_name"]):
+                    repeat_object_name = last_prefab_properties.object_name
+                    repeat_name_suffix = last_prefab_properties.name_suffix
+                    repeat_make_fully_local = last_prefab_properties.make_fully_local
+
+                repeat_source_object_name = ""
+                repeat_object = resolved_prefab.get("repeat_object")
+                if repeat_object is not None:
+                    repeat_source_object_name = repeat_object.name
+
+                return bpy.ops.leveldesign.prefab_instantiate(
+                    'INVOKE_DEFAULT',
+                    library_index=resolved_prefab["library_index"],
+                    source_object_name=resolved_prefab["asset_name"],
+                    repeat_source_object_name=repeat_source_object_name,
+                    object_name=repeat_object_name,
+                    name_suffix=repeat_name_suffix,
+                    make_fully_local=repeat_make_fully_local,
+                    asset_type='OBJECT',
+                    placement_rotation=0.0,
+                )
+
+            if should_report_resolution_error and resolution_error:
+                self.report({'ERROR'}, resolution_error)
+                return {'CANCELLED'}
+
+            sync_weld_props(context, None)
+
         props = context.scene.level_design_props
         weld_mode = props.weld_mode
 
@@ -711,37 +751,7 @@ class MESH_OT_context_weld(bpy.types.Operator):
             return {'CANCELLED'}
 
         if weld_mode == 'PREFAB':
-            if props.weld_prefab_library_index < 0 or not props.weld_prefab_object_name:
-                return {'CANCELLED'}
-
-            last_prefab_properties = context.window_manager.operator_properties_last(
-                "leveldesign.prefab_instantiate"
-            )
-            if last_prefab_properties is None:
-                repeat_object_name = props.weld_prefab_object_name
-                repeat_name_suffix = ""
-                repeat_make_fully_local = False
-            else:
-                repeat_object_name = last_prefab_properties.object_name
-                repeat_name_suffix = last_prefab_properties.name_suffix
-                repeat_make_fully_local = last_prefab_properties.make_fully_local
-
-            active_object = context.active_object
-            repeat_source_object_name = ""
-            if (active_object is not None
-                    and _get_weld_mode_from_object_id(active_object) == 'PREFAB'):
-                repeat_source_object_name = active_object.name
-            return bpy.ops.leveldesign.prefab_instantiate(
-                'INVOKE_DEFAULT',
-                library_index=props.weld_prefab_library_index,
-                source_object_name=props.weld_prefab_object_name,
-                repeat_source_object_name=repeat_source_object_name,
-                object_name=repeat_object_name,
-                name_suffix=repeat_name_suffix,
-                make_fully_local=repeat_make_fully_local,
-                asset_type=props.weld_prefab_asset_type,
-                placement_rotation=props.weld_prefab_rotation,
-            )
+            return {'CANCELLED'}
 
         if not (context.active_object and
                 context.active_object.type == 'MESH'):

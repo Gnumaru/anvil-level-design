@@ -5,7 +5,11 @@ from mathutils import Vector
 
 from .base_test import AnvilTestCase, _get_window
 from ..operators.box_builder.geometry import execute_box_builder_object_mode
-from ..operators.weld import set_weld_from_box_builder_object_mode
+from ..operators import weld as weld_module
+from ..prefabs.assets import (
+    get_prefab_asset_reference,
+    prefab_asset_reference_parts,
+)
 
 
 def _undo_ctx():
@@ -77,7 +81,7 @@ def _create_box_builder_object_with_invert():
     if not result[0]:
         raise AssertionError(result[1])
     obj = bpy.context.view_layer.objects.active
-    set_weld_from_box_builder_object_mode(obj)
+    weld_module.set_weld_from_box_builder_object_mode(obj)
     props.weld_mode = 'INVERT'
     return obj
 
@@ -135,7 +139,13 @@ class PrefabPlacementUndoTest(AnvilTestCase):
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(props.weld_mode, 'PREFAB')
-        self.assertEqual(props.weld_prefab_object_name, "EscRepeatPrefab")
+        override_reference = weld_module._repeat_prefab_override_reference(
+            bpy.context.active_object,
+        )
+        self.assertEqual(
+            prefab_asset_reference_parts(override_reference)[1],
+            "EscRepeatPrefab",
+        )
 
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo()
@@ -186,7 +196,12 @@ class PrefabPlacementUndoTest(AnvilTestCase):
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(props.weld_mode, 'PREFAB')
-        self.assertEqual(props.weld_prefab_object_name, "RedoRepeatPrefab")
+        self.assertEqual(
+            prefab_asset_reference_parts(
+                get_prefab_asset_reference(placed_obj),
+            )[1],
+            "RedoRepeatPrefab",
+        )
 
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo_push(message="After prefab placement")
@@ -208,6 +223,8 @@ class PrefabPlacementUndoTest(AnvilTestCase):
         self.assertTrue(_scene_has_object_name(placed_name))
         self.assertEqual(bpy.context.scene.level_design_props.weld_mode, 'PREFAB')
         self.assertEqual(
-            bpy.context.scene.level_design_props.weld_prefab_object_name,
+            prefab_asset_reference_parts(
+                get_prefab_asset_reference(bpy.data.objects[placed_name]),
+            )[1],
             "RedoRepeatPrefab",
         )

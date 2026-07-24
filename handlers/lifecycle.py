@@ -279,6 +279,9 @@ def _make_prefab_library_paths_relative():
                     # failing the save.
                     entry.filepath = original
 
+    from ..prefabs.assets import make_prefab_asset_references_relative
+    make_prefab_asset_references_relative(bpy.data.filepath)
+
 
 @persistent
 def on_save_pre(dummy):
@@ -344,6 +347,10 @@ def on_load_post(dummy):
         subscribe_splash_watcher()
 
     reset_face_cache()
+    from ..operators.weld import clear_repeat_prefab_override
+    clear_repeat_prefab_override()
+    from ..prefabs.assets import invalidate_prefab_dependency_reference_cache
+    invalidate_prefab_dependency_reference_cache()
     set_was_first_save(False)
     reset_duplicate_material_consolidation()
     _restore_texture_browser_settings()

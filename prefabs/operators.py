@@ -24,15 +24,19 @@ from .assets import (
     append_prefab_object,
     clear_prefab_asset,
     create_object_override,
-    find_existing_linked_object,
     find_loaded_library,
     focus_selected_in_3d_views,
+    invalidate_prefab_dependency_reference_cache_for_library,
     iter_scene_prefab_assets,
     link_prefab_object,
     make_all_free_objects_assets,
     normalize_path,
+    prefab_asset_reference,
+    prefab_dependency_conflicts,
+    prospective_prefab_asset_objects,
     refresh_library_objects,
     reload_library,
+    resolve_prefab_linked_object,
     scan_library_prefab_assets,
     select_prefab_asset,
 )
@@ -309,22 +313,7 @@ def _resolve_prefab_linked_asset(scene, library_index, object_name, asset_type):
         return None, abs_path, False, f"Library not found: {abs_path}"
     if asset_type != 'OBJECT':
         return None, abs_path, False, f"Invalid asset type: {asset_type}"
-    if not object_name:
-        return None, abs_path, False, "No prefab name supplied"
-
-    loaded_lib = find_loaded_library(abs_path)
-    linked_asset = None
-    reused_linked_asset = False
-    if loaded_lib is not None:
-        linked_asset = find_existing_linked_object(abs_path, object_name)
-        reused_linked_asset = linked_asset is not None
-
-    if linked_asset is None:
-        linked_asset = link_prefab_object(abs_path, object_name)
-        if linked_asset is None:
-            return None, abs_path, False, f"Object '{object_name}' not found in {abs_path}"
-
-    return linked_asset, abs_path, reused_linked_asset, ""
+    return resolve_prefab_linked_object(abs_path, object_name)
 
 
 def _generated_prefab_name_index(name, base_name, suffix):
@@ -609,6 +598,9 @@ class LEVELDESIGN_OT_prefab_remove_library(Operator):
     def execute(self, context):
         scene = context.scene
         idx = scene.anvil_prefab_active_library_index
+        invalidate_prefab_dependency_reference_cache_for_library(
+            scene.anvil_prefab_libraries[idx].filepath,
+        )
         invalidate_preview_cache(scene.anvil_prefab_libraries[idx].filepath)
         scene.anvil_prefab_libraries.remove(idx)
         new_count = len(scene.anvil_prefab_libraries)
@@ -787,17 +779,22 @@ class LEVELDESIGN_OT_prefab_instantiate(DefaultGridPivotMixin, ModalDrawBase, Op
 
     def invoke(self, context, event):
         asset_type = self.asset_type or 'OBJECT'
+        linked_asset, abs_path, _reused, error = _resolve_prefab_linked_asset(
+            context.scene,
+            self.library_index,
+            self.source_object_name,
+            asset_type,
+        )
+        if linked_asset is None:
+            self.report({'ERROR'}, error)
+            return {'CANCELLED'}
+
         if self.repeat_source_object_name:
             placement_source, error = _find_repeat_prefab_object(
                 self.repeat_source_object_name,
             )
         else:
-            placement_source, _abs_path, _reused, error = _resolve_prefab_linked_asset(
-                context.scene,
-                self.library_index,
-                self.source_object_name,
-                asset_type,
-            )
+            placement_source = linked_asset
         if placement_source is None:
             self.report({'ERROR'}, error)
             return {'CANCELLED'}
@@ -810,13 +807,11 @@ class LEVELDESIGN_OT_prefab_instantiate(DefaultGridPivotMixin, ModalDrawBase, Op
         self._rotation_drag_start_rotation = self._placement_rotation
         self._inherit_normal = context.scene.level_design_props.prefab_inherit_normal
         self._prefab_ghost = build_prefab_albedo_ghost(placement_source)
-        self._ghost_base_matrix = placement_source.matrix_basis.copy()
+        self._ghost_base_matrix = linked_asset.matrix_basis.copy()
         set_repeat_prefab_override(
             context.scene,
-            self.library_index,
-            self.source_object_name,
-            asset_type,
-            self._placement_rotation,
+            prefab_asset_reference(abs_path, self.source_object_name),
+            context.active_object,
         )
         return super().invoke(context, event)
 
@@ -1112,10 +1107,10 @@ class LEVELDESIGN_OT_prefab_instantiate(DefaultGridPivotMixin, ModalDrawBase, Op
         set_repeat_prefab_on_object(
             override,
             context.scene,
-            self.library_index,
-            self.source_object_name,
-            asset_type,
-            rotation,
+            prefab_asset_reference(
+                context.scene.anvil_prefab_libraries[self.library_index].filepath,
+                self.source_object_name,
+            ),
         )
         return (True, message)
 
@@ -1135,17 +1130,24 @@ class LEVELDESIGN_OT_prefab_instantiate(DefaultGridPivotMixin, ModalDrawBase, Op
             )
 
         asset_type = self.asset_type or 'OBJECT'
+        linked_asset, _abs_path, _reused, error = _resolve_prefab_linked_asset(
+            context.scene,
+            self.library_index,
+            self.source_object_name,
+            asset_type,
+        )
+        if linked_asset is None:
+            self._last_action_result = (False, error)
+            self.report({'ERROR'}, error)
+            self._action_reported = True
+            return {'CANCELLED'}
+
         if self.repeat_source_object_name:
             placement_source, error = _find_repeat_prefab_object(
                 self.repeat_source_object_name,
             )
         else:
-            placement_source, _abs_path, _reused, error = _resolve_prefab_linked_asset(
-                context.scene,
-                self.library_index,
-                self.source_object_name,
-                asset_type,
-            )
+            placement_source = linked_asset
         if placement_source is None:
             self._last_action_result = (False, error)
             self.report({'ERROR'}, error)
@@ -1153,7 +1155,7 @@ class LEVELDESIGN_OT_prefab_instantiate(DefaultGridPivotMixin, ModalDrawBase, Op
             return {'CANCELLED'}
 
         self.asset_type = asset_type
-        self._ghost_base_matrix = placement_source.matrix_basis.copy()
+        self._ghost_base_matrix = linked_asset.matrix_basis.copy()
 
         result = self._instantiate_at_pivot(
             context,
@@ -1246,6 +1248,21 @@ class LEVELDESIGN_OT_prefab_make_free_objects_assets(Operator):
 
     def execute(self, context):
         scene = context.scene
+        candidate_objects = list(prospective_prefab_asset_objects(scene))
+        candidate_pointers = {obj.as_pointer() for obj in candidate_objects}
+        candidate_objects.extend(
+            obj for obj in scene.collection.all_objects
+            if obj.asset_data is not None and obj.as_pointer() not in candidate_pointers
+        )
+        conflicts = prefab_dependency_conflicts(candidate_objects)
+        if conflicts:
+            conflict_names = ", ".join(sorted(conflicts))
+            self.report(
+                {'ERROR'},
+                "Prefab assets cannot share a mesh or collection: " + conflict_names,
+            )
+            return {'CANCELLED'}
+
         marked_count = make_all_free_objects_assets(scene)
         capture_library_previews(scene)
         invalidate_preview_cache(bpy.data.filepath)

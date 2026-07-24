@@ -4,11 +4,11 @@ import os
 import bpy
 
 from .base_test import AnvilTestCase
+from ..prefabs.assets import get_prefab_asset_reference
 
 
 FULL_EXPORT_ROUTE = "full"
 COLLECTION_EXPORT_ROUTE = "collection"
-_ANVIL_WELD_MODE_PROP = "_aw_mode"
 
 
 def _export_output_path(filename):
@@ -612,24 +612,22 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
             plain_library_index,
             "PrefabPlainBlock",
         )
-        del plain_obj[_ANVIL_WELD_MODE_PROP]
-        del plain_obj_2[_ANVIL_WELD_MODE_PROP]
         original_modifier_mesh_pointer = modifier_obj.data.as_pointer()
         original_plain_mesh_pointer = plain_obj.data.as_pointer()
         original_plain_mesh_pointer_2 = plain_obj_2.data.as_pointer()
         _set_anvil_export_settings(scene, 2.0, True, True)
 
-        self.assertEqual(modifier_obj.get(_ANVIL_WELD_MODE_PROP), 'PREFAB')
+        self.assertTrue(get_prefab_asset_reference(modifier_obj))
         self.assertIsNone(modifier_obj.library)
         self.assertIsNone(modifier_obj.override_library)
         self.assertIsNotNone(modifier_obj.data.library)
         self.assertEqual(len(modifier_obj.modifiers), 1)
-        self.assertNotEqual(plain_obj.get(_ANVIL_WELD_MODE_PROP), 'PREFAB')
+        self.assertTrue(get_prefab_asset_reference(plain_obj))
         self.assertIsNone(plain_obj.library)
         self.assertIsNone(plain_obj.override_library)
         self.assertIsNotNone(plain_obj.data.library)
         self.assertEqual(len(plain_obj.modifiers), 0)
-        self.assertNotEqual(plain_obj_2.get(_ANVIL_WELD_MODE_PROP), 'PREFAB')
+        self.assertTrue(get_prefab_asset_reference(plain_obj_2))
         self.assertIsNone(plain_obj_2.library)
         self.assertIsNone(plain_obj_2.override_library)
         self.assertIsNotNone(plain_obj_2.data.library)

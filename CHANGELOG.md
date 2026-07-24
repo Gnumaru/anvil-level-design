@@ -1,5 +1,9 @@
 # Anvil Level Design Changelog
 
+# 1.8.2
+- Fix prefab placement scaling compounding
+- Fix W to place prefab not working on prefabs placed in previous sessions
+
 # 1.8.1
 - Fix scaling for linked prefabs
 
