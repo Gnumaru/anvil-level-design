@@ -46,9 +46,11 @@ def _create_asset_object(name):
     return obj
 
 
-def _seed_prefab_library(name):
+def _seed_prefab_library(name, mesh_weld_mode):
     scene = bpy.context.scene
     asset_obj = _create_asset_object(name)
+    if mesh_weld_mode != 'NONE':
+        asset_obj.data["_aw_mode"] = mesh_weld_mode
     output_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "test_outputs")
     )
@@ -103,9 +105,61 @@ class PrefabPlacementUndoTest(AnvilTestCase):
         bpy.context.scene.anvil_prefab_libraries.clear()
         super().tearDown()
 
+    def test_linked_prefab_without_reference_and_with_invert_mesh_state_displays_and_executes_repeat_prefab(self):
+        _seed_prefab_library("LegacyRockPrefab", 'INVERT')
+        result = bpy.ops.leveldesign.prefab_instantiate(
+            library_index=0,
+            source_object_name="LegacyRockPrefab",
+            object_name="LegacyRockPrefab",
+            asset_type='OBJECT',
+        )
+        self.assertEqual(result, {'FINISHED'})
+        placed_obj = bpy.context.view_layer.objects.active
+        del placed_obj["_anvil_prefab_asset_reference"]
+        self.assertIsNotNone(placed_obj.data.library)
+        self.assertEqual(placed_obj.data.get("_aw_mode"), 'INVERT')
+
+        next_weld_state = weld_module.resolve_next_weld(
+            bpy.context.scene,
+            placed_obj,
+            'OBJECT',
+            None,
+            False,
+        )
+        weld_module.sync_weld_props(
+            bpy.context.scene,
+            placed_obj,
+            'OBJECT',
+            None,
+        )
+
+        self.assertEqual(next_weld_state["mode"], 'PREFAB')
+        self.assertEqual(
+            next_weld_state["resolved_prefab"]["asset_name"],
+            "LegacyRockPrefab",
+        )
+        self.assertEqual(
+            bpy.context.scene.level_design_props.weld_mode,
+            'PREFAB',
+            "The displayed next weld must use the same prefab resolution as W",
+        )
+
+        view_ctx = _undo_ctx()
+        with bpy.context.temp_override(**view_ctx):
+            repeat_result = bpy.ops.leveldesign.context_weld()
+        self.assertEqual(repeat_result, {'RUNNING_MODAL'})
+
+        yield 0.05
+        window = _get_window()
+        mx, my = self._get_3d_viewport_center()
+        window.event_simulate(type='ESC', value='PRESS', x=mx, y=my)
+        yield
+        window.event_simulate(type='ESC', value='RELEASE', x=mx, y=my)
+        yield 0.2
+
     def test_prefab_placement_escape_does_not_push_repeat_prefab_undo_state(self):
         """Prefab placement Esc keeps Repeat Prefab transient and preserves box undo order."""
-        filepath = _seed_prefab_library("EscRepeatPrefab")
+        filepath = _seed_prefab_library("EscRepeatPrefab", 'NONE')
         undo_ctx = _undo_ctx()
         view_ctx = undo_ctx
 
@@ -170,7 +224,7 @@ class PrefabPlacementUndoTest(AnvilTestCase):
 
     def test_prefab_placement_undo_redo_restores_repeat_prefab_after_successful_place(self):
         """Prefab placement undo restores box INVERT, redo restores Repeat Prefab."""
-        _seed_prefab_library("RedoRepeatPrefab")
+        _seed_prefab_library("RedoRepeatPrefab", 'NONE')
         undo_ctx = _undo_ctx()
 
         with bpy.context.temp_override(**undo_ctx):

@@ -238,6 +238,10 @@ class APIAvailabilityTest(AnvilTestCase):
                 missing.append("bpy.types.SpacePreferences.draw_handler_add")
             if not hasattr(bpy.types.SpacePreferences, "draw_handler_remove"):
                 missing.append("bpy.types.SpacePreferences.draw_handler_remove")
+        if not hasattr(bpy.types, "LayerObjects"):
+            missing.append("bpy.types.LayerObjects")
+        elif "active" not in bpy.types.LayerObjects.bl_rna.properties:
+            missing.append("LayerObjects.active")
         mesh = bpy.data.meshes.new("api_availability_mesh")
         material = bpy.data.materials.new("api_availability_material")
         image = bpy.data.images.new("api_availability_image", width=1, height=1, alpha=True)

@@ -7,7 +7,12 @@ from .base_test import AnvilTestCase
 from .helpers import _get_context_override
 
 from ..operators.box_builder.geometry import execute_box_builder, execute_box_builder_object_mode
-from ..operators.weld import set_weld_from_box_builder, set_weld_from_box_builder_object_mode
+from ..operators.weld import (
+    restore_weld_props_after_history,
+    set_weld_from_box_builder,
+    set_weld_from_box_builder_object_mode,
+    sync_weld_props,
+)
 
 
 class BoxBuilderWeldTest(AnvilTestCase):
@@ -320,6 +325,55 @@ class BoxBuilderWeldTest(AnvilTestCase):
                        "Weld INVERT should succeed from object mode")
         self.assertEqual(props.weld_mode, 'NONE',
                          "Weld mode should be NONE after executing invert")
+
+    def test_object_mode_invert_selecting_another_object_consumes_next_weld_and_reselecting_box_does_not_restore_it(self):
+        box_mesh = bpy.data.meshes.new("transient_invert_box_mesh")
+        box_obj = bpy.data.objects.new("transient_invert_box", box_mesh)
+        bpy.context.collection.objects.link(box_obj)
+        other_mesh = bpy.data.meshes.new("transient_invert_other_mesh")
+        other_obj = bpy.data.objects.new("transient_invert_other", other_mesh)
+        bpy.context.collection.objects.link(other_obj)
+        scene = bpy.context.scene
+
+        set_weld_from_box_builder_object_mode(box_obj)
+        sync_weld_props(scene, box_obj, 'OBJECT', None)
+        self.assertEqual(scene.level_design_props.weld_mode, 'INVERT')
+
+        sync_weld_props(scene, other_obj, 'OBJECT', None)
+        self.assertEqual(scene.level_design_props.weld_mode, 'NONE')
+
+        sync_weld_props(scene, box_obj, 'OBJECT', None)
+        self.assertEqual(
+            scene.level_design_props.weld_mode,
+            'NONE',
+            "Reselecting an old box must not restore its consumed Invert weld",
+        )
+        self.assertEqual(
+            box_mesh.get("_aw_mode"),
+            'INVERT',
+            "Undo data must remain stored even though ordinary selection ignores it",
+        )
+
+    def test_object_mode_invert_history_restore_reactivates_next_weld_from_undo_data(self):
+        box_mesh = bpy.data.meshes.new("history_invert_box_mesh")
+        box_obj = bpy.data.objects.new("history_invert_box", box_mesh)
+        bpy.context.collection.objects.link(box_obj)
+        other_mesh = bpy.data.meshes.new("history_invert_other_mesh")
+        other_obj = bpy.data.objects.new("history_invert_other", other_mesh)
+        bpy.context.collection.objects.link(other_obj)
+        scene = bpy.context.scene
+
+        set_weld_from_box_builder_object_mode(box_obj)
+        sync_weld_props(scene, other_obj, 'OBJECT', None)
+        self.assertEqual(scene.level_design_props.weld_mode, 'NONE')
+
+        restore_weld_props_after_history(scene, box_obj, 'OBJECT', None)
+
+        self.assertEqual(
+            scene.level_design_props.weld_mode,
+            'INVERT',
+            "Undo/redo restoration must reactivate the box's stored Invert weld",
+        )
 
     # ------------------------------------------------------------------
     # Edit mode tests (box builder adds geometry to existing mesh)

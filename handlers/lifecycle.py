@@ -118,12 +118,22 @@ def _sync_weld_and_snapshot_selection():
             obj = context.active_object
             if obj and obj.type == 'MESH':
                 bm = bmesh.from_edit_mesh(obj.data)
-                from ..operators.weld import sync_weld_props
-                sync_weld_props(context, bm)
+                from ..operators.weld import restore_weld_props_after_history
+                restore_weld_props_after_history(
+                    context.scene,
+                    obj,
+                    context.mode,
+                    bm,
+                )
                 snapshot_selection(bm)
         else:
-            from ..operators.weld import sync_weld_props
-            sync_weld_props(context, None)
+            from ..operators.weld import restore_weld_props_after_history
+            restore_weld_props_after_history(
+                context.scene,
+                context.active_object,
+                context.mode,
+                None,
+            )
             from .face_cache import set_last_selected_face_indices, set_last_active_face_index
             set_last_selected_face_indices(set())
             set_last_active_face_index(-1)
@@ -162,8 +172,12 @@ def on_undo_pre(scene):
     """Handler called before an undo operation."""
     if _active_operator_abuses_undo():
         return
-    from ..operators.weld import clear_repeat_prefab_override
+    from ..operators.weld import (
+        clear_object_mode_weld_override,
+        clear_repeat_prefab_override,
+    )
     clear_repeat_prefab_override()
+    clear_object_mode_weld_override()
     cross_object_undo.handle_undo_pre()
     set_undo_in_progress(True)
     set_auto_hotspot_pending(False)
@@ -207,8 +221,12 @@ def on_redo_pre(scene):
     """Handler called before a redo operation."""
     if _active_operator_abuses_undo():
         return
-    from ..operators.weld import clear_repeat_prefab_override
+    from ..operators.weld import (
+        clear_object_mode_weld_override,
+        clear_repeat_prefab_override,
+    )
     clear_repeat_prefab_override()
+    clear_object_mode_weld_override()
     cross_object_undo.handle_redo_pre()
     set_undo_in_progress(True)
     set_auto_hotspot_pending(False)
@@ -347,8 +365,12 @@ def on_load_post(dummy):
         subscribe_splash_watcher()
 
     reset_face_cache()
-    from ..operators.weld import clear_repeat_prefab_override
+    from ..operators.weld import (
+        clear_object_mode_weld_override,
+        clear_repeat_prefab_override,
+    )
     clear_repeat_prefab_override()
+    clear_object_mode_weld_override()
     from ..prefabs.assets import invalidate_prefab_dependency_reference_cache
     invalidate_prefab_dependency_reference_cache()
     set_was_first_save(False)

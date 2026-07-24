@@ -12,7 +12,8 @@ in Blender's edit-mode undo system.  On undo/redo the layers are restored
 automatically — no geometry derivation needed.
 
 Object mode: weld state is stored as Mesh custom properties (obj.data), which
-participate in object-mode undo.
+participate in object-mode undo. Live selection uses a transient object owner,
+so selecting an older object cannot resurrect its consumed weld state.
 """
 
 import bpy
@@ -72,6 +73,9 @@ _STR_TO_MODE = {
     'PREFAB': 5,
 }
 _repeat_prefab_override = None
+_object_mode_weld_override = None
+_next_weld_msgbus_owner = object()
+_next_weld_sync_pending = False
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +528,31 @@ def set_weld_from_box_builder_object_mode(obj):
 
     Uses Mesh custom properties (which participate in object-mode undo).
     """
+    global _object_mode_weld_override
+
     _set_weld_mode_on_mesh(obj.data, 'INVERT')
+    _object_mode_weld_override = (obj, 'INVERT')
+
+
+def clear_object_mode_weld_override():
+    """Clear transient object-mode weld state without changing undo data."""
+    global _object_mode_weld_override
+    _object_mode_weld_override = None
+
+
+def _object_mode_weld_override_mode(active_object):
+    if _object_mode_weld_override is None:
+        return 'NONE'
+
+    override_object, weld_mode = _object_mode_weld_override
+    try:
+        if active_object == override_object:
+            return weld_mode
+    except ReferenceError:
+        pass
+
+    clear_object_mode_weld_override()
+    return 'NONE'
 
 
 def set_repeat_prefab_override(scene, asset_reference, active_object):
@@ -567,73 +595,161 @@ def set_repeat_prefab_on_object(obj, scene, asset_reference):
 
 
 # ---------------------------------------------------------------------------
-# Sync weld state to scene props
+# Resolve and sync next-weld state
 # ---------------------------------------------------------------------------
 
-def sync_weld_props(context, bm):
-    """Read weld state and sync to scene props for UI display.
+def _next_weld_state(
+        mode,
+        depth,
+        direction,
+        back_plane_offset,
+        resolved_prefab,
+        resolution_error,
+        should_report_resolution_error):
+    return {
+        "mode": mode,
+        "depth": depth,
+        "direction": direction,
+        "back_plane_offset": back_plane_offset,
+        "resolved_prefab": resolved_prefab,
+        "resolution_error": resolution_error,
+        "should_report_resolution_error": should_report_resolution_error,
+    }
 
-    Edit mode (bm is not None): reads from BMesh layers.  BMesh layers
-    participate in edit-mode undo, so weld data is restored automatically
-    on undo — no geometry derivation needed.
 
-    Object mode (bm is None): reads from Mesh custom properties.
+def _none_next_weld_state(resolution_error, should_report_resolution_error):
+    return _next_weld_state(
+        'NONE', 0.0, (0.0, 0.0, 0.0), 0.0, None,
+        resolution_error, should_report_resolution_error,
+    )
 
-    Args:
-        context: Blender context
-        bm: BMesh of the active object (edit mode) or None (object mode)
-    """
+
+def _resolve_prefab_next_weld(scene, active_object):
+    from ..prefabs.assets import (
+        find_prefab_asset_reference_owner,
+        resolve_prefab_asset_reference,
+        resolve_prefab_from_object,
+    )
+
+    override_reference = _repeat_prefab_override_reference(active_object)
+    if override_reference:
+        resolved_prefab, resolution_error = resolve_prefab_asset_reference(
+            scene,
+            override_reference,
+        )
+        if resolved_prefab is None:
+            return _none_next_weld_state(resolution_error, True)
+        resolved_prefab["repeat_object"] = None
+        return _next_weld_state(
+            'PREFAB', 0.0, (0.0, 0.0, 0.0), 0.0,
+            resolved_prefab, "", False,
+        )
+
+    has_stored_reference = (
+        find_prefab_asset_reference_owner(active_object) is not None
+    )
+    resolved_prefab, resolution_error = resolve_prefab_from_object(
+        scene,
+        active_object,
+    )
+    if resolved_prefab is not None:
+        return _next_weld_state(
+            'PREFAB', 0.0, (0.0, 0.0, 0.0), 0.0,
+            resolved_prefab, "", False,
+        )
+
+    should_report_resolution_error = (
+        has_stored_reference
+        or resolution_error == "Selected object matches multiple prefab assets"
+    )
+    if should_report_resolution_error:
+        return _none_next_weld_state(
+            resolution_error,
+            should_report_resolution_error,
+        )
+    return None
+
+
+def resolve_next_weld(
+        scene,
+        active_object,
+        context_mode,
+        bm,
+        restore_object_mode_weld):
+    """Return the one authoritative next weld for display and execution."""
+    if context_mode != 'EDIT_MESH':
+        prefab_state = _resolve_prefab_next_weld(scene, active_object)
+        if prefab_state is not None:
+            return prefab_state
+
+        weld_mode = _object_mode_weld_override_mode(active_object)
+        if weld_mode != 'NONE':
+            return _next_weld_state(
+                weld_mode, 0.0, (0.0, 0.0, 0.0), 0.0,
+                None, "", False,
+            )
+
+        if (restore_object_mode_weld
+                and active_object is not None
+                and active_object.type == 'MESH'
+                and active_object.data is not None
+                and active_object.data.library is None):
+            weld_mode = _get_weld_mode_from_mesh(active_object.data)
+            if weld_mode != 'NONE':
+                global _object_mode_weld_override
+                _object_mode_weld_override = (active_object, weld_mode)
+                return _next_weld_state(
+                    weld_mode, 0.0, (0.0, 0.0, 0.0), 0.0,
+                    None, "", False,
+                )
+
+        return _none_next_weld_state("", False)
+
+    clear_object_mode_weld_override()
+    if bm is None:
+        return _none_next_weld_state("", False)
+
+    mode, depth, direction, bpo, _cuboid, _copl = _get_weld_from_bmesh(bm)
+    return _next_weld_state(
+        mode, depth, direction, bpo, None, "", False,
+    )
+
+
+def _apply_next_weld_state(props, next_weld_state):
+    mode = next_weld_state["mode"]
+    depth = next_weld_state["depth"]
+    direction = next_weld_state["direction"]
+    back_plane_offset = next_weld_state["back_plane_offset"]
+    changed = (
+        mode != props.weld_mode
+        or (mode != 'NONE' and abs(depth - props.weld_depth) > 0.001)
+    )
+    props.weld_mode = mode
+    props.weld_depth = depth
+    props.weld_direction = direction
+    props.weld_back_plane_offset = back_plane_offset
+    if changed:
+        debug_log(
+            f"[Weld] Sync props: {mode} (depth={depth}, direction={direction})"
+        )
+
+
+def sync_weld_props(scene, active_object, context_mode, bm):
+    """Resolve current next-weld state and update scene display properties."""
     if _weld_op_running:
         return
+    next_weld_state = resolve_next_weld(
+        scene, active_object, context_mode, bm, False,
+    )
+    _apply_next_weld_state(scene.level_design_props, next_weld_state)
 
-    props = context.scene.level_design_props
-    obj = context.active_object
-    if _repeat_prefab_override_reference(obj):
-        props.weld_mode = 'PREFAB'
-        return
 
-    from ..prefabs.assets import find_prefab_asset_reference_owner
-    repeat_prefab_owner = find_prefab_asset_reference_owner(obj)
-    if repeat_prefab_owner is not None:
-        props.weld_mode = 'PREFAB'
-        props.weld_depth = 0.0
-        props.weld_direction = (0.0, 0.0, 0.0)
-        props.weld_back_plane_offset = 0.0
-        return
-
-    if not obj or obj.type != 'MESH':
-        if props.weld_mode != 'NONE':
-            props.weld_mode = 'NONE'
-        return
-
-    if bm is not None:
-        # Edit mode: read from BMesh layers
-        mode, depth, direction, bpo, _cuboid, _copl = _get_weld_from_bmesh(bm)
-
-        if mode == 'NONE':
-            if props.weld_mode != 'NONE':
-                props.weld_mode = 'NONE'
-            return
-    else:
-        # Object mode: read from Mesh custom properties
-        mode = _get_weld_mode_from_mesh(obj.data)
-        depth = 0.0
-        direction = (0.0, 0.0, 0.0)
-        bpo = 0.0
-
-        if mode == 'NONE':
-            if props.weld_mode != 'NONE':
-                props.weld_mode = 'NONE'
-            return
-
-    # Update scene props for UI display
-    if (mode != props.weld_mode or
-            (mode != 'NONE' and abs(depth - props.weld_depth) > 0.001)):
-        props.weld_mode = mode
-        props.weld_depth = depth
-        props.weld_direction = direction
-        props.weld_back_plane_offset = bpo
-        debug_log(f"[Weld] Sync props: {mode} (depth={depth}, direction={direction})")
+def restore_weld_props_after_history(scene, active_object, context_mode, bm):
+    """Restore undoable weld state after an undo or redo operation."""
+    next_weld_state = resolve_next_weld(
+        scene, active_object, context_mode, bm, True,
+    )
+    _apply_next_weld_state(scene.level_design_props, next_weld_state)
 
 
 # ---------------------------------------------------------------------------
@@ -674,83 +790,65 @@ class MESH_OT_context_weld(bpy.types.Operator):
         if not hasattr(context.scene, 'level_design_props'):
             return {'CANCELLED'}
 
-        if context.mode != 'EDIT_MESH':
-            from ..prefabs.assets import (
-                find_prefab_asset_reference_owner,
-                resolve_prefab_asset_reference,
-                resolve_prefab_from_object,
-            )
-            active_object = context.active_object
-            has_stored_reference = (
-                find_prefab_asset_reference_owner(active_object) is not None
-            )
-            resolved_prefab, resolution_error = resolve_prefab_from_object(
-                context.scene,
-                active_object,
-            )
-            should_report_resolution_error = (
-                has_stored_reference
-                or resolution_error == "Selected object matches multiple prefab assets"
-            )
-            if resolved_prefab is None:
-                override_reference = _repeat_prefab_override_reference(
-                    active_object,
-                )
-                if override_reference:
-                    resolved_prefab, resolution_error = resolve_prefab_asset_reference(
-                        context.scene,
-                        override_reference,
-                    )
-                    should_report_resolution_error = True
-                    if resolved_prefab is not None:
-                        resolved_prefab["repeat_object"] = None
+        active_object = context.active_object
+        bm = None
+        if (context.mode == 'EDIT_MESH'
+                and active_object is not None
+                and active_object.type == 'MESH'):
+            bm = bmesh.from_edit_mesh(active_object.data)
 
-            if resolved_prefab is not None:
-                last_prefab_properties = context.window_manager.operator_properties_last(
-                    "leveldesign.prefab_instantiate"
-                )
-                repeat_object_name = resolved_prefab["asset_name"]
-                repeat_name_suffix = ""
-                repeat_make_fully_local = False
-                if (last_prefab_properties is not None
-                        and last_prefab_properties.library_index
-                        == resolved_prefab["library_index"]
-                        and last_prefab_properties.source_object_name
-                        == resolved_prefab["asset_name"]):
-                    repeat_object_name = last_prefab_properties.object_name
-                    repeat_name_suffix = last_prefab_properties.name_suffix
-                    repeat_make_fully_local = last_prefab_properties.make_fully_local
-
-                repeat_source_object_name = ""
-                repeat_object = resolved_prefab.get("repeat_object")
-                if repeat_object is not None:
-                    repeat_source_object_name = repeat_object.name
-
-                return bpy.ops.leveldesign.prefab_instantiate(
-                    'INVOKE_DEFAULT',
-                    library_index=resolved_prefab["library_index"],
-                    source_object_name=resolved_prefab["asset_name"],
-                    repeat_source_object_name=repeat_source_object_name,
-                    object_name=repeat_object_name,
-                    name_suffix=repeat_name_suffix,
-                    make_fully_local=repeat_make_fully_local,
-                    asset_type='OBJECT',
-                    placement_rotation=0.0,
-                )
-
-            if should_report_resolution_error and resolution_error:
-                self.report({'ERROR'}, resolution_error)
-                return {'CANCELLED'}
-
-            sync_weld_props(context, None)
-
+        next_weld_state = resolve_next_weld(
+            context.scene,
+            active_object,
+            context.mode,
+            bm,
+            False,
+        )
         props = context.scene.level_design_props
-        weld_mode = props.weld_mode
-
-        if weld_mode == 'NONE':
-            return {'CANCELLED'}
+        _apply_next_weld_state(props, next_weld_state)
+        weld_mode = next_weld_state["mode"]
 
         if weld_mode == 'PREFAB':
+            resolved_prefab = next_weld_state["resolved_prefab"]
+            last_prefab_properties = context.window_manager.operator_properties_last(
+                "leveldesign.prefab_instantiate"
+            )
+            repeat_object_name = resolved_prefab["asset_name"]
+            repeat_name_suffix = ""
+            repeat_make_fully_local = False
+            if (last_prefab_properties is not None
+                    and last_prefab_properties.library_index
+                    == resolved_prefab["library_index"]
+                    and last_prefab_properties.source_object_name
+                    == resolved_prefab["asset_name"]):
+                repeat_object_name = last_prefab_properties.object_name
+                repeat_name_suffix = last_prefab_properties.name_suffix
+                repeat_make_fully_local = last_prefab_properties.make_fully_local
+
+            repeat_source_object_name = ""
+            repeat_object = resolved_prefab.get("repeat_object")
+            if repeat_object is not None:
+                repeat_source_object_name = repeat_object.name
+
+            return bpy.ops.leveldesign.prefab_instantiate(
+                'INVOKE_DEFAULT',
+                library_index=resolved_prefab["library_index"],
+                source_object_name=resolved_prefab["asset_name"],
+                repeat_source_object_name=repeat_source_object_name,
+                object_name=repeat_object_name,
+                name_suffix=repeat_name_suffix,
+                make_fully_local=repeat_make_fully_local,
+                asset_type='OBJECT',
+                placement_rotation=0.0,
+            )
+
+        resolution_error = next_weld_state["resolution_error"]
+        if (next_weld_state["should_report_resolution_error"]
+                and resolution_error):
+            self.report({'ERROR'}, resolution_error)
+            return {'CANCELLED'}
+
+        if weld_mode == 'NONE':
             return {'CANCELLED'}
 
         if not (context.active_object and
@@ -880,6 +978,7 @@ class MESH_OT_context_weld(bpy.types.Operator):
             # Object mode: clear Mesh custom properties (object-mode undo
             # restores them).
             _clear_weld_on_mesh(context.active_object.data)
+            clear_object_mode_weld_override()
         else:
             obj = context.active_object
             me = obj.data
@@ -1225,11 +1324,73 @@ class MESH_OT_context_weld(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _tag_next_weld_ui_redraw():
+    window_manager = bpy.context.window_manager
+    if window_manager is None:
+        return
+    for window in window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
+def _sync_next_weld_from_active_selection():
+    global _next_weld_sync_pending
+    _next_weld_sync_pending = False
+    if not is_level_design_workspace():
+        return None
+
+    context = bpy.context
+    scene = context.scene
+    if scene is None or not hasattr(scene, 'level_design_props'):
+        return None
+
+    active_object = context.active_object
+    bm = None
+    if (context.mode == 'EDIT_MESH'
+            and active_object is not None
+            and active_object.type == 'MESH'):
+        try:
+            bm = bmesh.from_edit_mesh(active_object.data)
+        except RuntimeError:
+            bm = None
+
+    sync_weld_props(scene, active_object, context.mode, bm)
+    _tag_next_weld_ui_redraw()
+    return None
+
+
+def _on_active_object_changed():
+    global _next_weld_sync_pending
+    if not is_level_design_workspace():
+        return
+    if _next_weld_sync_pending:
+        return
+    _next_weld_sync_pending = True
+    if not bpy.app.timers.is_registered(_sync_next_weld_from_active_selection):
+        bpy.app.timers.register(
+            _sync_next_weld_from_active_selection,
+            first_interval=0.0,
+        )
+
+
+def _subscribe_next_weld_selection():
+    bpy.msgbus.clear_by_owner(_next_weld_msgbus_owner)
+    bpy.msgbus.subscribe_rna(
+        key=(bpy.types.LayerObjects, "active"),
+        owner=_next_weld_msgbus_owner,
+        args=(),
+        notify=_on_active_object_changed,
+        options={'PERSISTENT'},
+    )
+
+
 _addon_keymaps = []
 
 
 def register():
     bpy.utils.register_class(MESH_OT_context_weld)
+    _subscribe_next_weld_selection()
 
     wm = bpy.context.window_manager
     kc = wm.keyconfigs.addon
@@ -1247,6 +1408,9 @@ def register():
 
 
 def unregister():
+    bpy.msgbus.clear_by_owner(_next_weld_msgbus_owner)
+    if bpy.app.timers.is_registered(_sync_next_weld_from_active_selection):
+        bpy.app.timers.unregister(_sync_next_weld_from_active_selection)
     for km, kmi in _addon_keymaps:
         km.keymap_items.remove(kmi)
     _addon_keymaps.clear()

@@ -56,6 +56,7 @@ def _purge_all():
     _weld_mod._weld_op_running = False
     _weld_mod._weld_just_stored = False
     _weld_mod.clear_repeat_prefab_override()
+    _weld_mod.clear_object_mode_weld_override()
     props = bpy.context.scene.level_design_props
     props.weld_mode = 'NONE'
     props.weld_depth = 0.0

@@ -178,7 +178,12 @@ def on_depsgraph_update(scene, depsgraph):
                 if get_last_edit_mesh_names():
                     set_last_edit_mesh_names(())
                 from ..operators.weld import sync_weld_props
-                sync_weld_props(context, None)
+                sync_weld_props(
+                    scene,
+                    context.active_object,
+                    context.mode,
+                    None,
+                )
 
         edit_objects = []
         seen_edit_meshes = set()
@@ -355,7 +360,12 @@ def on_depsgraph_update(scene, depsgraph):
 
                     with performance_stage(performance_report, "Sync weld properties"):
                         from ..operators.weld import sync_weld_props
-                        sync_weld_props(context, bm)
+                        sync_weld_props(
+                            scene,
+                            context.active_object,
+                            context.mode,
+                            bm,
+                        )
 
                     if not face_data_cache and context.mode == 'EDIT_MESH':
                         debug_log(f"[Depsgraph] Cache empty, rebuilding")
