@@ -16,7 +16,13 @@ from ..operators.cube_cut.geometry import execute_cube_cut
 from ..operators.weld import set_weld_from_edge_selection
 from ..handlers.face_cache import cache_face_data
 from .base_test import AnvilTestCase
-from .helpers import create_vertical_plane, _get_context_override, _apply_material
+from .helpers import (
+    create_vertical_plane,
+    get_context_action_kind,
+    wait_for_condition,
+    _get_context_override,
+    _apply_material,
+)
 
 GREY_FLOOR_TEXTURE_PATH = os.path.join(os.path.dirname(__file__),
                                        "dev_grey_floor.png")
@@ -176,14 +182,14 @@ class CorridorWeldVerticalTest(AnvilTestCase):
 
         # Set up weld state (simulating what the cube cut operator does)
         # back_plane_offset = 0.5 (back plane at y=0.5 projected onto (0,1,0))
-        set_weld_from_edge_selection(bpy.context, 0.75, (0, 1, 0), 0.5,
+        set_weld_from_edge_selection(obj, 0.75, (0, 1, 0), 0.5,
                                      Vector((0.25, -0.25, 0.0)),
                                      Vector((0.75, -0.25, 0.75)),
                                      Vector((1, 0, 0)), Vector((0, 0, 1)),
                                      0)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'CORRIDOR',
+        self.assertEqual(get_context_action_kind(), 'CORRIDOR',
                          "Should be CORRIDOR mode after cube cut on single plane")
 
         # Execute corridor weld
@@ -191,8 +197,10 @@ class CorridorWeldVerticalTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
 
-        # Let depsgraph handler fire to apply UVs
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Corridor action",
+        )
 
         # --- Geometry assertions ---
         bm = bmesh.from_edit_mesh(obj.data)
@@ -379,14 +387,14 @@ class CorridorWeldSlopedTest(AnvilTestCase):
 
         # Set up weld state
         # back_plane_offset = 1.0 (back plane at y=1.0 projected onto (0,1,0))
-        set_weld_from_edge_selection(bpy.context, 1.0, (0, 1, 0), 1.0,
+        set_weld_from_edge_selection(obj, 1.0, (0, 1, 0), 1.0,
                                      Vector((0.25, 0.0, 0.25)),
                                      Vector((0.75, 0.0, 0.75)),
                                      Vector((1, 0, 0)), Vector((0, 0, 1)),
                                      0)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'CORRIDOR',
+        self.assertEqual(get_context_action_kind(), 'CORRIDOR',
                          "Should be CORRIDOR mode after cube cut on sloped plane")
 
         # Execute corridor weld
@@ -394,8 +402,10 @@ class CorridorWeldSlopedTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
 
-        # Let depsgraph handler fire to apply UVs
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Corridor action",
+        )
 
         # --- Geometry assertions ---
         bm = bmesh.from_edit_mesh(obj.data)

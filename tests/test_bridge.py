@@ -2,8 +2,34 @@ import bmesh
 import bpy
 
 from ..core.uv_projection import derive_transform_from_uvs
+from ..handlers.lifecycle import get_undo_in_progress
 from .base_test import AnvilTestCase
-from .helpers import create_vertical_plane, _get_context_override
+from .helpers import (
+    create_vertical_plane,
+    get_undo_context,
+    wait_for_condition,
+    _get_context_override,
+)
+
+
+def _read_face_transforms(obj):
+    """Read UV transforms keyed by rounded face normal and centroid."""
+    ppm = bpy.context.scene.level_design_props.pixels_per_meter
+    bm = bmesh.from_edit_mesh(obj.data)
+    uv_layer = bm.loops.layers.uv[0]
+    bm.faces.ensure_lookup_table()
+    transforms = {}
+    for face in bm.faces:
+        normal = face.normal
+        centre = face.calc_center_median()
+        key = (
+            round(normal.x, 2), round(normal.y, 2), round(normal.z, 2),
+            round(centre.x, 2), round(centre.y, 2), round(centre.z, 2),
+        )
+        transforms[key] = derive_transform_from_uvs(
+            face, uv_layer, ppm, obj.data,
+        )
+    return transforms
 
 
 class BridgeEdgeLoopsTest(AnvilTestCase):
@@ -56,8 +82,16 @@ class BridgeEdgeLoopsTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.bridge_edge_loops()
 
-        # Let depsgraph handler fire
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                len(_read_face_transforms(obj)) == 6
+                and all(
+                    transform['scale_u'] > 0 and transform['scale_v'] > 0
+                    for transform in _read_face_transforms(obj).values()
+                )
+            ),
+            "Initial bridge UV projection did not finish",
+        )
 
         # Read transforms from all faces
         ppm = bpy.context.scene.level_design_props.pixels_per_meter
@@ -175,33 +209,6 @@ class BridgeUndoRedoTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.bridge_edge_loops()
 
-    def _read_face_transforms(self, obj):
-        """Read UV transforms from all faces. Returns dict keyed by (normal, centroid)."""
-        ppm = bpy.context.scene.level_design_props.pixels_per_meter
-        bm = bmesh.from_edit_mesh(obj.data)
-        uv_layer = bm.loops.layers.uv[0]
-        bm.faces.ensure_lookup_table()
-
-        transforms = {}
-        for face in bm.faces:
-            n = face.normal
-            c = face.calc_center_median()
-            key = (
-                round(n.x, 2), round(n.y, 2), round(n.z, 2),
-                round(c.x, 2), round(c.y, 2), round(c.z, 2),
-            )
-            transforms[key] = derive_transform_from_uvs(
-                face, uv_layer, ppm, obj.data)
-        return transforms
-
-    def _undo_ctx(self):
-        """Build a full context override for ed.undo (needs window + screen)."""
-        window = bpy.context.window or bpy.context.window_manager.windows[0]
-        screen = window.screen
-        area = next(a for a in screen.areas if a.type == 'VIEW_3D')
-        region = next(r for r in area.regions if r.type == 'WINDOW')
-        return {"window": window, "screen": screen, "area": area, "region": region}
-
     def _select_all_edges(self, obj):
         """Set edge select mode and select all edges."""
         bm = bmesh.from_edit_mesh(obj.data)
@@ -225,7 +232,7 @@ class BridgeUndoRedoTest(AnvilTestCase):
         obj_name = self._setup_joined_planes()
         obj = bpy.data.objects[obj_name]
         ctx = _get_context_override()
-        undo_ctx = self._undo_ctx()
+        undo_ctx = get_undo_context()
 
         # Enter edit mode
         with bpy.context.temp_override(**ctx):
@@ -251,17 +258,23 @@ class BridgeUndoRedoTest(AnvilTestCase):
             bpy.ops.ed.undo_push(message="Post-bridge")
 
         # Let depsgraph handler fire
-        yield 0.5
+        yield
 
         # Verify 6 faces after bridge and record the correct transforms
-        first_transforms = self._read_face_transforms(obj)
+        first_transforms = _read_face_transforms(obj)
         self.assertEqual(len(first_transforms), 6,
                          f"Expected 6 faces after bridge, got {len(first_transforms)}")
 
         # --- Undo the bridge (back to "Edges selected" state) ---
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo()
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                len(bmesh.from_edit_mesh(bpy.data.objects[obj_name].data).faces) == 2
+                and not get_undo_in_progress()
+            ),
+            "Undo did not restore the two source faces",
+        )
 
         # Re-acquire references (invalidated by undo)
         obj = bpy.data.objects[obj_name]
@@ -282,14 +295,24 @@ class BridgeUndoRedoTest(AnvilTestCase):
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo_push(message="Post-rebridge")
 
-        # Let depsgraph handler fire
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                len(_read_face_transforms(bpy.data.objects[obj_name])) == 6
+                and all(
+                    transform['scale_u'] > 0 and transform['scale_v'] > 0
+                    for transform in _read_face_transforms(
+                        bpy.data.objects[obj_name]
+                    ).values()
+                )
+            ),
+            "Repeated bridge UV projection did not finish",
+        )
 
         # Re-acquire references
         obj = bpy.data.objects[obj_name]
 
         # Verify we get the same 6 faces with correct UVs (not stretched)
-        second_transforms = self._read_face_transforms(obj)
+        second_transforms = _read_face_transforms(obj)
         self.assertEqual(len(second_transforms), 6,
                          f"Expected 6 faces after re-bridge, got {len(second_transforms)}")
 

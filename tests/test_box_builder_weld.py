@@ -1,30 +1,38 @@
+import os
+
 import bmesh
 import bpy
 from bpy_extras.view3d_utils import location_3d_to_region_2d
 from mathutils import Vector
 
 from .base_test import AnvilTestCase
-from .helpers import _get_context_override
+from ..handlers.lifecycle import get_undo_in_progress
+from .helpers import (
+    get_context_action_kind,
+    get_undo_context,
+    wait_for_condition,
+    _get_context_override,
+)
 
 from ..operators.box_builder.geometry import execute_box_builder, execute_box_builder_object_mode
 from ..operators.weld import (
-    restore_weld_props_after_history,
     set_weld_from_box_builder,
     set_weld_from_box_builder_object_mode,
-    sync_weld_props,
 )
 
 
 class BoxBuilderWeldTest(AnvilTestCase):
     """Test that box builder sets the correct weld mode based on surrounding geometry."""
 
-    def _undo_ctx(self):
-        """Build a full context override for ed.undo (needs window + screen)."""
-        window = bpy.context.window or bpy.context.window_manager.windows[0]
-        screen = window.screen
-        area = next(a for a in screen.areas if a.type == 'VIEW_3D')
-        region = next(r for r in area.regions if r.type == 'WINDOW')
-        return {"window": window, "screen": screen, "area": area, "region": region}
+    def tearDown(self):
+        reload_filepath = getattr(
+            self, "_pending_action_reload_filepath", "",
+        )
+        try:
+            super().tearDown()
+        finally:
+            if reload_filepath and os.path.isfile(reload_filepath):
+                os.remove(reload_filepath)
 
     def _create_empty_mesh(self, name):
         """Create an empty mesh object in edit mode."""
@@ -239,9 +247,9 @@ class BoxBuilderWeldTest(AnvilTestCase):
                 matching_loose_edges.append(edge)
         self.assertEqual(matching_loose_edges, [])
 
-    def _assert_box_builder_keep_anti_parallel_flow_weld_undo_and_reweld(self):
+    def _assert_box_builder_keep_anti_parallel_flow_weld_undo_and_redo(self):
         ctx = _get_context_override()
-        undo_ctx = self._undo_ctx()
+        undo_ctx = get_undo_context()
 
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo_push(message="Before anti-parallel box")
@@ -255,12 +263,10 @@ class BoxBuilderWeldTest(AnvilTestCase):
         bm.faces.ensure_lookup_table()
         self.assertEqual(len(bm.faces), 7)
 
-        set_weld_from_box_builder(bpy.context, face_verts)
-
-        yield 0.5
+        set_weld_from_box_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT')
+        self.assertEqual(get_context_action_kind(), 'INVERT')
 
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo_push(message="After anti-parallel box")
@@ -268,25 +274,36 @@ class BoxBuilderWeldTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
-        self.assertEqual(props.weld_mode, 'NONE')
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Invert action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE')
         self._assert_original_plane_still_points_positive_y(obj)
         self._assert_box_faces_point_inward(obj, 6)
 
         with bpy.context.temp_override(**undo_ctx):
-            bpy.ops.ed.undo_push(message="After anti-parallel weld")
             bpy.ops.ed.undo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'INVERT',
+            "Undo did not restore the anti-parallel box Invert action",
+        )
 
         obj = bpy.data.objects[obj_name]
         bpy.context.view_layer.objects.active = obj
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT')
+        self.assertEqual(get_context_action_kind(), 'INVERT')
 
-        with bpy.context.temp_override(**ctx):
-            result = bpy.ops.leveldesign.context_weld()
-        self.assertIn('FINISHED', result)
-        self.assertEqual(props.weld_mode, 'NONE')
+        with bpy.context.temp_override(**undo_ctx):
+            bpy.ops.ed.redo()
+
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Redo did not consume the anti-parallel box Invert action",
+        )
+
+        obj = bpy.data.objects[obj_name]
         self._assert_original_plane_still_points_positive_y(obj)
         self._assert_box_faces_point_inward(obj, 6)
 
@@ -298,7 +315,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         """Object-mode box is always standalone → weld should be INVERT.
 
         This is the production path: user is in object mode, builds a box,
-        the operator creates a new object and sets weld_mode = 'INVERT'.
+        the operator creates a new object and exposes an INVERT context action.
         """
         ppm = bpy.context.scene.level_design_props.pixels_per_meter
 
@@ -309,12 +326,9 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
         self.assertTrue(success, msg)
 
-        # Production path: operator stores INVERT on object and sets scene prop
+        # Production path: the box owns the pending Invert action.
         set_weld_from_box_builder_object_mode(bpy.context.active_object)
-        bpy.context.scene.level_design_props.weld_mode = 'INVERT'
-
-        props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Object-mode standalone box should be INVERT")
 
         # Verify weld execution works from object mode
@@ -323,7 +337,11 @@ class BoxBuilderWeldTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result,
                        "Weld INVERT should succeed from object mode")
-        self.assertEqual(props.weld_mode, 'NONE',
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued object-mode Invert action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Weld mode should be NONE after executing invert")
 
     def test_object_mode_invert_selecting_another_object_consumes_next_weld_and_reselecting_box_does_not_restore_it(self):
@@ -333,46 +351,128 @@ class BoxBuilderWeldTest(AnvilTestCase):
         other_mesh = bpy.data.meshes.new("transient_invert_other_mesh")
         other_obj = bpy.data.objects.new("transient_invert_other", other_mesh)
         bpy.context.collection.objects.link(other_obj)
-        scene = bpy.context.scene
-
+        bpy.context.view_layer.objects.active = box_obj
+        box_obj.select_set(True)
         set_weld_from_box_builder_object_mode(box_obj)
-        sync_weld_props(scene, box_obj, 'OBJECT', None)
-        self.assertEqual(scene.level_design_props.weld_mode, 'INVERT')
+        self.assertEqual(get_context_action_kind(), 'INVERT')
 
-        sync_weld_props(scene, other_obj, 'OBJECT', None)
-        self.assertEqual(scene.level_design_props.weld_mode, 'NONE')
+        box_obj.select_set(False)
+        other_obj.select_set(True)
+        bpy.context.view_layer.objects.active = other_obj
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Selecting another object did not dismiss the pending Invert action",
+        )
 
-        sync_weld_props(scene, box_obj, 'OBJECT', None)
+        other_obj.select_set(False)
+        box_obj.select_set(True)
+        bpy.context.view_layer.objects.active = box_obj
+        yield
         self.assertEqual(
-            scene.level_design_props.weld_mode,
+            get_context_action_kind(),
             'NONE',
             "Reselecting an old box must not restore its consumed Invert weld",
         )
-        self.assertEqual(
-            box_mesh.get("_aw_mode"),
-            'INVERT',
-            "Undo data must remain stored even though ordinary selection ignores it",
+        self.assertNotIn("_aw_mode", box_mesh)
+
+    def test_object_mode_pending_action_replacement_save_and_reload_does_not_restore_first_object_action(self):
+        """Replacing A with B prevents A's pending action returning after reload."""
+        first_mesh = bpy.data.meshes.new("replaced_action_first_mesh")
+        first_obj = bpy.data.objects.new("replaced_action_first", first_mesh)
+        bpy.context.collection.objects.link(first_obj)
+        bpy.context.view_layer.objects.active = first_obj
+        first_obj.select_set(True)
+        set_weld_from_box_builder_object_mode(first_obj)
+        self.assertEqual(get_context_action_kind(), 'INVERT')
+
+        second_mesh = bpy.data.meshes.new("replaced_action_second_mesh")
+        second_obj = bpy.data.objects.new("replaced_action_second", second_mesh)
+        bpy.context.collection.objects.link(second_obj)
+        first_obj.select_set(False)
+        second_obj.select_set(True)
+        bpy.context.view_layer.objects.active = second_obj
+
+        # Arm B before Blender has an event-loop tick in which it could dismiss
+        # A merely because the active object changed.
+        set_weld_from_box_builder_object_mode(second_obj)
+        self.assertEqual(get_context_action_kind(), 'INVERT')
+        self.assertNotIn(
+            "_aw_mode",
+            first_mesh,
+            "Arming B must clear A's replaced durable pending action",
         )
 
-    def test_object_mode_invert_history_restore_reactivates_next_weld_from_undo_data(self):
-        box_mesh = bpy.data.meshes.new("history_invert_box_mesh")
-        box_obj = bpy.data.objects.new("history_invert_box", box_mesh)
-        bpy.context.collection.objects.link(box_obj)
-        other_mesh = bpy.data.meshes.new("history_invert_other_mesh")
-        other_obj = bpy.data.objects.new("history_invert_other", other_mesh)
-        bpy.context.collection.objects.link(other_obj)
-        scene = bpy.context.scene
+        second_obj.select_set(False)
+        first_obj.select_set(True)
+        bpy.context.view_layer.objects.active = first_obj
 
+        output_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "test_outputs")
+        )
+        os.makedirs(output_root, exist_ok=True)
+        filepath = os.path.join(
+            output_root,
+            "object_mode_pending_action_replacement_reload.blend",
+        )
+        self._pending_action_reload_filepath = filepath
+        bpy.ops.wm.save_as_mainfile(filepath=filepath, check_existing=False)
+        bpy.ops.wm.open_mainfile(filepath=filepath)
+
+        restored_first = bpy.data.objects.get("replaced_action_first")
+        self.assertIsNotNone(restored_first)
+        reload_context = get_undo_context()
+        with bpy.context.temp_override(**reload_context):
+            self.assertEqual(bpy.context.active_object, restored_first)
+            self.assertNotIn("_aw_mode", restored_first.data)
+            self.assertEqual(
+                get_context_action_kind(),
+                'NONE',
+                "Reloading with A active must not restore its replaced action",
+            )
+
+    def test_object_mode_invert_weld_undo_and_redo_restores_pending_action(self):
+        undo_ctx = get_undo_context()
+        with bpy.context.temp_override(**undo_ctx):
+            bpy.ops.ed.undo_push(message="Before object-mode box")
+
+        ppm = bpy.context.scene.level_design_props.pixels_per_meter
+        success, message = execute_box_builder_object_mode(
+            Vector((0, 0, 0)), Vector((1, 0, 1)), 1.0,
+            Vector((1, 0, 0)), Vector((0, 0, 1)), Vector((0, 1, 0)),
+            ppm, Vector((0, -1, 0)), "",
+        )
+        self.assertTrue(success, message)
+        box_obj = bpy.context.active_object
+        box_name = box_obj.name
         set_weld_from_box_builder_object_mode(box_obj)
-        sync_weld_props(scene, other_obj, 'OBJECT', None)
-        self.assertEqual(scene.level_design_props.weld_mode, 'NONE')
 
-        restore_weld_props_after_history(scene, box_obj, 'OBJECT', None)
+        with bpy.context.temp_override(**undo_ctx):
+            bpy.ops.ed.undo_push(message="After object-mode box")
 
-        self.assertEqual(
-            scene.level_design_props.weld_mode,
-            'INVERT',
-            "Undo/redo restoration must reactivate the box's stored Invert weld",
+        with bpy.context.temp_override(**_get_context_override()):
+            result = bpy.ops.leveldesign.context_weld()
+        self.assertIn('FINISHED', result)
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued object-mode Invert action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE')
+
+        with bpy.context.temp_override(**undo_ctx):
+            bpy.ops.ed.undo()
+
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'INVERT',
+            "Undo did not restore the object-mode Invert action",
+        )
+        self.assertIn(box_name, bpy.data.objects)
+
+        with bpy.context.temp_override(**undo_ctx):
+            bpy.ops.ed.redo()
+
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Redo did not consume the object-mode Invert action",
         )
 
     # ------------------------------------------------------------------
@@ -401,7 +501,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         obj_name = obj.name
         self._select_first_face(obj)
         bpy.context.tool_settings.use_snap = True
-        with bpy.context.temp_override(**self._undo_ctx()):
+        with bpy.context.temp_override(**get_undo_context()):
             bpy.ops.ed.undo_push(message="Before modal anti-parallel action panel box")
 
         first_vertex = Vector((2, 0, 0))
@@ -485,10 +585,10 @@ class BoxBuilderWeldTest(AnvilTestCase):
         # Production path: operator calls set_weld_from_box_builder after
         # execute_box_builder in edit mode
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(bpy.context, face_verts)
+        set_weld_from_box_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Edit-mode standalone box should set weld to INVERT")
 
     def test_box_builder_on_anti_parallel_coplanar_face_keeps_face_and_sets_invert(self):
@@ -515,10 +615,10 @@ class BoxBuilderWeldTest(AnvilTestCase):
         face_verts = result[2] if len(result) > 2 else []
         self.assertEqual(len(face_verts), 6,
                          "Default box build should keep all 6 box faces")
-        set_weld_from_box_builder(bpy.context, face_verts)
+        set_weld_from_box_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Box on anti-parallel coplanar face should set weld to INVERT")
 
     def test_box_builder_remove_adjacent_anti_parallel_coplanar_faces_removes_shared_edge(self):
@@ -555,9 +655,9 @@ class BoxBuilderWeldTest(AnvilTestCase):
             (0, 0, 1),
         )
 
-    def test_box_builder_keep_anti_parallel_coplanar_faces_invert_undo_and_reweld_preserves_six_faces(self):
-        """Keep anti-parallel coplanar faces: invert undo restores INVERT and re-weld works."""
-        yield from self._assert_box_builder_keep_anti_parallel_flow_weld_undo_and_reweld()
+    def test_box_builder_keep_anti_parallel_coplanar_faces_invert_undo_and_redo_preserves_six_faces(self):
+        """Keep anti-parallel coplanar faces: undo and redo preserve the six box faces."""
+        yield from self._assert_box_builder_keep_anti_parallel_flow_weld_undo_and_redo()
 
     def test_box_on_plane_opposite_side_invert(self):
         """Box built on the opposite side of a plane should be INVERT.
@@ -581,10 +681,10 @@ class BoxBuilderWeldTest(AnvilTestCase):
         self.assertTrue(result[0], result[1])
 
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(bpy.context, face_verts)
+        set_weld_from_box_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Box on plane opposite side should set weld to INVERT")
 
     def test_box_plane_intersects_invert(self):
@@ -607,15 +707,93 @@ class BoxBuilderWeldTest(AnvilTestCase):
         self.assertTrue(result[0], result[1])
 
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(bpy.context, face_verts)
+        set_weld_from_box_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Box with intersecting plane should set weld to INVERT")
 
     # ------------------------------------------------------------------
     # Undo tests
     # ------------------------------------------------------------------
+
+    def test_edit_mode_invert_extruding_box_invalidates_pending_action(self):
+        """A geometry edit after Box makes its pending Invert unavailable."""
+        obj = self._create_empty_mesh("extrude_invalidates_invert")
+        ppm = bpy.context.scene.level_design_props.pixels_per_meter
+        result = execute_box_builder(
+            Vector((0, 0, 0)), Vector((1, 0, 1)), 1.0,
+            Vector((1, 0, 0)), Vector((0, 0, 1)), Vector((0, 1, 0)),
+            obj, ppm, Vector((0, -1, 0)), True,
+        )
+        self.assertTrue(result[0], result[1])
+        face_verts = result[2] if len(result) > 2 else []
+        set_weld_from_box_builder(obj, face_verts)
+        self.assertEqual(get_context_action_kind(), 'INVERT')
+
+        with bpy.context.temp_override(**_get_context_override()):
+            bpy.ops.mesh.extrude_region_move(
+                TRANSFORM_OT_translate={"value": Vector((0, 0.25, 0))}
+            )
+
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Extruding the box did not invalidate its pending Invert action",
+        )
+
+    def test_edit_mode_invert_mode_change_and_unrelated_undo_does_not_restore_dismissed_action(self):
+        """Leaving Edit Mode physically dismisses Invert across later history."""
+        obj = self._create_empty_mesh("mode_change_dismisses_invert")
+        obj_name = obj.name
+        ppm = bpy.context.scene.level_design_props.pixels_per_meter
+        ctx = _get_context_override()
+        undo_ctx = get_undo_context()
+        result = execute_box_builder(
+            Vector((0, 0, 0)), Vector((1, 0, 1)), 1.0,
+            Vector((1, 0, 0)), Vector((0, 0, 1)), Vector((0, 1, 0)),
+            obj, ppm, Vector((0, -1, 0)), True,
+        )
+        self.assertTrue(result[0], result[1])
+        face_verts = result[2] if len(result) > 2 else []
+        set_weld_from_box_builder(obj, face_verts)
+        self.assertEqual(get_context_action_kind(), 'INVERT')
+
+        with bpy.context.temp_override(**ctx):
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        def durable_payload_is_cleared():
+            current_obj = bpy.data.objects[obj_name]
+            attribute = current_obj.data.attributes.get("_aw_mode")
+            return (
+                attribute is None
+                or len(attribute.data) == 0
+                or attribute.data[0].value == 0
+            )
+
+        yield from wait_for_condition(
+            durable_payload_is_cleared,
+            "Leaving Edit Mode did not clear the durable Invert payload",
+        )
+
+        obj = bpy.data.objects[obj_name]
+        bpy.context.view_layer.objects.active = obj
+        with bpy.context.temp_override(**ctx):
+            bpy.ops.object.mode_set(mode='EDIT')
+        with bpy.context.temp_override(**undo_ctx):
+            bpy.ops.ed.undo_push(message="After pending Invert dismissal")
+        with bpy.context.temp_override(**ctx):
+            bpy.ops.mesh.select_all(action='DESELECT')
+        with bpy.context.temp_override(**undo_ctx):
+            bpy.ops.ed.undo_push(message="After unrelated selection")
+            bpy.ops.ed.undo()
+
+        yield from wait_for_condition(
+            lambda: (
+                not get_undo_in_progress()
+                and get_context_action_kind() == 'NONE'
+            ),
+            "An unrelated undo resurrected the dismissed Invert action",
+        )
 
     def test_edit_mode_invert_survives_undo(self):
         """Edit-mode: build box → deselect → undo should restore INVERT.
@@ -627,7 +805,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         obj_name = obj.name
         ppm = bpy.context.scene.level_design_props.pixels_per_meter
         ctx = _get_context_override()
-        undo_ctx = self._undo_ctx()
+        undo_ctx = get_undo_context()
 
         # Baseline undo step
         with bpy.context.temp_override(**undo_ctx):
@@ -641,12 +819,12 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
         self.assertTrue(result[0], result[1])
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(bpy.context, face_verts)
+        set_weld_from_box_builder(obj, face_verts)
 
-        yield 0.5
+        yield
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Step 1: should be INVERT after box build")
 
         with bpy.context.temp_override(**undo_ctx):
@@ -656,9 +834,12 @@ class BoxBuilderWeldTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.select_all(action='DESELECT')
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Deselecting the box did not invalidate the Invert action",
+        )
 
-        self.assertEqual(props.weld_mode, 'NONE',
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Step 2: should be NONE after deselect")
 
         with bpy.context.temp_override(**undo_ctx):
@@ -668,25 +849,24 @@ class BoxBuilderWeldTest(AnvilTestCase):
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'INVERT',
+            "Undoing the deselection did not restore the Invert action",
+        )
 
         obj = bpy.data.objects[obj_name]
         bpy.context.view_layer.objects.active = obj
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Step 3: should be INVERT after undo")
 
-    def test_edit_mode_undo_weld_restores_invert(self):
-        """Edit-mode: build box → weld invert → undo should restore INVERT.
-
-        Verifies that undoing a weld invert re-derives INVERT from the
-        consumed entries list.
-        """
+    def test_edit_mode_invert_weld_undo_and_redo_restores_pending_action(self):
+        """Edit-mode Invert owns one Blender undo/redo history step."""
         obj = self._create_empty_mesh("undo_weld")
         obj_name = obj.name
         ppm = bpy.context.scene.level_design_props.pixels_per_meter
         ctx = _get_context_override()
-        undo_ctx = self._undo_ctx()
+        undo_ctx = get_undo_context()
 
         # Baseline undo step
         with bpy.context.temp_override(**undo_ctx):
@@ -700,12 +880,10 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
         self.assertTrue(result[0], result[1])
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(bpy.context, face_verts)
-
-        yield 0.5
+        set_weld_from_box_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Step 1: should be INVERT after box build")
 
         with bpy.context.temp_override(**undo_ctx):
@@ -716,20 +894,32 @@ class BoxBuilderWeldTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result,
                        "Weld INVERT should succeed")
-        self.assertEqual(props.weld_mode, 'NONE',
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued edit-mode Invert action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Step 2: should be NONE after weld invert")
-
-        with bpy.context.temp_override(**undo_ctx):
-            bpy.ops.ed.undo_push(message="After weld")
 
         # Undo weld → should restore INVERT
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'INVERT',
+            "Undo did not restore the edit-mode Invert action",
+        )
 
         obj = bpy.data.objects[obj_name]
         bpy.context.view_layer.objects.active = obj
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Step 3: should be INVERT after undoing weld")
+
+        with bpy.context.temp_override(**undo_ctx):
+            bpy.ops.ed.redo()
+
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Redo did not consume the edit-mode Invert action",
+        )

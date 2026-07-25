@@ -11,7 +11,7 @@ from mathutils import Vector
 from . import geometry
 from ..modal_draw.base_operator import ModalDrawBase, MIN_RECTANGLE_SIZE
 from ...core.workspace_check import is_level_design_workspace
-from ..weld import set_weld_from_edge_selection, snapshot_coplanar_sides
+from ..pending_mesh_action import store_from_edge_selection, snapshot_coplanar_sides
 
 
 class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
@@ -153,8 +153,8 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
             debug_log(f"[CubeCut]   local_z={local_z}, extrude_dir={extrude_dir}")
             debug_log(f"[CubeCut]   back_point={back_point} (first_vertex + local_z * depth)")
             debug_log(f"[CubeCut]   back_plane_offset={back_plane_offset:.4f} (back_point dot extrude_dir)")
-            set_weld_from_edge_selection(
-                context, abs(depth), extrude_dir, back_plane_offset,
+            store_from_edge_selection(
+                context.active_object, abs(depth), extrude_dir, back_plane_offset,
                 first_vertex, second_vertex, local_x, local_y,
                 coplanar_blocked,
             )

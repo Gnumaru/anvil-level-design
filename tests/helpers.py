@@ -16,6 +16,57 @@ def _get_context_override():
     return {"window": window}
 
 
+def get_undo_context():
+    """Build a complete 3D View context for Blender undo and redo operators."""
+    window = bpy.context.window or bpy.context.window_manager.windows[0]
+    screen = window.screen
+    area = next(area for area in screen.areas if area.type == 'VIEW_3D')
+    region = next(region for region in area.regions if region.type == 'WINDOW')
+    return {
+        "window": window,
+        "screen": screen,
+        "area": area,
+        "region": region,
+    }
+
+
+def wait_for_condition(predicate, failure_message):
+    """Yield event-loop ticks until a Blender-driven condition becomes true."""
+    for _attempt in range(200):
+        bpy.context.view_layer.update()
+        if predicate():
+            return
+        yield 0.01
+    raise AssertionError(failure_message)
+
+
+def get_context_action():
+    """Resolve the authoritative action and captured payload used by W."""
+    from ..operators.context_action import resolve_context_action
+    active_object = bpy.context.active_object
+    action_bmesh = None
+    if (
+            bpy.context.mode == 'EDIT_MESH'
+            and active_object is not None
+            and active_object.type == 'MESH'):
+        action_bmesh = bmesh.from_edit_mesh(active_object.data)
+    return resolve_context_action(
+        bpy.context.scene,
+        active_object,
+        bpy.context.mode,
+        action_bmesh,
+    )
+
+
+def get_context_action_kind():
+    """Read the same cheap action summary used by the panel and W poll."""
+    from ..operators.context_action import get_context_action_summary
+    return get_context_action_summary(
+        bpy.context.active_object,
+        bpy.context.mode,
+    ).kind
+
+
 def create_vertical_plane(name):
     """Create a 1x1 vertical plane in the XZ plane (facing +Y).
 

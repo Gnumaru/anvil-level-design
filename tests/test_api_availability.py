@@ -42,6 +42,7 @@ _REQUIRED_OPERATORS = [
     "wm.call_menu",
     "wm.call_panel",
     "wm.lib_reload",
+    "wm.open_mainfile",
     "wm.save_mainfile",
     "wm.window_close",
     "workspace.reorder_to_front",
@@ -173,6 +174,28 @@ class APIAvailabilityTest(AnvilTestCase):
 
     def test_all_required_blender_data_apis_exist(self):
         missing = []
+        if bpy.types.Mesh.bl_rna.properties.get("attributes") is None:
+            missing.append("Mesh.attributes")
+        if not hasattr(bpy.types, "Attribute"):
+            missing.append("bpy.types.Attribute")
+        if not hasattr(bpy.types, "IntAttributeValue"):
+            missing.append("bpy.types.IntAttributeValue")
+        elif bpy.types.IntAttributeValue.bl_rna.properties.get("value") is None:
+            missing.append("IntAttributeValue.value")
+        attribute_test_mesh = bpy.data.meshes.new("api_attribute_test")
+        try:
+            attribute_test_mesh.from_pydata(((0.0, 0.0, 0.0),), (), ())
+            attribute = attribute_test_mesh.attributes.new(
+                "api_attribute", 'INT', 'POINT',
+            )
+            if not hasattr(attribute, "data"):
+                missing.append("Attribute.data")
+            elif len(attribute.data) == 0:
+                missing.append("Attribute.data populated")
+            elif not hasattr(attribute.data[0], "value"):
+                missing.append("IntAttributeValue.value instance")
+        finally:
+            bpy.data.meshes.remove(attribute_test_mesh)
         if not hasattr(bpy.context.window, "screen"):
             missing.append("Window.screen")
         if not hasattr(bpy.context.window, "cursor_warp"):

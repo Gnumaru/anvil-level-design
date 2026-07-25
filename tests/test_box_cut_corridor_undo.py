@@ -8,7 +8,7 @@ from ..operators.cube_cut.geometry import execute_cube_cut
 from ..operators.weld import set_weld_from_box_builder, set_weld_from_edge_selection
 from ..core.uv_projection import derive_transform_from_uvs
 from .base_test import AnvilTestCase
-from .helpers import _get_context_override, TEXTURE_PATH
+from .helpers import get_context_action_kind, wait_for_condition, _get_context_override, TEXTURE_PATH
 
 
 # NOTE: Two interesting observations from this test's UV snapshot:
@@ -89,9 +89,13 @@ class BoxCutDualCorridorTest(AnvilTestCase):
 
         # Weld invert
         face_verts = box_result[2] if len(box_result) > 2 else []
-        set_weld_from_box_builder(bpy.context, face_verts)
+        set_weld_from_box_builder(obj, face_verts)
         with bpy.context.temp_override(**ctx):
             bpy.ops.leveldesign.context_weld()
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Invert action",
+        )
 
         # First cut: y=0 face outward (-Y)
         bm = bmesh.from_edit_mesh(obj.data)
@@ -114,15 +118,17 @@ class BoxCutDualCorridorTest(AnvilTestCase):
 
         # First corridor weld
         set_weld_from_edge_selection(
-            bpy.context, 0.75, (0, 1, 0), -0.5,
+            obj, 0.75, (0, 1, 0), -0.5,
             Vector((0.25, 0.25, 0.0)), Vector((0.75, 0.25, 0.75)),
             Vector((1, 0, 0)), Vector((0, 0, 1)),
             0,
         )
         with bpy.context.temp_override(**ctx):
             bpy.ops.leveldesign.context_weld()
-
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the first queued Corridor action",
+        )
 
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertEqual(len(bm.faces), 15, "After first corridor should have 15 faces")
@@ -147,7 +153,7 @@ class BoxCutDualCorridorTest(AnvilTestCase):
 
         # Second corridor weld
         set_weld_from_edge_selection(
-            bpy.context, 0.25, (-0.0, 1.0, -0.0), 1.25,
+            obj, 0.25, (-0.0, 1.0, -0.0), 1.25,
             Vector((0.25, 1.0, 0.0)), Vector((0.75, 1.0, 0.25)),
             Vector((1, 0, 0)), Vector((0, 0, 1)),
             0,
@@ -155,8 +161,10 @@ class BoxCutDualCorridorTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
-
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the second queued Corridor action",
+        )
 
         # Assert geometry
         bm = bmesh.from_edit_mesh(obj.data)

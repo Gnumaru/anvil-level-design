@@ -140,6 +140,8 @@ def on_depsgraph_update(scene, depsgraph):
         )
 
         active_obj = context.active_object
+        from ..prefabs.repeat_action import validate_modal_override
+        validate_modal_override(active_obj)
         add_performance_detail(
             performance_report,
             "Active object",
@@ -177,9 +179,8 @@ def on_depsgraph_update(scene, depsgraph):
             with performance_stage(performance_report, "Exit Edit Mode state sync"):
                 if get_last_edit_mesh_names():
                     set_last_edit_mesh_names(())
-                from ..operators.weld import sync_weld_props
-                sync_weld_props(
-                    scene,
+                from ..operators.pending_mesh_action import validate_pending_action
+                validate_pending_action(
                     context.active_object,
                     context.mode,
                     None,
@@ -309,6 +310,26 @@ def on_depsgraph_update(scene, depsgraph):
                                 if topology_changed:
                                     break
 
+                    # The pending action owns its own final-state snapshot.
+                    # This preserves the producer's first depsgraph tick and
+                    # invalidates every later selection or geometry edit.
+                    from ..operators.pending_mesh_action import validate_pending_action
+                    with performance_stage(performance_report, "Validate context action"):
+                        action_object = context.active_object
+                        action_bmesh = bm
+                        if (
+                                action_object is not None
+                                and action_object != obj
+                                and action_object.type == 'MESH'
+                                and action_object.data is not None
+                                and action_object.data.is_editmode):
+                            action_bmesh = bmesh.from_edit_mesh(action_object.data)
+                        validate_pending_action(
+                            action_object,
+                            context.mode,
+                            action_bmesh,
+                        )
+
                     if topology_changed:
                         debug_log(f"[Depsgraph] Topology changed: faces {last_face_count}->{current_face_count} verts {last_vertex_count}->{current_vertex_count}")
 
@@ -336,8 +357,6 @@ def on_depsgraph_update(scene, depsgraph):
                             set_file_loaded_into_edit_depsgraph(False)
                             with performance_stage(performance_report, "Snapshot face selection"):
                                 snapshot_selection(bm)
-                            from ..operators import weld as _weld_mod
-                            _weld_mod._weld_just_stored = False
                             if not is_fresh_start and obj.anvil_auto_hotspot:
                                 with performance_stage(performance_report, "Schedule forced auto-hotspot"):
                                     set_force_auto_hotspot(True)
@@ -352,20 +371,6 @@ def on_depsgraph_update(scene, depsgraph):
                             update_ui_from_selection(context)
                             if allow_active_image_update:
                                 update_active_image_from_face(context)
-                            from ..operators import weld as _weld_mod
-                            if _weld_mod._weld_just_stored:
-                                _weld_mod._weld_just_stored = False
-                            else:
-                                _weld_mod.clear_weld_on_bmesh(bm)
-
-                    with performance_stage(performance_report, "Sync weld properties"):
-                        from ..operators.weld import sync_weld_props
-                        sync_weld_props(
-                            scene,
-                            context.active_object,
-                            context.mode,
-                            bm,
-                        )
 
                     if not face_data_cache and context.mode == 'EDIT_MESH':
                         debug_log(f"[Depsgraph] Cache empty, rebuilding")

@@ -6,7 +6,13 @@ from ..core.uv_projection import derive_transform_from_uvs
 from ..operators.cube_cut.geometry import execute_cube_cut
 from ..operators.weld import set_weld_from_edge_selection
 from .base_test import AnvilTestCase
-from .helpers import create_textured_cube, _get_context_override
+from .helpers import (
+    create_textured_cube,
+    get_context_action_kind,
+    get_undo_context,
+    wait_for_condition,
+    _get_context_override,
+)
 
 
 # Cube cut parameters used by both test classes
@@ -113,7 +119,7 @@ def _execute_cube_cut_and_set_weld(test_case, ctx):
     back_plane_offset = back_point.dot(extrude_dir.normalized())
 
     set_weld_from_edge_selection(
-        bpy.context, abs(_DEPTH), extrude_dir, back_plane_offset,
+        bpy.context.active_object, abs(_DEPTH), extrude_dir, back_plane_offset,
         _FIRST_VERTEX, _SECOND_VERTEX, _LOCAL_X, _LOCAL_Y,
         0,
     )
@@ -159,7 +165,7 @@ class FoldedPlaneWeldTest(AnvilTestCase):
         yield 0.1
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'FOLDED_PLANE',
+        self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE',
                          "Should be FOLDED_PLANE after cube cut on non-planar surface")
 
         # Execute folded plane weld
@@ -167,11 +173,16 @@ class FoldedPlaneWeldTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
 
-        self.assertEqual(props.weld_mode, 'NONE',
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Folded Plane action",
+        )
+
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Weld mode should be NONE after folded plane weld")
 
         # Let depsgraph handler fire to apply UVs
-        yield 0.5
+        yield
 
         # --- Geometry assertions ---
         bm = bmesh.from_edit_mesh(obj.data)
@@ -358,23 +369,14 @@ class FoldedPlaneWeldTest(AnvilTestCase):
         obj.data.update()
 
 
-def _undo_ctx():
-    """Build a full context override for ed.undo (needs window + screen)."""
-    window = bpy.context.window or bpy.context.window_manager.windows[0]
-    screen = window.screen
-    area = next(a for a in screen.areas if a.type == 'VIEW_3D')
-    region = next(r for r in area.regions if r.type == 'WINDOW')
-    return {"window": window, "screen": screen, "area": area, "region": region}
-
-
 class FoldedPlaneWeldUndoTest(AnvilTestCase):
     """Test folded plane weld undo: weld → undo → verify mode → re-weld."""
 
-    def test_folded_plane_weld_undo_and_reweld(self):
+    def test_folded_plane_weld_undo_and_redo_restores_geometry_and_pending_action(self):
         """Folded plane: weld → undo → verify FOLDED_PLANE → re-weld → verify geometry."""
         obj, ctx = _setup_subdivided_triangulated_cube(self, "weld_folded_undo")
         obj_name = obj.name
-        uctx = _undo_ctx()
+        uctx = get_undo_context()
 
         with bpy.context.temp_override(**uctx):
             bpy.ops.ed.undo_push(message="Before cube cut")
@@ -384,7 +386,7 @@ class FoldedPlaneWeldUndoTest(AnvilTestCase):
         yield 0.1
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'FOLDED_PLANE',
+        self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE',
                          "Should be FOLDED_PLANE after setup")
 
         with bpy.context.temp_override(**uctx):
@@ -399,9 +401,12 @@ class FoldedPlaneWeldUndoTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Folded Plane action",
+        )
 
-        self.assertEqual(props.weld_mode, 'NONE',
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Should be NONE after folded plane weld")
 
         bm = bmesh.from_edit_mesh(obj.data)
@@ -409,37 +414,35 @@ class FoldedPlaneWeldUndoTest(AnvilTestCase):
         self.assertGreater(faces_after_weld, faces_before_weld,
                            "Weld should have created new faces")
 
-        # Push after operator so undo goes to the pre-operator push
-        with bpy.context.temp_override(**uctx):
-            bpy.ops.ed.undo_push(message="After folded plane")
-
-        # --- Undo folded plane ---
+        # The dispatched concrete weld operator must create this history step.
         with bpy.context.temp_override(**uctx):
             bpy.ops.ed.undo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'FOLDED_PLANE',
+            "Undo did not restore the pending Folded Plane action",
+        )
 
         obj = bpy.data.objects[obj_name]
         bpy.context.view_layer.objects.active = obj
         props = bpy.context.scene.level_design_props
 
-        self.assertEqual(props.weld_mode, 'FOLDED_PLANE',
+        self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE',
                          "Should be FOLDED_PLANE after undoing weld")
 
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertEqual(len(bm.faces), faces_before_weld,
                          "Should have original face count after undo")
 
-        # --- Re-execute folded plane weld ---
-        with bpy.context.temp_override(**ctx):
-            result = bpy.ops.leveldesign.context_weld()
-        self.assertIn('FINISHED', result)
+        with bpy.context.temp_override(**uctx):
+            bpy.ops.ed.redo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Redo did not consume the pending Folded Plane action",
+        )
 
-        self.assertEqual(props.weld_mode, 'NONE',
-                         "Should be NONE after re-weld")
-
+        obj = bpy.data.objects[obj_name]
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertEqual(len(bm.faces), faces_after_weld,
-                         "Should have same face count after re-weld")
+                         "Should have same face count after redo")

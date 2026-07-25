@@ -15,9 +15,9 @@ from ..operators.modal_draw import snapping, utils
 from ..operators.modal_draw.base_operator import ModalDrawBase
 from ..operators.modal_draw.default_grid_pivot import DefaultGridPivotMixin
 from ..operators.modal_draw.prefab_ghost import build_prefab_albedo_ghost
-from ..operators.weld import (
-    set_repeat_prefab_on_object,
-    set_repeat_prefab_override,
+from .repeat_action import (
+    set_modal_override,
+    set_repeat_source,
 )
 from . import browser
 from .assets import (
@@ -808,8 +808,7 @@ class LEVELDESIGN_OT_prefab_instantiate(DefaultGridPivotMixin, ModalDrawBase, Op
         self._inherit_normal = context.scene.level_design_props.prefab_inherit_normal
         self._prefab_ghost = build_prefab_albedo_ghost(placement_source)
         self._ghost_base_matrix = linked_asset.matrix_basis.copy()
-        set_repeat_prefab_override(
-            context.scene,
+        set_modal_override(
             prefab_asset_reference(abs_path, self.source_object_name),
             context.active_object,
         )
@@ -1104,9 +1103,8 @@ class LEVELDESIGN_OT_prefab_instantiate(DefaultGridPivotMixin, ModalDrawBase, Op
         if override is None:
             return (False, message)
 
-        set_repeat_prefab_on_object(
+        set_repeat_source(
             override,
-            context.scene,
             prefab_asset_reference(
                 context.scene.anvil_prefab_libraries[self.library_index].filepath,
                 self.source_object_name,

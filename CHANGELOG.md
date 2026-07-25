@@ -1,6 +1,8 @@
 # Anvil Level Design Changelog
 
 # 1.8.2
+- Large weld refactor (look out for issues!)
+- Next weld is now clickable in the panel
 - Fix prefab placement scaling compounding
 - Fix W to place prefab not working on prefabs placed in previous sessions
 

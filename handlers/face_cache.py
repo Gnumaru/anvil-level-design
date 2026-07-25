@@ -25,6 +25,8 @@ _any_selected_hotspot = False
 _any_selected_fixed_hotspot = False
 
 # Cache for detecting selection changes
+_last_selected_vert_indices = set()
+_last_selected_edge_indices = set()
 _last_selected_face_indices = set()
 _last_active_face_index = -1
 # Track the meshes in Edit Mode to detect fresh edit sessions
@@ -376,31 +378,50 @@ def update_ui_from_selection(context):
 
 
 def check_selection_changed(bm):
-    """Check if face selection has changed. Returns True if selection changed."""
+    """Return whether the complete mesh selection has changed."""
+    global _last_selected_vert_indices, _last_selected_edge_indices
     global _last_selected_face_indices, _last_active_face_index
 
+    bm.verts.index_update()
+    bm.edges.index_update()
     id_layer = get_face_id_layer(bm)
-    current_selected = {f[id_layer] for f in bm.faces if f.select}
+    current_selected_verts = {vert.index for vert in bm.verts if vert.select}
+    current_selected_edges = {edge.index for edge in bm.edges if edge.select}
+    current_selected_faces = {face[id_layer] for face in bm.faces if face.select}
     current_active = bm.faces.active[id_layer] if bm.faces.active else -1
 
-    if current_selected != _last_selected_face_indices or current_active != _last_active_face_index:
-        _last_selected_face_indices = current_selected
+    changed = (
+        current_selected_verts != _last_selected_vert_indices
+        or current_selected_edges != _last_selected_edge_indices
+        or current_selected_faces != _last_selected_face_indices
+        or current_active != _last_active_face_index
+    )
+    if changed:
+        _last_selected_vert_indices = current_selected_verts
+        _last_selected_edge_indices = current_selected_edges
+        _last_selected_face_indices = current_selected_faces
         _last_active_face_index = current_active
-        return True
-    return False
+    return changed
 
 
 def snapshot_selection(bm):
-    """Snapshot the current face selection so next check_selection_changed works correctly."""
+    """Snapshot the complete mesh selection for the next change check."""
+    global _last_selected_vert_indices, _last_selected_edge_indices
     global _last_selected_face_indices, _last_active_face_index
+    bm.verts.index_update()
+    bm.edges.index_update()
     id_layer = get_face_id_layer(bm)
+    _last_selected_vert_indices = {vert.index for vert in bm.verts if vert.select}
+    _last_selected_edge_indices = {edge.index for edge in bm.edges if edge.select}
     _last_selected_face_indices = {f[id_layer] for f in bm.faces if f.select}
     _last_active_face_index = bm.faces.active[id_layer] if bm.faces.active else -1
 
 
 def reset():
     """Reset all face cache state."""
-    global last_face_count, last_vertex_count, _last_selected_face_indices, _last_active_face_index
+    global last_face_count, last_vertex_count
+    global _last_selected_vert_indices, _last_selected_edge_indices
+    global _last_selected_face_indices, _last_active_face_index
     global _last_edit_mesh_names, _multi_face_mode, _multi_face_unset_scale
     global _multi_face_unset_rotation, _multi_face_unset_offset
     global _all_selected_hotspot, _any_selected_hotspot, _any_selected_fixed_hotspot
@@ -408,6 +429,8 @@ def reset():
     face_data_cache.clear()
     last_face_count = 0
     last_vertex_count = 0
+    _last_selected_vert_indices = set()
+    _last_selected_edge_indices = set()
     _last_selected_face_indices = set()
     _last_active_face_index = -1
     _last_edit_mesh_names = ()

@@ -5,7 +5,12 @@ from mathutils import Vector
 from ..operators.cube_cut.geometry import execute_cube_cut
 from ..operators.weld import set_weld_from_edge_selection, snapshot_coplanar_sides
 from .base_test import AnvilTestCase
-from .helpers import create_textured_cube, _get_context_override
+from .helpers import (
+    create_textured_cube,
+    get_context_action_kind,
+    wait_for_condition,
+    _get_context_override,
+)
 
 
 # Cube cut parameters: cut from bottom (z=0) to middle (z=0.5) of a plain cube
@@ -73,7 +78,7 @@ def _snapshot_and_cut_and_set_weld(test_case, ctx, obj, v1, v2, depth, lx, ly, l
     back_plane_offset = back_point.dot(extrude_dir.normalized())
 
     set_weld_from_edge_selection(
-        bpy.context, abs(depth), extrude_dir, back_plane_offset,
+        obj, abs(depth), extrude_dir, back_plane_offset,
         v1, v2, lx, ly, coplanar_blocked,
     )
 
@@ -107,7 +112,7 @@ class FoldedPlaneWeldCubeTest(AnvilTestCase):
         yield 0.1
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'FOLDED_PLANE',
+        self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE',
                          "Should be FOLDED_PLANE after cube cut on plain cube "
                          "with bottom-to-middle cut")
 
@@ -116,11 +121,16 @@ class FoldedPlaneWeldCubeTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
 
-        self.assertEqual(props.weld_mode, 'NONE',
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Folded Plane action",
+        )
+
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Weld mode should be NONE after folded plane weld")
 
         # Let depsgraph handler fire to apply UVs
-        yield 0.5
+        yield
 
         # --- Geometry assertions ---
         bm = bmesh.from_edit_mesh(obj.data)
@@ -212,14 +222,18 @@ class FoldedPlaneWeldCubeDoubleTest(AnvilTestCase):
         yield 0.1
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'FOLDED_PLANE')
+        self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE')
 
         with bpy.context.temp_override(**ctx):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
-        self.assertEqual(props.weld_mode, 'NONE')
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the first queued Folded Plane action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE')
 
-        yield 0.5
+        yield
 
         # --- Second cut: top-right corner (x=0.75..1, z=0.75..1) ---
         # Re-select all faces for the second cut
@@ -249,17 +263,21 @@ class FoldedPlaneWeldCubeDoubleTest(AnvilTestCase):
             print(f"  edge: ({v0.co.x:.2f},{v0.co.y:.2f},{v0.co.z:.2f})"
                   f" -> ({v1.co.x:.2f},{v1.co.y:.2f},{v1.co.z:.2f})"
                   f" link_faces={len(e.link_faces)}")
-        print(f"Level Design Tools: weld_mode = {props.weld_mode}")
+        print(f"Level Design Tools: context_action = {get_context_action_kind()}")
 
-        self.assertIn(props.weld_mode, ('BRIDGE', 'FOLDED_PLANE'),
+        self.assertIn(get_context_action_kind(), ('BRIDGE', 'FOLDED_PLANE'),
                       "Second cut should produce a weld mode")
 
         with bpy.context.temp_override(**ctx):
             result2 = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result2)
-        self.assertEqual(props.weld_mode, 'NONE')
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the second queued folded action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE')
 
-        yield 0.5
+        yield
 
         # --- Geometry assertions ---
         bm = bmesh.from_edit_mesh(obj.data)

@@ -436,6 +436,24 @@ def _linked_prefab_root(obj):
     return current
 
 
+def object_has_linked_prefab_dependency(obj):
+    """Return whether an object or its ancestors expose linked prefab data.
+
+    This is an ancestry-only presentation check. It never scans the scene,
+    builds the dependency cache, or links a library.
+    """
+    current = obj
+    while current is not None:
+        for id_data in (
+                current,
+                getattr(current, "data", None),
+                getattr(current, "instance_collection", None)):
+            if id_data is not None and getattr(id_data, "library", None) is not None:
+                return True
+        current = current.parent
+    return False
+
+
 def resolve_prefab_from_object(scene, obj):
     """Resolve a selected placed prefab from its reference or unique linked data."""
     if obj is None:

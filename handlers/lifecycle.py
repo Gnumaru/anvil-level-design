@@ -105,35 +105,19 @@ def _active_operator_abuses_undo():
     return op is not None and op.bl_idname in _UNDO_ABUSING_OPERATORS
 
 
-def _sync_weld_and_snapshot_selection():
-    """Sync weld state from BMesh/Mesh to scene props after undo/redo.
-
-    Also snapshots the current face selection so that the next depsgraph
-    check_selection_changed call doesn't see a false change and incorrectly
-    clear the restored weld state.
-    """
+def _restore_pending_action_and_snapshot_selection():
+    """Re-arm mesh state restored by Blender history."""
     try:
         context = bpy.context
+        from ..operators.pending_mesh_action import restore_after_history
         if context.mode == 'EDIT_MESH':
             obj = context.active_object
             if obj and obj.type == 'MESH':
                 bm = bmesh.from_edit_mesh(obj.data)
-                from ..operators.weld import restore_weld_props_after_history
-                restore_weld_props_after_history(
-                    context.scene,
-                    obj,
-                    context.mode,
-                    bm,
-                )
+                restore_after_history(obj, context.mode, bm)
                 snapshot_selection(bm)
         else:
-            from ..operators.weld import restore_weld_props_after_history
-            restore_weld_props_after_history(
-                context.scene,
-                context.active_object,
-                context.mode,
-                None,
-            )
+            restore_after_history(context.active_object, context.mode, None)
             from .face_cache import set_last_selected_face_indices, set_last_active_face_index
             set_last_selected_face_indices(set())
             set_last_active_face_index(-1)
@@ -172,12 +156,10 @@ def on_undo_pre(scene):
     """Handler called before an undo operation."""
     if _active_operator_abuses_undo():
         return
-    from ..operators.weld import (
-        clear_object_mode_weld_override,
-        clear_repeat_prefab_override,
-    )
-    clear_repeat_prefab_override()
-    clear_object_mode_weld_override()
+    from ..operators.pending_mesh_action import reset_runtime_state
+    from ..prefabs.repeat_action import clear_modal_override
+    reset_runtime_state()
+    clear_modal_override()
     cross_object_undo.handle_undo_pre()
     set_undo_in_progress(True)
     set_auto_hotspot_pending(False)
@@ -200,7 +182,7 @@ def on_undo_post(scene):
         from . import face_cache
         face_cache.last_face_count = 0
         face_cache.last_vertex_count = 0
-    _sync_weld_and_snapshot_selection()
+    _restore_pending_action_and_snapshot_selection()
     bpy.app.timers.register(_clear_undo_flag, first_interval=0.05)
     from ..operators.fixed_hotspot_overlay import invalidate_overlay as _invalidate_fixed_overlay
     _invalidate_fixed_overlay()
@@ -221,12 +203,10 @@ def on_redo_pre(scene):
     """Handler called before a redo operation."""
     if _active_operator_abuses_undo():
         return
-    from ..operators.weld import (
-        clear_object_mode_weld_override,
-        clear_repeat_prefab_override,
-    )
-    clear_repeat_prefab_override()
-    clear_object_mode_weld_override()
+    from ..operators.pending_mesh_action import reset_runtime_state
+    from ..prefabs.repeat_action import clear_modal_override
+    reset_runtime_state()
+    clear_modal_override()
     cross_object_undo.handle_redo_pre()
     set_undo_in_progress(True)
     set_auto_hotspot_pending(False)
@@ -249,7 +229,7 @@ def on_redo_post(scene):
         from . import face_cache
         face_cache.last_face_count = 0
         face_cache.last_vertex_count = 0
-    _sync_weld_and_snapshot_selection()
+    _restore_pending_action_and_snapshot_selection()
     bpy.app.timers.register(_clear_undo_flag, first_interval=0.05)
     from ..operators.fixed_hotspot_overlay import invalidate_overlay as _invalidate_fixed_overlay
     _invalidate_fixed_overlay()
@@ -365,12 +345,10 @@ def on_load_post(dummy):
         subscribe_splash_watcher()
 
     reset_face_cache()
-    from ..operators.weld import (
-        clear_object_mode_weld_override,
-        clear_repeat_prefab_override,
-    )
-    clear_repeat_prefab_override()
-    clear_object_mode_weld_override()
+    from ..operators.pending_mesh_action import reset_runtime_state
+    from ..prefabs.repeat_action import clear_modal_override
+    reset_runtime_state()
+    clear_modal_override()
     from ..prefabs.assets import invalidate_prefab_dependency_reference_cache
     invalidate_prefab_dependency_reference_cache()
     set_was_first_save(False)
@@ -391,6 +369,7 @@ def on_load_post(dummy):
     bpy.app.timers.register(subscribe_object_mode, first_interval=0.1)
     bpy.app.timers.register(_clear_file_loaded_flag, first_interval=1.0)
     _migrate_legacy_uv_lock()
+    _restore_pending_action_and_snapshot_selection()
     try:
         from ..operators.material_mappings import schedule_material_mapping_prompt
         schedule_material_mapping_prompt()

@@ -1,3 +1,4 @@
+import bmesh
 import bpy
 from bpy.types import Panel, Operator
 
@@ -151,14 +152,22 @@ class LEVELDESIGN_PT_status_panel(Panel):
             emboss=False,
         )
 
-        from ..operators.weld import get_weld_display_name
-        weld_mode = props.weld_mode
-        weld_name = get_weld_display_name(weld_mode)
+        from ..operators.context_action import get_context_action_summary
+        action = get_context_action_summary(
+            context.active_object, context.mode,
+        )
         box = layout.box()
-        if weld_mode != 'NONE':
-            box.label(text=f"Next Weld: {weld_name}  [ W ]", icon='AUTOMERGE_ON')
+        box.label(text="Context Action")
+        if action.kind != 'NONE':
+            box.operator(
+                "leveldesign.context_weld",
+                text=f"{action.label}  [ W ]",
+                icon=action.icon,
+            )
         else:
-            box.label(text="Next Weld: None", icon='AUTOMERGE_ON')
+            row = box.row()
+            row.enabled = False
+            row.label(text="No action available", icon='AUTOMERGE_ON')
 
 
 class LEVELDESIGN_OT_set_active_render_uv(Operator):

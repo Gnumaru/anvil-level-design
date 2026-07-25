@@ -1,26 +1,85 @@
 import bmesh
 import bpy
 from mathutils import Vector
+from unittest.mock import patch
 
 from ..operators.box_builder.geometry import execute_box_builder
+from ..operators import context_action, pending_mesh_action, weld_actions
 from ..operators.weld import set_weld_from_edge_selection, set_weld_from_box_builder
 from .base_test import AnvilTestCase
-from .helpers import create_textured_cube, create_vertical_plane, _get_context_override
+from .helpers import (
+    create_textured_cube,
+    create_vertical_plane,
+    get_context_action_kind,
+    get_undo_context,
+    wait_for_condition,
+    _get_context_override,
+)
 
 
-def _undo_ctx():
-    """Build a full context override for ed.undo (needs window + screen)."""
-    window = bpy.context.window or bpy.context.window_manager.windows[0]
-    screen = window.screen
-    area = next(a for a in screen.areas if a.type == 'VIEW_3D')
-    region = next(r for r in area.regions if r.type == 'WINDOW')
-    return {"window": window, "screen": screen, "area": area, "region": region}
+def _create_pending_corridor(name):
+    obj = create_textured_cube(name, 1.0, 1.0)
+    ctx = _get_context_override()
+    with bpy.context.temp_override(**ctx):
+        bpy.ops.object.mode_set(mode='EDIT')
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.faces.ensure_lookup_table()
+    bm.select_mode = {'FACE'}
+    for face in bm.faces:
+        face.select = face.normal.z > 0.9
+    bm.select_flush_mode()
+    bmesh.update_edit_mesh(obj.data)
+    with bpy.context.temp_override(**ctx):
+        bpy.ops.mesh.delete(type='FACE')
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.select_mode = {'EDGE'}
+    for edge in bm.edges:
+        edge.select = all(vert.co.z > 0.9 for vert in edge.verts)
+    bm.select_flush_mode()
+    bmesh.update_edit_mesh(obj.data)
+    set_weld_from_edge_selection(
+        obj, 0.5, (0, 0, -1), -0.5,
+        Vector((0, 0, 0)), Vector((1, 0, 1)),
+        Vector((1, 0, 0)), Vector((0, 0, 1)),
+        0,
+    )
+    return obj, ctx
+
+
+def _create_pending_bridge(name):
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(
+        (
+            (0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1),
+            (0, 1, 0), (1, 1, 0), (1, 1, 1), (0, 1, 1),
+        ),
+        (
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+        ),
+        (),
+    )
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    ctx = _get_context_override()
+    with bpy.context.temp_override(**ctx):
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+    set_weld_from_edge_selection(
+        obj, 0.0, (0, 1, 0), 1.0,
+        Vector((0, 0, 0)), Vector((1, 0, 1)),
+        Vector((1, 0, 0)), Vector((0, 0, 1)),
+        0,
+    )
+    return obj, ctx
 
 
 class CorridorWeldUndoTest(AnvilTestCase):
     """Test corridor weld undo: weld → undo → verify mode → re-weld → verify geometry."""
 
-    def test_corridor_weld_undo_and_reweld(self):
+    def test_corridor_weld_undo_and_redo_restores_geometry_and_pending_action(self):
         """Corridor: weld → undo → verify CORRIDOR → re-weld → verify geometry.
 
         Uses operator-based geometry (delete face) so the undo system properly
@@ -29,7 +88,7 @@ class CorridorWeldUndoTest(AnvilTestCase):
         obj = create_textured_cube("corridor_undo", 1.0, 1.0)
         obj_name = obj.name
         ctx = _get_context_override()
-        uctx = _undo_ctx()
+        uctx = get_undo_context()
 
         with bpy.context.temp_override(**ctx):
             bpy.ops.object.mode_set(mode='EDIT')
@@ -49,8 +108,6 @@ class CorridorWeldUndoTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.delete(type='FACE')
 
-        yield 0.5
-
         # Select the top boundary edges
         bm = bmesh.from_edit_mesh(obj.data)
         bm.select_mode = {'EDGE'}
@@ -60,15 +117,12 @@ class CorridorWeldUndoTest(AnvilTestCase):
         bmesh.update_edit_mesh(obj.data)
 
         # Set weld state (stored in BMesh layers)
-        set_weld_from_edge_selection(bpy.context, 0.5, (0, 0, -1), -0.5,
+        set_weld_from_edge_selection(obj, 0.5, (0, 0, -1), -0.5,
                                      Vector((0, 0, 0)), Vector((1, 0, 1)),
                                      Vector((1, 0, 0)), Vector((0, 0, 1)),
                                      0)
 
-        yield 0.5
-
-        props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'CORRIDOR',
+        self.assertEqual(get_context_action_kind(), 'CORRIDOR',
                          "Should be CORRIDOR after setup")
 
         with bpy.context.temp_override(**uctx):
@@ -79,43 +133,121 @@ class CorridorWeldUndoTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Corridor action",
+        )
 
-        self.assertEqual(props.weld_mode, 'NONE',
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Should be NONE after corridor weld")
+        faces_after_weld = len(bmesh.from_edit_mesh(obj.data).faces)
 
-        # Push after operator so undo goes to the pre-operator push
-        with bpy.context.temp_override(**uctx):
-            bpy.ops.ed.undo_push(message="After corridor")
-
-        # --- Undo corridor ---
+        # The dispatched concrete weld operator must create this history step.
         with bpy.context.temp_override(**uctx):
             bpy.ops.ed.undo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'CORRIDOR',
+            "Undo did not restore the pending Corridor action",
+        )
 
         obj = bpy.data.objects[obj_name]
         bpy.context.view_layer.objects.active = obj
-        props = bpy.context.scene.level_design_props
-
-        self.assertEqual(props.weld_mode, 'CORRIDOR',
+        self.assertEqual(get_context_action_kind(), 'CORRIDOR',
                          "Should be CORRIDOR after undoing corridor")
 
-        # --- Re-execute corridor weld ---
+        faces_before_weld = len(bmesh.from_edit_mesh(obj.data).faces)
+        self.assertLess(faces_before_weld, faces_after_weld)
+
+        with bpy.context.temp_override(**uctx):
+            bpy.ops.ed.redo()
+
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Redo did not consume the pending Corridor action",
+        )
+
+        obj = bpy.data.objects[obj_name]
+        self.assertEqual(len(bmesh.from_edit_mesh(obj.data).faces), faces_after_weld)
+
+    def test_corridor_edge_only_selection_change_invalidates_pending_action(self):
+        """Changing selected edges invalidates Corridor even with no selected faces."""
+        obj = create_textured_cube("corridor_edge_selection", 1.0, 1.0)
+        ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):
-            result = bpy.ops.leveldesign.context_weld()
-        self.assertIn('FINISHED', result)
+            bpy.ops.object.mode_set(mode='EDIT')
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        bm.select_mode = {'FACE'}
+        for face in bm.faces:
+            face.select = face.normal.z > 0.9
+        bm.select_flush_mode()
+        bmesh.update_edit_mesh(obj.data)
+        with bpy.context.temp_override(**ctx):
+            bpy.ops.mesh.delete(type='FACE')
 
-        yield 0.5
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.select_mode = {'EDGE'}
+        for edge in bm.edges:
+            edge.select = all(vert.co.z > 0.9 for vert in edge.verts)
+        bm.select_flush_mode()
+        bmesh.update_edit_mesh(obj.data)
+        set_weld_from_edge_selection(
+            obj, 0.5, (0, 0, -1), -0.5,
+            Vector((0, 0, 0)), Vector((1, 0, 1)),
+            Vector((1, 0, 0)), Vector((0, 0, 1)),
+            0,
+        )
+        self.assertEqual(get_context_action_kind(), 'CORRIDOR')
+        self.assertFalse(any(face.select for face in bm.faces))
 
-        self.assertEqual(props.weld_mode, 'NONE',
-                         "Should be NONE after re-corridor")
+        selected_edge = next(edge for edge in bm.edges if edge.select)
+        replacement_edge = next(edge for edge in bm.edges if not edge.select)
+        selected_edge.select = False
+        replacement_edge.select = True
+        bm.select_flush_mode()
+        bmesh.update_edit_mesh(obj.data)
+
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "An edge-only selection change did not invalidate Corridor",
+        )
+
+    def test_wrong_internal_mesh_action_operator_preserves_pending_corridor(self):
+        """An inaccessible or incorrect child operator cannot consume W state."""
+        _obj, ctx = _create_pending_corridor("wrong_operator_corridor")
+        self.assertEqual(get_context_action_kind(), 'CORRIDOR')
+        self.assertIn(
+            'INTERNAL', weld_actions.LEVELDESIGN_OT_weld_bridge.bl_options,
+        )
+        try:
+            with bpy.context.temp_override(**ctx):
+                result = bpy.ops.leveldesign.weld_bridge()
+        except RuntimeError:
+            result = {'CANCELLED'}
+        self.assertEqual(result, {'CANCELLED'})
+        self.assertEqual(
+            get_context_action_kind(), 'CORRIDOR',
+            "The wrong concrete operator consumed the pending Corridor",
+        )
+
+    def test_context_action_panel_summary_does_not_rebuild_mesh_geometry_fingerprint(self):
+        """Panel display and W polling read only the already-validated guard."""
+        _obj, _ctx = _create_pending_corridor("cheap_corridor_summary")
+        with patch.object(
+                pending_mesh_action,
+                "_bmesh_geometry_signature",
+                side_effect=AssertionError("Panel rebuilt the mesh fingerprint")):
+            self.assertEqual(get_context_action_kind(), 'CORRIDOR')
+            self.assertTrue(
+                context_action.LEVELDESIGN_OT_context_action.poll(bpy.context),
+            )
 
 
 class BridgeWeldUndoTest(AnvilTestCase):
     """Test bridge weld undo: weld → undo → verify mode → re-weld → verify geometry."""
 
-    def test_bridge_weld_undo_and_reweld(self):
+    def test_bridge_weld_undo_and_redo_restores_geometry_and_pending_action(self):
         """Bridge: weld → undo → verify BRIDGE → re-weld → verify 6 faces."""
         # Create two planes and join them via operators
         plane_a = create_vertical_plane("bridge_a")
@@ -123,7 +255,7 @@ class BridgeWeldUndoTest(AnvilTestCase):
 
         import math
         ctx = _get_context_override()
-        uctx = _undo_ctx()
+        uctx = get_undo_context()
 
         # Rotate plane_a 180° so normals face away
         plane_a.select_set(True)
@@ -159,7 +291,7 @@ class BridgeWeldUndoTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.select_all(action='SELECT')
 
-        yield 0.5
+        yield
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.select_mode = {'EDGE'}
@@ -168,15 +300,12 @@ class BridgeWeldUndoTest(AnvilTestCase):
         bm.select_flush_mode()
         bmesh.update_edit_mesh(obj.data)
 
-        set_weld_from_edge_selection(bpy.context, 1.0, (0, 1, 0), 1.0,
+        set_weld_from_edge_selection(obj, 1.0, (0, 1, 0), 1.0,
                                      Vector((0, 0, 0)), Vector((1, 0, 1)),
                                      Vector((1, 0, 0)), Vector((0, 0, 1)),
                                      0)
 
-        yield 0.5
-
-        props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'BRIDGE',
+        self.assertEqual(get_context_action_kind(), 'BRIDGE',
                          "Should be BRIDGE with 2 edge groups")
 
         with bpy.context.temp_override(**uctx):
@@ -186,51 +315,73 @@ class BridgeWeldUndoTest(AnvilTestCase):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Bridge action",
+        )
 
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertEqual(len(bm.faces), 6,
                          f"Should have 6 faces after bridge, got {len(bm.faces)}")
-        self.assertEqual(props.weld_mode, 'NONE',
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Should be NONE after bridge weld")
 
-        # Push after operator
-        with bpy.context.temp_override(**uctx):
-            bpy.ops.ed.undo_push(message="After bridge")
-
-        # --- Undo bridge ---
+        # The dispatched concrete weld operator must create this history step.
         with bpy.context.temp_override(**uctx):
             bpy.ops.ed.undo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'BRIDGE',
+            "Undo did not restore the pending Bridge action",
+        )
 
         obj = bpy.data.objects[obj_name]
         bpy.context.view_layer.objects.active = obj
-        props = bpy.context.scene.level_design_props
-
-        self.assertEqual(props.weld_mode, 'BRIDGE',
+        self.assertEqual(get_context_action_kind(), 'BRIDGE',
                          "Should be BRIDGE after undoing bridge")
 
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertEqual(len(bm.faces), 2,
                          f"Should have 2 faces after undo, got {len(bm.faces)}")
 
-        # --- Re-execute bridge weld ---
-        with bpy.context.temp_override(**ctx):
-            result = bpy.ops.leveldesign.context_weld()
-        self.assertIn('FINISHED', result)
+        with bpy.context.temp_override(**uctx):
+            bpy.ops.ed.redo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Redo did not consume the pending Bridge action",
+        )
 
+        obj = bpy.data.objects[obj_name]
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertEqual(len(bm.faces), 6,
-                         f"Should have 6 faces after re-bridge, got {len(bm.faces)}")
+                         f"Should have 6 faces after redo, got {len(bm.faces)}")
+
+    def test_failed_bridge_operation_preserves_pending_bridge_action(self):
+        """A geometry failure that makes no changes leaves W available."""
+        _obj, ctx = _create_pending_bridge("failed_bridge_pending")
+        self.assertEqual(get_context_action_kind(), 'BRIDGE')
+        with patch.object(
+                weld_actions,
+                "_bridge_edge_loops",
+                side_effect=RuntimeError("Deliberate bridge failure")):
+            try:
+                with bpy.context.temp_override(**ctx):
+                    result = bpy.ops.leveldesign.weld_bridge()
+            except RuntimeError as exc:
+                self.assertIn("Deliberate bridge failure", str(exc))
+                result = {'CANCELLED'}
+        self.assertEqual(result, {'CANCELLED'})
+        self.assertEqual(
+            get_context_action_kind(), 'BRIDGE',
+            "A failed Bridge consumed its still-valid pending action",
+        )
 
 
 class InvertWeldUndoTest(AnvilTestCase):
     """Test invert weld undo: weld → undo → verify mode → re-weld → verify normals."""
 
-    def test_invert_weld_undo_and_reweld(self):
+    def test_invert_weld_undo_and_redo_restores_normals_and_pending_action(self):
         """Invert: weld → undo → verify INVERT → re-weld → verify normals flipped."""
         mesh = bpy.data.meshes.new("invert_undo")
         obj = bpy.data.objects.new("invert_undo", mesh)
@@ -240,7 +391,7 @@ class InvertWeldUndoTest(AnvilTestCase):
         obj_name = obj.name
 
         ctx = _get_context_override()
-        uctx = _undo_ctx()
+        uctx = get_undo_context()
 
         with bpy.context.temp_override(**ctx):
             bpy.ops.object.mode_set(mode='EDIT')
@@ -258,12 +409,11 @@ class InvertWeldUndoTest(AnvilTestCase):
         self.assertTrue(result[0], result[1])
 
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(bpy.context, face_verts)
+        set_weld_from_box_builder(obj, face_verts)
 
-        yield 0.5
+        yield
 
-        props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Should be INVERT after box build")
 
         # Record normals before invert
@@ -279,7 +429,11 @@ class InvertWeldUndoTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
-        self.assertEqual(props.weld_mode, 'NONE',
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Invert action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Should be NONE after invert")
 
         # Verify normals are flipped
@@ -294,21 +448,18 @@ class InvertWeldUndoTest(AnvilTestCase):
                     self.assertAlmostEqual(after[i], -before[i], places=2,
                                            msg=f"Face {f.index} normal not flipped")
 
-        # Push after operator so undo goes to the pre-operator push
-        with bpy.context.temp_override(**uctx):
-            bpy.ops.ed.undo_push(message="After invert")
-
-        # --- Undo invert ---
+        # The dispatched concrete weld operator must create this history step.
         with bpy.context.temp_override(**uctx):
             bpy.ops.ed.undo()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'INVERT',
+            "Undo did not restore the pending Invert action",
+        )
 
         obj = bpy.data.objects[obj_name]
         bpy.context.view_layer.objects.active = obj
-        props = bpy.context.scene.level_design_props
-
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Should be INVERT after undoing invert")
 
         # Verify normals are back to original
@@ -323,12 +474,16 @@ class InvertWeldUndoTest(AnvilTestCase):
                     self.assertAlmostEqual(restored[i], before[i], places=2,
                                            msg=f"Face {f.index} normal not restored after undo")
 
-        # --- Re-execute invert weld ---
-        with bpy.context.temp_override(**ctx):
-            result = bpy.ops.leveldesign.context_weld()
-        self.assertIn('FINISHED', result)
+        with bpy.context.temp_override(**uctx):
+            bpy.ops.ed.redo()
 
-        # Verify normals are flipped again
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "Redo did not consume the pending Invert action",
+        )
+
+        obj = bpy.data.objects[obj_name]
+        # Verify normals are flipped again by Blender redo.
         bm = bmesh.from_edit_mesh(obj.data)
         bm.normal_update()
         bm.faces.ensure_lookup_table()
@@ -338,4 +493,4 @@ class InvertWeldUndoTest(AnvilTestCase):
                 after = tuple(round(v, 4) for v in f.normal)
                 for i in range(3):
                     self.assertAlmostEqual(after[i], -before[i], places=2,
-                                           msg=f"Face {f.index} normal not flipped on re-weld")
+                                           msg=f"Face {f.index} normal not flipped on redo")

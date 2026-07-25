@@ -16,7 +16,10 @@ from ..modal_draw.default_grid_pivot import (
     selected_vertex_world_coords,
 )
 from ...core.workspace_check import is_level_design_workspace
-from ..weld import set_weld_from_box_builder, set_weld_from_box_builder_object_mode
+from ..pending_mesh_action import (
+    store_from_box_builder,
+    store_from_box_builder_object_mode,
+)
 
 
 def _get_selected_vertex_world_coords(context):
@@ -125,8 +128,7 @@ class MESH_OT_box_builder(DefaultGridPivotMixin, ModalDrawBase, bpy.types.Operat
             )
             is_box = result[0] and result[1] == "Box object created"
             if is_box:
-                set_weld_from_box_builder_object_mode(context.active_object)
-                props.weld_mode = 'INVERT'
+                store_from_box_builder_object_mode(context.active_object)
             return result
 
         obj = self._restore_edit_action_context(context, action_object_name)
@@ -141,9 +143,7 @@ class MESH_OT_box_builder(DefaultGridPivotMixin, ModalDrawBase, bpy.types.Operat
         )
 
         is_box = result[0] and result[1] == "Box created"
-        if is_box:
-            new_face_verts = result[2] if len(result) > 2 else []
-            set_weld_from_box_builder(context, new_face_verts)
+        new_face_verts = result[2] if is_box and len(result) > 2 else []
 
         # If there was no selection before invoking, deselect everything
         if result[0] and not self._had_selection:
@@ -157,6 +157,10 @@ class MESH_OT_box_builder(DefaultGridPivotMixin, ModalDrawBase, bpy.types.Operat
                 v.select = False
             bm.select_flush(False)
             bmesh.update_edit_mesh(me)
+
+        # Arm only after the operator has established its final selection.
+        if is_box:
+            store_from_box_builder(obj, new_face_verts)
 
         return result
 

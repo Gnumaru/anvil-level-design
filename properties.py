@@ -721,40 +721,6 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         default=(0.0, 0.0, 0.0),
     )
 
-    # === Context Weld State ===
-    weld_mode: EnumProperty(
-        name="Weld Mode",
-        description="Next weld action to perform",
-        items=[
-            ('NONE', "None", "No weld action pending"),
-            ('BRIDGE', "Bridge Edge Loops", "Bridge two edge loops"),
-            ('CORRIDOR', "Corridor", "Create face and extrude corridor"),
-            ('INVERT', "Invert", "Flip normals on the mesh"),
-            ('FOLDED_PLANE', "Folded Plane", "Fill faces on cuboid side planes"),
-            ('PREFAB', "Repeat Prefab", "Place the last selected prefab again"),
-        ],
-        default='NONE',
-    )
-
-    weld_depth: FloatProperty(
-        name="Weld Depth",
-        description="Depth for corridor extrusion",
-        default=0.0,
-    )
-
-    weld_direction: FloatVectorProperty(
-        name="Weld Direction",
-        description="Extrusion direction for corridor (from cube cut)",
-        size=3,
-        default=(0.0, 0.0, 0.0),
-    )
-
-    weld_back_plane_offset: FloatProperty(
-        name="Weld Back Plane Offset",
-        description="Projection of the cube cut back plane onto the extrusion direction",
-        default=0.0,
-    )
-
 def register():
     bpy.utils.register_class(AnvilUVMapSettings)
     bpy.utils.register_class(AnvilPrefabObjectName)

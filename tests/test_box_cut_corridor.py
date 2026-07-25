@@ -8,7 +8,12 @@ from ..operators.cube_cut.geometry import execute_cube_cut
 from ..operators.weld import set_weld_from_box_builder, set_weld_from_edge_selection
 from ..core.uv_projection import derive_transform_from_uvs
 from .base_test import AnvilTestCase
-from .helpers import _get_context_override, TEXTURE_PATH
+from .helpers import (
+    get_context_action_kind,
+    wait_for_condition,
+    _get_context_override,
+    TEXTURE_PATH,
+)
 
 
 def _vert_key(v):
@@ -62,16 +67,20 @@ class BoxCutCorridorTest(AnvilTestCase):
 
         # -- Step 2: Weld invert --
         face_verts = box_result[2] if len(box_result) > 2 else []
-        set_weld_from_box_builder(bpy.context, face_verts)
+        set_weld_from_box_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
-        self.assertEqual(props.weld_mode, 'INVERT',
+        self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Standalone box should set weld to INVERT")
 
         with bpy.context.temp_override(**ctx):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
-        self.assertEqual(props.weld_mode, 'NONE',
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Invert action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Weld mode should be NONE after invert")
 
         # Verify normals flipped inward: each face normal should point
@@ -131,23 +140,27 @@ class BoxCutCorridorTest(AnvilTestCase):
         #            = (0.25, 0.25, 0.0) + (0, -0.75, 0) = (0.25, -0.5, 0.0)
         # back_plane_offset = back_point · extrude_dir = -0.5
         set_weld_from_edge_selection(
-            bpy.context, 0.75, (0, 1, 0), -0.5,
+            obj, 0.75, (0, 1, 0), -0.5,
             Vector((0.25, 0.25, 0.0)), Vector((0.75, 0.25, 0.75)),
             Vector((1, 0, 0)), Vector((0, 0, 1)),
             0,
         )
 
-        self.assertEqual(props.weld_mode, 'CORRIDOR',
+        self.assertEqual(get_context_action_kind(), 'CORRIDOR',
                          "Should be CORRIDOR after cube cut on single face")
 
         with bpy.context.temp_override(**ctx):
             result = bpy.ops.leveldesign.context_weld()
         self.assertIn('FINISHED', result)
-        self.assertEqual(props.weld_mode, 'NONE',
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'NONE',
+            "W did not execute the queued Corridor action",
+        )
+        self.assertEqual(get_context_action_kind(), 'NONE',
                          "Weld mode should be NONE after corridor")
 
         # Let depsgraph handler fire
-        yield 0.5
+        yield
 
         # -- Geometry assertions --
         bm = bmesh.from_edit_mesh(obj.data)

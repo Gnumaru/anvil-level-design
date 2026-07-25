@@ -50,16 +50,11 @@ def _purge_all():
     set_undo_in_progress(False)
     reset_cross_object_undo()
 
-    # Reset weld module state (clears transient flags like _weld_op_running).
-    # Mesh-stored weld data is cleaned up when objects are deleted below.
-    from ..operators import weld as _weld_mod
-    _weld_mod._weld_op_running = False
-    _weld_mod._weld_just_stored = False
-    _weld_mod.clear_repeat_prefab_override()
-    _weld_mod.clear_object_mode_weld_override()
+    from ..operators.pending_mesh_action import reset_runtime_state
+    from ..prefabs.repeat_action import clear_modal_override
+    reset_runtime_state()
+    clear_modal_override()
     props = bpy.context.scene.level_design_props
-    props.weld_mode = 'NONE'
-    props.weld_depth = 0.0
     props.prefab_inherit_normal = True
     props.prefab_random_scale_enabled = False
     props.prefab_random_scale_min = (1.0, 1.0, 1.0)

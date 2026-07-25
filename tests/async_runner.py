@@ -228,4 +228,10 @@ def run_suite_async(suite, verbosity, on_complete):
 
         return DEFAULT_TICK
 
-    bpy.app.timers.register(tick, first_interval=DEFAULT_TICK)
+    # Individual regression tests may reload a saved .blend. Keep the runner
+    # alive so teardown and the remaining suite continue after load_post.
+    bpy.app.timers.register(
+        tick,
+        first_interval=DEFAULT_TICK,
+        persistent=True,
+    )
