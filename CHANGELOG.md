@@ -6,6 +6,7 @@
 - Fix prefab placement scaling compounding
 - Fix W to place prefab not working on prefabs placed in previous sessions
 - Significantly speed up auto transparency detection
+- Fix temporary error when upgrading version from 1.x -> 1.8.x
 
 # 1.8.1
 - Fix scaling for linked prefabs

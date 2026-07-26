@@ -8,8 +8,15 @@ bl_info = {
     "category": "3D View",
 }
 
+import sys
+
 import bpy
 import blf
+
+for module_name in tuple(sys.modules):
+    if module_name.startswith(f"{__name__}."):
+        vars(sys.modules[__name__]).pop(module_name[len(__name__) + 1:].split('.', 1)[0], None)
+        del sys.modules[module_name]
 
 from . import properties
 from . import handlers
