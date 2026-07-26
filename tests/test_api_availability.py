@@ -174,6 +174,14 @@ class APIAvailabilityTest(AnvilTestCase):
         self.assertIsNotNone(invoke_props_dialog)
         self.assertIsNotNone(invoke_props_dialog.parameters.get("confirm_text"))
 
+    def test_fix_material_mappings_popup_confirmation_and_filter_visibility_apis_are_available(self):
+        self.assertIsNotNone(
+            bpy.types.UILayout.bl_rna.functions.get("template_popup_confirm")
+        )
+        self.assertIsNotNone(
+            bpy.types.UIList.bl_rna.properties.get("use_filter_show")
+        )
+
     def test_all_required_mathutils_bvh_apis_exist(self):
         missing = []
         if not hasattr(BVHTree, "FromPolygons"):

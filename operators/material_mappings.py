@@ -39,8 +39,17 @@ def _active_mapping_row(window_manager):
     return rows[index]
 
 
-def _mapping_row_matches_filters(row, search_text, unmanaged_after_only):
-    if unmanaged_after_only and row.selected_image is not None:
+def _mapping_row_matches_filters(
+        row, search_text, needs_attention_only, conflict_pointers):
+    material_is_conflicting = (
+        row.material is not None
+        and row.material.as_pointer() in conflict_pointers
+    )
+    if (
+            needs_attention_only
+            and row.selected_image is not None
+            and not material_is_conflicting
+    ):
         return False
     normalized_search = search_text.strip().casefold()
     if not normalized_search:
@@ -68,16 +77,18 @@ def _mapping_row_matches_filters(row, search_text, unmanaged_after_only):
 
 def _visible_mapping_row_indices(window_manager):
     search_text = window_manager.anvil_material_mapping_search
-    unmanaged_after_only = (
-        window_manager.anvil_material_mapping_unmanaged_after_only
+    needs_attention_only = (
+        window_manager.anvil_material_mapping_needs_attention_only
     )
+    conflict_pointers = _mapping_conflict_material_pointers(window_manager)
     return [
         index
         for index, row in enumerate(_mapping_rows(window_manager))
         if _mapping_row_matches_filters(
             row,
             search_text,
-            unmanaged_after_only,
+            needs_attention_only,
+            conflict_pointers,
         )
     ]
 
@@ -108,6 +119,7 @@ def _populate_mapping_rows(window_manager):
         if analysis.is_already_mapped:
             row.initial_image = analysis.suggested_image
     window_manager.anvil_material_mapping_active_index = 0
+    window_manager.anvil_material_mapping_expand_filter = True
     _ensure_active_mapping_row_visible(window_manager)
 
 
@@ -129,23 +141,29 @@ class LEVELDESIGN_UL_material_mappings(UIList):
     def draw_filter(self, context, layout):
         layout.prop(
             context.window_manager,
-            "anvil_material_mapping_unmanaged_after_only",
-            text="After fixing: Unmanaged only",
+            "anvil_material_mapping_needs_attention_only",
+            text="After fixing: Unmanaged and conflicting",
             icon='FILTER',
             toggle=True,
         )
 
     def filter_items(self, context, data, property_name):
-        search_text = context.window_manager.anvil_material_mapping_search
-        unmanaged_after_only = (
-            context.window_manager.anvil_material_mapping_unmanaged_after_only
+        window_manager = context.window_manager
+        if window_manager.anvil_material_mapping_expand_filter:
+            self.use_filter_show = True
+            window_manager.anvil_material_mapping_expand_filter = False
+        search_text = window_manager.anvil_material_mapping_search
+        needs_attention_only = (
+            window_manager.anvil_material_mapping_needs_attention_only
         )
+        conflict_pointers = _mapping_conflict_material_pointers(window_manager)
         flags = [
             self.bitflag_filter_item
             if _mapping_row_matches_filters(
                 row,
                 search_text,
-                unmanaged_after_only,
+                needs_attention_only,
+                conflict_pointers,
             )
             else 0
             for row in getattr(data, property_name)
@@ -311,6 +329,59 @@ class LEVELDESIGN_OT_browse_material_mapping_image(Operator):
         return result
 
 
+def _selected_mapping_choices(rows):
+    return [
+        (row.material, row.selected_image)
+        for row in rows
+        if row.material is not None
+    ]
+
+
+def _apply_mapping_rows(choices, rename_materials, name_pattern, operator):
+    try:
+        mapped_count, renamed_count = apply_material_mapping_choices(
+            choices,
+            rename_materials,
+            name_pattern,
+        )
+    except ValueError as exc:
+        operator.report({'ERROR'}, str(exc))
+        return {'CANCELLED'}
+    operator.report(
+        {'INFO'},
+        f"Mapped {mapped_count} material(s); renamed {renamed_count}",
+    )
+    return {'FINISHED'}
+
+
+class LEVELDESIGN_OT_confirm_material_mappings(Operator):
+    """Apply the reviewed material mappings"""
+
+    bl_idname = "leveldesign.confirm_material_mappings"
+    bl_label = "Confirm Material Mappings"
+    bl_description = "Apply the reviewed mappings after all conflicts are resolved"
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            is_level_design_workspace()
+            and not _mapping_conflict_material_pointers(context.window_manager)
+        )
+
+    def execute(self, context):
+        window_manager = context.window_manager
+        result = _apply_mapping_rows(
+            _selected_mapping_choices(_mapping_rows(window_manager)),
+            window_manager.anvil_fix_material_mappings_rename,
+            context.scene.level_design_props.default_material_name_pattern,
+            self,
+        )
+        if result == {'FINISHED'}:
+            window_manager.anvil_material_mapping_dialog_confirmed = True
+        return result
+
+
 class LEVELDESIGN_OT_fix_material_mappings(Operator):
     """Review and repair Anvil's one-to-one image/material mappings"""
 
@@ -319,6 +390,13 @@ class LEVELDESIGN_OT_fix_material_mappings(Operator):
     bl_description = "Review which primary image maps to each Anvil material"
     bl_options = {'REGISTER', 'UNDO'}
 
+    automatically_opened: BoolProperty(
+        name="Automatically Opened",
+        description="Whether this review opened automatically after loading a file",
+        default=False,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
     @classmethod
     def poll(cls, context):
         return is_level_design_workspace()
@@ -326,6 +404,7 @@ class LEVELDESIGN_OT_fix_material_mappings(Operator):
     def invoke(self, context, event):
         for scene in bpy.data.scenes:
             scene.anvil_material_mapping_prompt_handled = True
+        context.window_manager.anvil_material_mapping_dialog_confirmed = False
         _populate_mapping_rows(context.window_manager)
         return context.window_manager.invoke_props_dialog(self, width=850)
 
@@ -349,7 +428,13 @@ class LEVELDESIGN_OT_fix_material_mappings(Operator):
         if conflicts:
             conflict_label = layout.row()
             conflict_label.alert = True
-            conflict_label.label(text=f"{len(conflicts)} conflicts", icon='ERROR')
+            conflict_label.label(
+                text=(
+                    f"{len(conflicts)} materials have conflicting primary images. "
+                    "Resolve them to enable OK."
+                ),
+                icon='ERROR',
+            )
 
         layout.prop(
             window_manager,
@@ -388,7 +473,8 @@ class LEVELDESIGN_OT_fix_material_mappings(Operator):
         if active is not None and not _mapping_row_matches_filters(
                 active,
                 window_manager.anvil_material_mapping_search,
-                window_manager.anvil_material_mapping_unmanaged_after_only,
+                window_manager.anvil_material_mapping_needs_attention_only,
+                conflicts,
         ):
             active = None
         if active is not None and active.material is not None:
@@ -444,29 +530,105 @@ class LEVELDESIGN_OT_fix_material_mappings(Operator):
                 f"{context.scene.level_design_props.default_material_name_pattern}"
             ),
         )
+        layout.separator()
+        layout.template_popup_confirm(
+            "leveldesign.confirm_material_mappings",
+            text="OK",
+            cancel_text="Cancel",
+        )
 
     def execute(self, context):
         window_manager = context.window_manager
-        choices = [
-            (row.material, row.selected_image)
-            for row in _mapping_rows(window_manager)
-            if row.material is not None
-        ]
-        pattern = context.scene.level_design_props.default_material_name_pattern
-        try:
-            mapped_count, renamed_count = apply_material_mapping_choices(
-                choices,
-                window_manager.anvil_fix_material_mappings_rename,
-                pattern,
-            )
-        except ValueError as exc:
-            self.report({'ERROR'}, str(exc))
-            return {'CANCELLED'}
-        self.report(
-            {'INFO'},
-            f"Mapped {mapped_count} material(s); renamed {renamed_count}",
+        result = _apply_mapping_rows(
+            _selected_mapping_choices(_mapping_rows(window_manager)),
+            window_manager.anvil_fix_material_mappings_rename,
+            context.scene.level_design_props.default_material_name_pattern,
+            self,
         )
+        if result == {'FINISHED'}:
+            window_manager.anvil_material_mapping_dialog_confirmed = True
+        return result
+
+    def cancel(self, context):
+        window_manager = context.window_manager
+        was_confirmed = window_manager.anvil_material_mapping_dialog_confirmed
+        window_manager.anvil_material_mapping_dialog_confirmed = False
+        if self.automatically_opened and not was_confirmed:
+            schedule_material_mapping_cancelled_notice()
+
+
+class LEVELDESIGN_OT_material_mapping_cancelled_notice(Operator):
+    """Explain the consequences of skipping automatic material mapping"""
+
+    bl_idname = "leveldesign.material_mapping_cancelled_notice"
+    bl_label = "Material Mapping Skipped"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return is_level_design_workspace()
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width=520)
+
+    def draw(self, context):
+        layout = self.layout
+        message = layout.column(align=True)
+        message.label(
+            text="No material mapping changes were saved.",
+            icon='INFO',
+        )
+        message.separator()
+        message.label(text="Until you review the mappings:")
+        message.label(
+            text="Applying a texture may create a duplicate material.",
+            icon='DOT',
+        )
+        message.label(
+            text="UV scale may use fallback image dimensions.",
+            icon='DOT',
+        )
+        message.label(
+            text="Anvil may not recognize which texture an existing material uses.",
+            icon='DOT',
+        )
+        message.separator()
+        message.label(
+            text="Press Shift-4 at any time to reopen Fix Material Mappings."
+        )
+        layout.separator()
+        layout.template_popup_confirm(
+            "",
+            text="",
+            cancel_text="Continue",
+        )
+
+    def execute(self, context):
         return {'FINISHED'}
+
+
+def _material_mapping_cancelled_notice_timer():
+    if not is_level_design_workspace():
+        return None
+    windows = list(bpy.context.window_manager.windows)
+    window = bpy.context.window or (windows[0] if windows else None)
+    if window is None:
+        return None
+    try:
+        with bpy.context.temp_override(window=window):
+            bpy.ops.leveldesign.material_mapping_cancelled_notice('INVOKE_DEFAULT')
+    except RuntimeError:
+        return 0.25
+    return None
+
+
+def schedule_material_mapping_cancelled_notice():
+    if not bpy.app.timers.is_registered(_material_mapping_cancelled_notice_timer):
+        bpy.app.timers.register(
+            _material_mapping_cancelled_notice_timer,
+            first_interval=0.1,
+        )
+
 
 def _material_mapping_prompt_timer():
     if not bpy.data.filepath:
@@ -486,7 +648,10 @@ def _material_mapping_prompt_timer():
         return 1.0
     try:
         with bpy.context.temp_override(window=window):
-            bpy.ops.leveldesign.fix_material_mappings('INVOKE_DEFAULT')
+            bpy.ops.leveldesign.fix_material_mappings(
+                'INVOKE_DEFAULT',
+                automatically_opened=True,
+            )
     except RuntimeError:
         return 1.0
     return None
@@ -504,7 +669,9 @@ classes = (
     LEVELDESIGN_MT_material_mapping_candidates,
     LEVELDESIGN_OT_clear_material_mapping_choice,
     LEVELDESIGN_OT_browse_material_mapping_image,
+    LEVELDESIGN_OT_confirm_material_mappings,
     LEVELDESIGN_OT_fix_material_mappings,
+    LEVELDESIGN_OT_material_mapping_cancelled_notice,
 )
 
 
@@ -520,11 +687,22 @@ def register():
         description="Filter by material, current mapping, or mapping after fixing",
         update=_update_material_mapping_filters,
     )
-    bpy.types.WindowManager.anvil_material_mapping_unmanaged_after_only = BoolProperty(
-        name="Unmanaged After Fixing Only",
-        description="Show only materials that will remain unmanaged after fixing",
+    bpy.types.WindowManager.anvil_material_mapping_needs_attention_only = BoolProperty(
+        name="Unmanaged or Conflicting After Fixing Only",
+        description=(
+            "Show only materials that will remain unmanaged or have a conflicting "
+            "primary image after fixing"
+        ),
         default=False,
         update=_update_material_mapping_filters,
+    )
+    bpy.types.WindowManager.anvil_material_mapping_expand_filter = BoolProperty(
+        default=False,
+        options={'HIDDEN'},
+    )
+    bpy.types.WindowManager.anvil_material_mapping_dialog_confirmed = BoolProperty(
+        default=False,
+        options={'HIDDEN'},
     )
     bpy.types.WindowManager.anvil_fix_material_mappings_rename = BoolProperty(default=False)
 
@@ -549,6 +727,8 @@ def register():
 def unregister():
     if bpy.app.timers.is_registered(_material_mapping_prompt_timer):
         bpy.app.timers.unregister(_material_mapping_prompt_timer)
+    if bpy.app.timers.is_registered(_material_mapping_cancelled_notice_timer):
+        bpy.app.timers.unregister(_material_mapping_cancelled_notice_timer)
     for keymap, keymap_item in _addon_keymaps:
         try:
             keymap.keymap_items.remove(keymap_item)
@@ -557,7 +737,9 @@ def unregister():
     _addon_keymaps.clear()
 
     del bpy.types.WindowManager.anvil_fix_material_mappings_rename
-    del bpy.types.WindowManager.anvil_material_mapping_unmanaged_after_only
+    del bpy.types.WindowManager.anvil_material_mapping_dialog_confirmed
+    del bpy.types.WindowManager.anvil_material_mapping_expand_filter
+    del bpy.types.WindowManager.anvil_material_mapping_needs_attention_only
     del bpy.types.WindowManager.anvil_material_mapping_search
     del bpy.types.WindowManager.anvil_material_mapping_active_index
     del bpy.types.WindowManager.anvil_material_mapping_rows
