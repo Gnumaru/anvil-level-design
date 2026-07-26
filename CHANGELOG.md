@@ -9,6 +9,7 @@
 - Fix temporary error when upgrading version from 1.x -> 1.8.x
 - Increased clarity on material mapping menu so conflicts are less likely to be ignored
 - Add a warning for the case where the hotspot editor is accidentally set to UV edit mode
+- Improve GLTF Anvil export compatibility with only export selected filter
 
 # 1.8.1
 - Fix scaling for linked prefabs

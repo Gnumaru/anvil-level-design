@@ -111,6 +111,17 @@ def _write_plain_prefab_library(filepath, object_name, mesh_name):
     )
 
 
+def _link_object_from_library(collection, filepath, object_name):
+    with bpy.data.libraries.load(filepath, link=True) as (data_from, data_to):
+        if object_name not in data_from.objects:
+            raise RuntimeError(f"Object '{object_name}' was not found in '{filepath}'")
+        data_to.objects = [object_name]
+
+    obj = data_to.objects[0]
+    collection.objects.link(obj)
+    return obj
+
+
 def _create_textured_material(material_name, image, roughness, metallic):
     material = _create_basic_material(material_name, roughness, metallic)
     nodes = material.node_tree.nodes
@@ -348,18 +359,19 @@ def _activate_collection(collection):
     bpy.context.view_layer.active_layer_collection = layer_collection
 
 
-def _export_full(filepath):
+def _export_full(filepath, use_selection):
     bpy.ops.export_scene.gltf(
         filepath=filepath,
         export_format='GLTF_SEPARATE',
         export_animations=False,
         export_apply=False,
         collection="",
+        use_selection=use_selection,
         use_active_scene=False,
     )
 
 
-def _export_collection(collection, filepath):
+def _export_collection(collection, filepath, use_selection):
     _activate_collection(collection)
     bpy.ops.collection.exporter_add(name="IO_FH_gltf2")
     exporter = collection.exporters[0]
@@ -367,15 +379,16 @@ def _export_collection(collection, filepath):
     exporter.export_properties.export_format = 'GLTF_SEPARATE'
     exporter.export_properties.export_animations = False
     exporter.export_properties.export_apply = False
+    exporter.export_properties.use_selection = use_selection
     bpy.ops.collection.exporter_export(index=0)
 
 
-def _export_using_route(route, collection, filename):
+def _export_using_route(route, collection, filename, use_selection):
     filepath = _export_output_path(filename)
     if route == FULL_EXPORT_ROUTE:
-        _export_full(filepath)
+        _export_full(filepath, use_selection)
     elif route == COLLECTION_EXPORT_ROUTE:
-        _export_collection(collection, filepath)
+        _export_collection(collection, filepath, use_selection)
     else:
         raise RuntimeError(f"Unknown export route '{route}'")
 
@@ -415,6 +428,7 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
             route,
             collection,
             f"matrix_scale_{route}.gltf",
+            False,
         )
 
         _assert_export_names(
@@ -446,6 +460,7 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
             route,
             collection,
             f"matrix_scale_linked_duplicate_{route}.gltf",
+            False,
         )
 
         _assert_export_names(
@@ -509,6 +524,7 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
             route,
             collection,
             f"matrix_scale_linked_prefab_instances_{route}.gltf",
+            False,
         )
 
         _assert_export_names(
@@ -549,6 +565,7 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
             route,
             collection,
             f"matrix_apply_modifiers_{route}.gltf",
+            False,
         )
 
         _assert_export_names(
@@ -637,6 +654,7 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
             route,
             collection,
             f"matrix_apply_modifiers_placed_prefab_{route}.gltf",
+            False,
         )
 
         _assert_export_names(
@@ -698,6 +716,7 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
             route,
             collection,
             f"matrix_separate_loose_{route}.gltf",
+            False,
         )
 
         _assert_export_names(
@@ -723,6 +742,7 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
             route,
             collection,
             f"matrix_separate_loose_linked_duplicate_{route}.gltf",
+            False,
         )
 
         _assert_export_names(
@@ -734,6 +754,69 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
         )
         self.assertEqual(len(gltf_data.get("meshes", [])), 1)
         self.assertEqual(len(gltf_data.get("nodes", [])), 2)
+        self.assertEqual(scene.level_design_props.last_export_filepath, filepath)
+
+    def _run_selected_objects_with_anvil_operations_export_route_test(self, route):
+        scene = bpy.context.scene
+        scene.name = "Scene"
+        collection = _create_export_collection(scene)
+        library_path = _export_output_path(
+            f"selected_objects_linked_prefab_{route}.blend"
+        )
+        _write_plain_prefab_library(
+            library_path,
+            "SelectedLinkedPrefab",
+            "SelectedLinkedPrefabMesh",
+        )
+        _add_prefab_library_entry(
+            scene,
+            library_path,
+            "SelectedLinkedPrefab",
+        )
+        selected_linked_obj = _link_object_from_library(
+            collection,
+            library_path,
+            "SelectedLinkedPrefab",
+        )
+        selected_obj = _create_loose_mesh_object(
+            collection,
+            "SelectedLooseBlock",
+            "SelectedLooseBlockMesh",
+        )
+        unselected_obj = _create_mirror_modifier_object(
+            collection,
+            "UnselectedMirroredBlock",
+            "UnselectedMirroredBlockMesh",
+        )
+
+        for obj in scene.objects:
+            obj.select_set(False)
+        selected_linked_obj.select_set(True)
+        selected_obj.select_set(True)
+        bpy.context.view_layer.objects.active = selected_obj
+        _set_anvil_export_settings(scene, 1.0, True, True)
+
+        filepath, gltf_data = _export_using_route(
+            route,
+            collection,
+            f"selected_objects_anvil_operations_{route}.gltf",
+            True,
+        )
+
+        _assert_export_names(
+            self,
+            gltf_data,
+            [_expected_scene_name_for_route(route)],
+            [selected_linked_obj.name, selected_obj.name, selected_obj.name],
+            [selected_linked_obj.data.name, selected_obj.data.name, selected_obj.data.name],
+        )
+        self.assertNotIn(unselected_obj.name, _node_names(gltf_data))
+        self.assertEqual(len(gltf_data.get("nodes", [])), 3)
+        self.assertEqual(len(gltf_data.get("meshes", [])), 3)
+        self.assertTrue(selected_linked_obj.select_get())
+        self.assertTrue(selected_obj.select_get())
+        self.assertFalse(unselected_obj.select_get())
+        self.assertEqual(bpy.context.view_layer.objects.active, selected_obj)
         self.assertEqual(scene.level_design_props.last_export_filepath, filepath)
 
     def test_gltf_anvil_scale_full_export_route_writes_original_names_and_scaled_geometry(self):
@@ -777,6 +860,12 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
 
     def test_gltf_anvil_separate_loose_collection_export_route_with_linked_duplicate_skips_splitting_and_writes_one_shared_mesh(self):
         self._run_separate_loose_linked_duplicate_export_route_test(COLLECTION_EXPORT_ROUTE)
+
+    def test_gltf_anvil_selected_objects_full_export_route_with_apply_modifiers_and_separate_loose_preserves_selected_source_and_generated_parts(self):
+        self._run_selected_objects_with_anvil_operations_export_route_test(FULL_EXPORT_ROUTE)
+
+    def test_gltf_anvil_selected_objects_collection_export_route_with_apply_modifiers_and_separate_loose_preserves_selected_source_and_generated_parts(self):
+        self._run_selected_objects_with_anvil_operations_export_route_test(COLLECTION_EXPORT_ROUTE)
 
 
 class GltfExportMaterialCanonicalizationTest(AnvilTestCase):
@@ -841,6 +930,7 @@ class GltfExportMaterialCanonicalizationTest(AnvilTestCase):
             route,
             collection,
             f"materials_linked_prefab_same_texture_{route}.gltf",
+            False,
         )
 
         _assert_export_names(
@@ -907,6 +997,7 @@ class GltfExportMaterialCanonicalizationTest(AnvilTestCase):
             FULL_EXPORT_ROUTE,
             collection,
             "materials_always_combine.gltf",
+            False,
         )
 
         self.assertEqual(_material_names(gltf_data), [material_name])
@@ -941,6 +1032,7 @@ class GltfExportMaterialCanonicalizationTest(AnvilTestCase):
             FULL_EXPORT_ROUTE,
             collection,
             "materials_strict_suffixes.gltf",
+            False,
         )
 
         names = _material_names(gltf_data)
@@ -972,6 +1064,7 @@ class GltfExportRouteFlowTest(AnvilTestCase):
             FULL_EXPORT_ROUTE,
             collection,
             "route_flow_full.gltf",
+            False,
         )
 
         _assert_export_names(self, gltf_data, ["Scene"], ["FlowBlock"], ["FlowBlockMesh"])
@@ -1004,6 +1097,7 @@ class GltfExportRouteFlowTest(AnvilTestCase):
             COLLECTION_EXPORT_ROUTE,
             collection,
             "route_flow_collection.gltf",
+            False,
         )
 
         _assert_export_names(self, gltf_data, ["ExportMe"], ["FlowBlock"], ["FlowBlockMesh"])

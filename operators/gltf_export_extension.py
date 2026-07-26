@@ -107,6 +107,10 @@ class glTF2ExportUserExtension:
         # Keep Blender and glTF exporter operators in the scene being destructively prepared.
         bpy.context.window.scene = export_scene
 
+        # Blender applies its selected-object filter after this hook. Track the intended
+        # selection separately from the operator-driven selection used during preprocessing.
+        export_selection = _capture_export_selection(export_scene)
+
         debug_log(f"[glTF Anvil] Created temp scene: {export_scene.name}")
 
         try:
@@ -128,8 +132,10 @@ class glTF2ExportUserExtension:
                 material_scope_collection,
                 props,
                 self._original_names_by_pointer,
+                export_selection,
             )
             _map_generated_export_names(export_scene, self._original_names_by_pointer)
+            _restore_export_selection(export_scene, export_selection)
         except Exception as e:
             print(f"Level Design Tools: Error during Anvil export preprocessing: {e}")
             _cleanup(self._export_scene, self._source_scene, self._debug_keep_export_scene)
@@ -216,16 +222,27 @@ class glTF2ExportUserExtension:
         self._export_material_names_by_pointer = {}
 
 
-def _prepare_export_scene(scene, material_scope_collection, props, original_names_by_pointer):
+def _prepare_export_scene(
+        scene,
+        material_scope_collection,
+        props,
+        original_names_by_pointer,
+        export_selection):
     prefab_object_pointers, linked_prefab_object_pointers = _materialize_linked_prefab_meshes_for_export(
         scene,
         props.gltf_anvil_apply_modifiers,
         props.gltf_anvil_scale,
         original_names_by_pointer,
+        export_selection,
     )
     _apply_modifiers(scene, props.gltf_anvil_apply_modifiers)
     _apply_scale(scene, props.gltf_anvil_scale, linked_prefab_object_pointers)
-    _separate_loose(scene, props.gltf_anvil_separate_loose, prefab_object_pointers)
+    _separate_loose(
+        scene,
+        props.gltf_anvil_separate_loose,
+        prefab_object_pointers,
+        export_selection,
+    )
     return _canonicalize_materials(
         scene,
         material_scope_collection,
@@ -581,6 +598,59 @@ def _map_original_export_names(source_scene, export_scene):
     return original_names_by_pointer
 
 
+def _capture_export_selection(scene):
+    selected_object_pointers = set()
+    for obj in scene.objects:
+        if obj.select_get():
+            selected_object_pointers.add(obj.as_pointer())
+
+    active_object_pointer = None
+    active_object = bpy.context.view_layer.objects.active
+    if active_object is not None:
+        active_object_pointer = active_object.as_pointer()
+
+    return {
+        'selected_object_pointers': selected_object_pointers,
+        'active_object_pointer': active_object_pointer,
+    }
+
+
+def _replace_export_selection_object(export_selection, old_obj, new_obj):
+    old_pointer = old_obj.as_pointer()
+    new_pointer = new_obj.as_pointer()
+    selected_object_pointers = export_selection['selected_object_pointers']
+
+    if old_pointer in selected_object_pointers:
+        selected_object_pointers.remove(old_pointer)
+        selected_object_pointers.add(new_pointer)
+
+    if export_selection['active_object_pointer'] == old_pointer:
+        export_selection['active_object_pointer'] = new_pointer
+
+
+def _inherit_generated_export_selection(export_selection, source_obj, generated_objects):
+    selected_object_pointers = export_selection['selected_object_pointers']
+    if source_obj.as_pointer() not in selected_object_pointers:
+        return
+
+    for obj in generated_objects:
+        selected_object_pointers.add(obj.as_pointer())
+
+
+def _restore_export_selection(scene, export_selection):
+    selected_object_pointers = export_selection['selected_object_pointers']
+    active_object_pointer = export_selection['active_object_pointer']
+    active_object = None
+
+    for obj in scene.objects:
+        pointer = obj.as_pointer()
+        obj.select_set(pointer in selected_object_pointers)
+        if pointer == active_object_pointer:
+            active_object = obj
+
+    bpy.context.view_layer.objects.active = active_object
+
+
 def _map_collection_tree_names(
     source_collection,
     export_collection,
@@ -837,7 +907,8 @@ def _materialize_linked_prefab_meshes_for_export(
         scene,
         apply_modifiers,
         scale,
-        original_names_by_pointer):
+        original_names_by_pointer,
+        export_selection):
     prefab_object_pointers = set()
     linked_prefab_object_pointers = set()
     prefab_library_paths = _scene_prefab_library_paths(scene)
@@ -851,6 +922,7 @@ def _materialize_linked_prefab_meshes_for_export(
             scene,
             obj,
             original_names_by_pointer,
+            export_selection,
         )
         prefab_object_pointers.add(obj.as_pointer())
         if apply_modifiers and obj.modifiers and not _has_armature_modifier(obj):
@@ -901,7 +973,11 @@ def _localize_prefab_mesh_for_export(
     obj.data = local_mesh
 
 
-def _ensure_prefab_export_object_is_writable(scene, obj, original_names_by_pointer):
+def _ensure_prefab_export_object_is_writable(
+        scene,
+        obj,
+        original_names_by_pointer,
+        export_selection):
     if _object_material_slots_are_writable(obj):
         return obj
 
@@ -920,6 +996,8 @@ def _ensure_prefab_export_object_is_writable(scene, obj, original_names_by_point
         for collection in collections:
             collection.objects.link(local_obj)
             collection.objects.unlink(obj)
+
+    _replace_export_selection_object(export_selection, obj, local_obj)
 
     debug_log(
         f"[glTF Anvil]   Created local export object for linked prefab {obj.name}"
@@ -1156,7 +1234,7 @@ def _scale_mesh_vertices(mesh, scale_vec):
     mesh.update()
 
 
-def _separate_loose(scene, enabled, prefab_object_pointers):
+def _separate_loose(scene, enabled, prefab_object_pointers, export_selection):
     if not enabled:
         return
 
@@ -1179,6 +1257,7 @@ def _separate_loose(scene, enabled, prefab_object_pointers):
             o.select_set(False)
         obj.select_set(True)
         bpy.context.view_layer.objects.active = obj
+        existing_object_pointers = {o.as_pointer() for o in scene.objects}
 
         # Need to enter edit mode for mesh.separate
         bpy.ops.object.mode_set(mode='EDIT')
@@ -1188,6 +1267,12 @@ def _separate_loose(scene, enabled, prefab_object_pointers):
             debug_log(f"[glTF Anvil]   Could not separate {obj.name}")
         finally:
             bpy.ops.object.mode_set(mode='OBJECT')
+
+        generated_objects = [
+            o for o in scene.objects
+            if o.as_pointer() not in existing_object_pointers
+        ]
+        _inherit_generated_export_selection(export_selection, obj, generated_objects)
 
 
 def _shared_mesh_pointers(mesh_objects):
