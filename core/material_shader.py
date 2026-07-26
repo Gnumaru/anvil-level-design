@@ -2,6 +2,8 @@
 
 from collections import namedtuple
 
+import numpy as np
+
 
 ShaderValidationResult = namedtuple(
     "ShaderValidationResult",
@@ -15,6 +17,15 @@ ShaderValidationResult = namedtuple(
         "bsdf_node",
         "texture_as_alpha",
         "vertex_colors",
+    ),
+)
+
+ImageTransparencyResult = namedtuple(
+    "ImageTransparencyResult",
+    (
+        "has_transparency",
+        "strategy",
+        "pixel_scan_performed",
     ),
 )
 
@@ -342,17 +353,70 @@ def build_canonical_material_shader(material, image, settings):
     return validate_material_shader(material, image)
 
 
-def image_has_transparency(image):
-    """Return whether an image contains any pixel below maximum alpha."""
-    if image is None:
-        return False
-    channels = int(image.channels)
+def _image_can_contain_alpha(image):
+    """Return whether Blender's image metadata describes an alpha channel."""
+    try:
+        bits_per_channel = 32 if image.is_float else 8
+        color_channels = int(image.depth) // bits_per_channel
+    except RuntimeError:
+        return None
+    return color_channels in {2, 4}
+
+
+def _bulk_blender_image_transparency(image):
+    """Inspect Blender's pixels with one bulk copy and a vectorized alpha scan."""
+    try:
+        channels = int(image.channels)
+        if channels not in {2, 4}:
+            return ImageTransparencyResult(
+                False,
+                "Blender image metadata",
+                False,
+            )
+
+        pixels = image.pixels
+        pixel_values = np.empty(len(pixels), dtype=np.float32)
+        pixels.foreach_get(pixel_values)
+        has_transparency = bool(
+            np.any(pixel_values[channels - 1::channels] < 1.0)
+        )
+        return ImageTransparencyResult(
+            has_transparency,
+            "Blender image pixels bulk buffer",
+            True,
+        )
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _blender_image_transparency(image):
+    """Inspect Blender's float pixel property as the compatibility fallback."""
+    if image.alpha_mode == 'NONE':
+        return ImageTransparencyResult(
+            False,
+            "Blender image alpha ignored",
+            False,
+        )
+
+    try:
+        channels = int(image.channels)
+    except RuntimeError:
+        return ImageTransparencyResult(
+            False,
+            "Blender image metadata unavailable",
+            False,
+        )
+
     if channels == 2:
         alpha_offset = 1
     elif channels == 4:
         alpha_offset = 3
     else:
-        return False
+        return ImageTransparencyResult(
+            False,
+            "Blender image metadata fallback",
+            False,
+        )
 
     pixels = image.pixels
     chunk_length = 262144 * channels
@@ -361,7 +425,50 @@ def image_has_transparency(image):
             chunk = pixels[start:min(start + chunk_length, len(pixels))]
             for index in range(alpha_offset, len(chunk), channels):
                 if chunk[index] < 1.0:
-                    return True
+                    return ImageTransparencyResult(
+                        True,
+                        "Blender image pixels fallback",
+                        True,
+                    )
     except RuntimeError:
-        return False
-    return False
+        return ImageTransparencyResult(
+            False,
+            "Blender image pixels unavailable",
+            False,
+        )
+    return ImageTransparencyResult(
+        False,
+        "Blender image pixels fallback",
+        True,
+    )
+
+
+def analyze_image_transparency(image):
+    """Return transparency plus the strategy used to determine it."""
+    if image is None:
+        return ImageTransparencyResult(False, "no image", False)
+    if image.alpha_mode == 'NONE':
+        return ImageTransparencyResult(
+            False,
+            "Blender image alpha ignored",
+            False,
+        )
+
+    can_contain_alpha = _image_can_contain_alpha(image)
+    if can_contain_alpha is False:
+        return ImageTransparencyResult(
+            False,
+            "Blender image metadata",
+            False,
+        )
+
+    result = _bulk_blender_image_transparency(image)
+    if result is not None:
+        return result
+
+    return _blender_image_transparency(image)
+
+
+def image_has_transparency(image):
+    """Return whether an image contains any pixel below maximum alpha."""
+    return analyze_image_transparency(image).has_transparency

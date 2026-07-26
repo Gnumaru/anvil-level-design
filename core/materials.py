@@ -3,8 +3,15 @@ import re
 
 import bpy
 
-from .logging import debug_log
+from .logging import (
+    add_performance_detail,
+    begin_performance_operation_report,
+    debug_log,
+    finish_performance_operation_report,
+    performance_stage,
+)
 from .material_shader import (
+    analyze_image_transparency,
     build_canonical_material_shader,
     image_has_transparency,
     infer_primary_shader_image,
@@ -476,30 +483,80 @@ def get_default_material_settings():
 
 def create_material_with_image(image):
     """Create a new material using the given image texture with scene default settings"""
-    mapped_materials = materials_mapped_to_image(image)
-    if mapped_materials:
-        names = ", ".join(material.name for material in mapped_materials)
-        raise MaterialMappingConflictError(
-            f"Cannot create a material: {image.name!r} is already mapped to {names}"
-        )
-
-    material_name = _material_name_for_image(image)
-    debug_log(f"[CreateMaterial] creating {material_name} for image={image.name!r}")
-    defaults = get_default_material_settings()
-    settings = dict(defaults)
-    settings['texture_as_alpha'] = (
-        settings['texture_as_alpha'] or image_has_transparency(image)
+    performance_report = begin_performance_operation_report(
+        "Create Material",
+        "new material lookup and naming, transparency detection (including any "
+        "synchronous image decode), shader construction, and metadata mapping; "
+        "later viewport shader compilation and drawing are excluded",
     )
 
-    mat = bpy.data.materials.new(name=material_name)
     try:
-        build_canonical_material_shader(mat, image, settings)
-        set_material_primary_image(mat, image)
-    except Exception:
-        if mat.users == 0:
-            bpy.data.materials.remove(mat)
-        raise
-    return mat
+        add_performance_detail(performance_report, "Image", image.name)
+
+        with performance_stage(performance_report, "Check existing material mappings"):
+            mapped_materials = materials_mapped_to_image(image)
+        if mapped_materials:
+            names = ", ".join(material.name for material in mapped_materials)
+            raise MaterialMappingConflictError(
+                f"Cannot create a material: {image.name!r} is already mapped to {names}"
+            )
+
+        with performance_stage(performance_report, "Resolve material name and defaults"):
+            material_name = _material_name_for_image(image)
+            defaults = get_default_material_settings()
+            settings = dict(defaults)
+        add_performance_detail(performance_report, "Material", material_name)
+        debug_log(f"[CreateMaterial] creating {material_name} for image={image.name!r}")
+
+        default_texture_as_alpha = bool(settings['texture_as_alpha'])
+        transparency_detected = False
+        if default_texture_as_alpha:
+            transparency_detail = "skipped; default Texture as Alpha is enabled"
+        else:
+            with performance_stage(
+                    performance_report,
+                    "Detect image transparency (decode and pixel scan)"):
+                transparency_analysis = analyze_image_transparency(image)
+                transparency_detected = transparency_analysis.has_transparency
+            if performance_report is not None:
+                add_performance_detail(
+                    performance_report,
+                    "Image data",
+                    f"{int(image.size[0])}x{int(image.size[1])}, "
+                    f"{int(image.channels)} channels",
+                )
+            if transparency_analysis.pixel_scan_performed:
+                transparency_detail = (
+                    f"{transparency_analysis.strategy}; pixel scan performed; transparency "
+                    + ("detected" if transparency_detected else "not detected")
+                )
+            else:
+                transparency_detail = (
+                    f"{transparency_analysis.strategy}; pixel scan skipped"
+                )
+        settings['texture_as_alpha'] = (
+            default_texture_as_alpha or transparency_detected
+        )
+        add_performance_detail(
+            performance_report,
+            "Transparency detection",
+            transparency_detail,
+        )
+
+        with performance_stage(performance_report, "Create material datablock"):
+            mat = bpy.data.materials.new(name=material_name)
+        try:
+            with performance_stage(performance_report, "Build canonical material shader"):
+                build_canonical_material_shader(mat, image, settings)
+            with performance_stage(performance_report, "Set primary image metadata"):
+                set_material_primary_image(mat, image)
+        except Exception:
+            if mat.users == 0:
+                bpy.data.materials.remove(mat)
+            raise
+        return mat
+    finally:
+        finish_performance_operation_report(performance_report)
 
 
 def _socket_value(bsdf, socket_name, fallback):

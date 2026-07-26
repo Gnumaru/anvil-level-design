@@ -1,3 +1,5 @@
+from array import array
+
 import blf
 import bpy
 import gpu
@@ -141,6 +143,24 @@ class APIAvailabilityTest(AnvilTestCase):
         for function_name in ("load", "new", "write"):
             if not hasattr(imbuf, function_name):
                 missing.append(f"imbuf.{function_name}")
+
+        pixel_test_image = bpy.data.images.new(
+            "api_image_pixels_foreach_get",
+            width=1,
+            height=1,
+            alpha=True,
+        )
+        try:
+            if not hasattr(pixel_test_image.pixels, "foreach_get"):
+                missing.append("Image.pixels.foreach_get")
+            else:
+                pixel_values = array('f', [0.0]) * len(pixel_test_image.pixels)
+                try:
+                    pixel_test_image.pixels.foreach_get(pixel_values)
+                except (RuntimeError, TypeError, ValueError):
+                    missing.append("Image.pixels.foreach_get float buffer")
+        finally:
+            bpy.data.images.remove(pixel_test_image)
 
         self.assertEqual(
             missing, [],

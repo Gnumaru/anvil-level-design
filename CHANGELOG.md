@@ -5,6 +5,7 @@
 - Next weld is now clickable in the panel
 - Fix prefab placement scaling compounding
 - Fix W to place prefab not working on prefabs placed in previous sessions
+- Significantly speed up auto transparency detection
 
 # 1.8.1
 - Fix scaling for linked prefabs
