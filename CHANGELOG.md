@@ -8,6 +8,7 @@
 - Significantly speed up auto transparency detection
 - Fix temporary error when upgrading version from 1.x -> 1.8.x
 - Increased clarity on material mapping menu so conflicts are less likely to be ignored
+- Add a warning for the case where the hotspot editor is accidentally set to UV edit mode
 
 # 1.8.1
 - Fix scaling for linked prefabs

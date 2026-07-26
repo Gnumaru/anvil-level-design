@@ -25,7 +25,10 @@ from . import panels
 from . import workspace
 from . import hotspot_mapping
 from .texture_browser import properties as texture_browser_properties
-from .core.workspace_check import is_level_design_workspace
+from .core.workspace_check import (
+    is_hotspot_mapping_workspace,
+    is_level_design_workspace,
+)
 from .operators.gltf_export_extension import glTF2ExportUserExtension
 
 _MINIMUM_BLENDER_VERSION = bl_info["blender"]
@@ -33,6 +36,7 @@ _VERSION_OK = bpy.app.version >= _MINIMUM_BLENDER_VERSION
 
 _version_warning_handle = None
 _uv_editor_warning_handle = None
+_hotspot_uv_editor_warning_handle = None
 
 
 def _draw_centered_line(font_id, text, center_x, y, max_width, font_size, color):
@@ -115,6 +119,42 @@ def _draw_uv_editor_warning():
         max_width,
         24,
         (1.0, 0.8, 0.25, 1.0),
+    )
+
+
+def _draw_hotspot_uv_editor_warning():
+    if not is_hotspot_mapping_workspace():
+        return
+
+    if not _is_current_area_uv_editor():
+        return
+
+    region = bpy.context.region
+    if not region:
+        return
+
+    font_id = 0
+    center_x = region.width // 2
+    center_y = region.height // 2
+    max_width = region.width * 0.9
+
+    _draw_centered_line(
+        font_id,
+        "HOTSPOT EDITING REQUIRES THE IMAGE EDITOR",
+        center_x,
+        center_y + 20,
+        max_width,
+        32,
+        (1.0, 0.2, 0.2, 1.0),
+    )
+    _draw_centered_line(
+        font_id,
+        "Use the editor-type menu in the top-left and select Image Editor.",
+        center_x,
+        center_y - 20,
+        max_width,
+        20,
+        (1.0, 0.8, 0.4, 1.0),
     )
 
 
@@ -652,6 +692,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
 
 def register():
     global _version_warning_handle, _uv_editor_warning_handle
+    global _hotspot_uv_editor_warning_handle
 
     version = ".".join(str(v) for v in bl_info["version"])
     blender_version = ".".join(str(v) for v in bpy.app.version[:3])
@@ -679,6 +720,9 @@ def register():
     _uv_editor_warning_handle = bpy.types.SpaceImageEditor.draw_handler_add(
         _draw_uv_editor_warning, (), 'WINDOW', 'POST_PIXEL'
     )
+    _hotspot_uv_editor_warning_handle = bpy.types.SpaceImageEditor.draw_handler_add(
+        _draw_hotspot_uv_editor_warning, (), 'WINDOW', 'POST_PIXEL'
+    )
 
     # Make face orientation front face transparent so only back faces are highlighted
     theme_3d = bpy.context.preferences.themes[0].view_3d
@@ -694,6 +738,7 @@ def register():
 
 def unregister():
     global _version_warning_handle, _uv_editor_warning_handle
+    global _hotspot_uv_editor_warning_handle
 
     if _version_warning_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_version_warning_handle, 'WINDOW')
@@ -702,6 +747,13 @@ def unregister():
     if _uv_editor_warning_handle is not None:
         bpy.types.SpaceImageEditor.draw_handler_remove(_uv_editor_warning_handle, 'WINDOW')
         _uv_editor_warning_handle = None
+
+    if _hotspot_uv_editor_warning_handle is not None:
+        bpy.types.SpaceImageEditor.draw_handler_remove(
+            _hotspot_uv_editor_warning_handle,
+            'WINDOW',
+        )
+        _hotspot_uv_editor_warning_handle = None
 
     hotspot_mapping.unregister()
     workspace.unregister()
