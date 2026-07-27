@@ -47,7 +47,7 @@ from .interaction import (
     snap_aspect_ratio_on_axis,
     snap_edge_and_aspect,
     snap_point_to_face_features,
-    snap_quad_vertices_to_face,
+    snap_quad_vertices_to_face_edges,
     snap_quad_vertices_to_face_vertices,
     snap_quad_edges_to_parallel_face_edges,
     compute_face_edge_angles,
@@ -667,7 +667,7 @@ class MESH_OT_uv_transform_modal(Operator):
 
         # Snap priority (highest first):
         #   1. Quad corner onto face vertex (vertex-to-vertex)
-        #   2. Quad corner onto face edge (vertex-to-edge)
+        #   2. One or two quad corners onto compatible face edges
         #   3. Preview edge onto parallel face edge (edge-to-edge)
         if snapping:
             quad = self._compute_quad()
@@ -675,9 +675,10 @@ class MESH_OT_uv_transform_modal(Operator):
                 quad, self._snap_vertices, VERTEX_SNAP_DISTANCE
             )
             if snap_delta is None:
-                snap_delta = snap_quad_vertices_to_face(
-                    quad, self._snap_vertices, self._snap_edges,
-                    VERTEX_SNAP_DISTANCE
+                snap_delta = snap_quad_vertices_to_face_edges(
+                    quad, self._snap_edges, proj_x, proj_y,
+                    VERTEX_SNAP_DISTANCE,
+                    self._drag_type == 'move_free'
                 )
             if snap_delta is None:
                 snap_delta = snap_quad_edges_to_parallel_face_edges(

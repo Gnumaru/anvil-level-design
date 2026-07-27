@@ -813,24 +813,132 @@ def snap_quad_vertices_to_face_vertices(quad_corners, face_vertices, threshold):
     return best_delta
 
 
-def snap_quad_vertices_to_face(quad_corners, face_vertices, face_edges, threshold):
-    """Try to snap any quad vertex to a face vertex or edge.
+def _closest_point_on_edge(point, edge_a, edge_b):
+    """Return the closest point and interpolation factor on an edge."""
+    edge = edge_b - edge_a
+    edge_len_sq = edge.length_squared
+    if edge_len_sq < 1e-10:
+        return None, None
+    t = (point - edge_a).dot(edge) / edge_len_sq
+    t = max(0.0, min(1.0, t))
+    return edge_a + edge * t, t
 
-    Returns the offset delta (Vector3) to apply, or None if no snap.
-    Only snaps to the closest feature found across all quad corners.
+
+def _solve_edge_snap_pair(first, second, threshold):
+    """Solve the translation that satisfies two corner-to-edge constraints."""
+    normal_a = first['normal']
+    normal_b = second['normal']
+    distance_a = first['distance']
+    distance_b = second['distance']
+    normal_dot = normal_a.dot(normal_b)
+    determinant = 1.0 - normal_dot * normal_dot
+
+    if determinant < 1e-4:
+        # Parallel constraints can combine only when both request essentially
+        # the same translation. Opposing or offset targets conflict.
+        delta_a = normal_a * distance_a
+        delta_b = normal_b * distance_b
+        if (delta_a - delta_b).length > 1e-5:
+            return None
+        delta = (delta_a + delta_b) * 0.5
+    else:
+        coeff_a = (
+            distance_a - normal_dot * distance_b
+        ) / determinant
+        coeff_b = (
+            distance_b - normal_dot * distance_a
+        ) / determinant
+        delta = normal_a * coeff_a + normal_b * coeff_b
+
+    # Two perpendicular snaps can legitimately combine into a diagonal move,
+    # but shallow-angle solutions must not pull the preview from far away.
+    if delta.length > threshold * math.sqrt(2.0):
+        return None
+
+    for constraint in (first, second):
+        moved_corner = constraint['corner'] + delta
+        closest, _t = _closest_point_on_edge(
+            moved_corner, constraint['edge_a'], constraint['edge_b']
+        )
+        if closest is None or (moved_corner - closest).length > 1e-5:
+            return None
+
+    return delta
+
+
+def snap_quad_vertices_to_face_edges(quad_corners, face_edges,
+                                     proj_x, proj_y, threshold,
+                                     allow_multiple):
+    """Snap UV corners onto one or two compatible face edges.
+
+    Translation has two degrees of freedom in the face plane, so two UV
+    corners can snap to separate, non-parallel face edges at the same time.
+    When no compatible pair exists, the closest single corner-to-edge snap is
+    returned to preserve the normal one-target behavior. Axis-locked moves
+    pass allow_multiple=False because they have only one degree of freedom.
     """
-    best_delta = None
-    best_dist = threshold
+    constraints = []
+    best_single_delta = None
+    best_single_dist = threshold
 
-    for qc in quad_corners:
-        snapped, _edge = snap_point_to_face_features(qc, face_vertices, face_edges, threshold)
-        delta = snapped - qc
-        dist = delta.length
-        if dist > 1e-6 and dist < best_dist:
-            best_dist = dist
-            best_delta = delta
+    for corner_index, corner in enumerate(quad_corners):
+        for edge_a, edge_b in face_edges:
+            closest, t = _closest_point_on_edge(corner, edge_a, edge_b)
+            if closest is None:
+                continue
 
-    return best_delta
+            single_delta = closest - corner
+            single_dist = single_delta.length
+            if 1e-6 < single_dist < best_single_dist:
+                best_single_dist = single_dist
+                best_single_delta = single_delta
+
+            # Endpoint proximity is handled by the higher-priority face-vertex
+            # snap. Multi-edge constraints use the interior of each edge.
+            if t <= 1e-6 or t >= 1.0 - 1e-6 or single_dist >= threshold:
+                continue
+
+            edge = edge_b - edge_a
+            edge_x = edge.dot(proj_x)
+            edge_y = edge.dot(proj_y)
+            normal = proj_x * -edge_y + proj_y * edge_x
+            if normal.length_squared < 1e-10:
+                continue
+            normal.normalize()
+
+            constraints.append({
+                'corner_index': corner_index,
+                'corner': corner,
+                'edge_a': edge_a,
+                'edge_b': edge_b,
+                'normal': normal,
+                'distance': single_delta.dot(normal),
+                'original_distance': single_dist,
+            })
+
+    if not allow_multiple:
+        return best_single_delta
+
+    best_pair_delta = None
+    best_pair_score = None
+    for first_index, first in enumerate(constraints):
+        for second in constraints[first_index + 1:]:
+            if first['corner_index'] == second['corner_index']:
+                continue
+            delta = _solve_edge_snap_pair(first, second, threshold)
+            if delta is None or delta.length <= 1e-6:
+                continue
+            score = (
+                delta.length,
+                first['original_distance'] + second['original_distance'],
+            )
+            if best_pair_score is None or score < best_pair_score:
+                best_pair_score = score
+                best_pair_delta = delta
+
+    if best_pair_delta is not None:
+        return best_pair_delta
+    return best_single_delta
 
 
 def compute_face_edge_angles(face_edges, face_local_x, face_local_y):
@@ -981,7 +1089,7 @@ def snap_quad_edges_to_parallel_face_edges(quad_corners, face_edges,
     """Translation that brings preview edges flush with parallel face edges.
 
     Each preview axis (proj_x, proj_y) is snapped independently so orthogonal
-    alignments combine. Complements snap_quad_vertices_to_face when the
+    alignments combine. Complements snap_quad_vertices_to_face_edges when the
     preview is larger than the face and no preview corner is near a face
     vertex/edge intersection.
 
