@@ -372,6 +372,49 @@ def recompute_offset_for_fixed_edge(edge_index, fixed_quad_corners,
     return offset_x, offset_y
 
 
+def snap_edge_drag_corners_to_face(edge_index, first_vert_world,
+                                   proj_x, proj_y,
+                                   scale_u, scale_v,
+                                   tex_meters_u, tex_meters_v,
+                                   offset_x, offset_y,
+                                   face_edges, threshold):
+    """Snap either corner of a stretched edge along its active axis.
+
+    Both corners on the dragged edge move by the same amount, so this keeps
+    the perpendicular scale unchanged. If both corners reach separate face
+    edges at the same axis position, the shared movement snaps both.
+
+    Returns (scale_u, scale_v), with only the stretched axis possibly changed.
+    """
+    edge_corner_indices = ((0, 1), (1, 2), (2, 3), (3, 0))
+    axis, drag_edge_coord, fixed_edge_coord = _EDGE_UV_INFO[edge_index]
+    delta_uv = drag_edge_coord - fixed_edge_coord
+
+    quad_corners = compute_texture_quad_3d(
+        first_vert_world, proj_x, proj_y,
+        scale_u, scale_v, tex_meters_u, tex_meters_v,
+        offset_x, offset_y
+    )
+    moving_corners = [
+        quad_corners[index] for index in edge_corner_indices[edge_index]
+    ]
+
+    movement_axis = proj_x if axis == 'u' else proj_y
+    snap_delta = _snap_quad_vertices_to_edges_along_axis(
+        moving_corners, face_edges, proj_x, proj_y,
+        movement_axis, threshold
+    )
+    if snap_delta is None:
+        return scale_u, scale_v
+
+    if axis == 'u' and abs(tex_meters_u) > 1e-8:
+        scale_u += snap_delta.dot(proj_x) / (delta_uv * tex_meters_u)
+    elif axis == 'v' and abs(tex_meters_v) > 1e-8:
+        scale_v += snap_delta.dot(proj_y) / (delta_uv * tex_meters_v)
+
+    return scale_u, scale_v
+
+
 def _snap_scale_along_axis(adj_pos, fixed_pos, axis, perp_axis, delta_uv,
                            face_edges, threshold, min_scale):
     """Find the best scale snap for an adjacent corner along one axis.

@@ -40,6 +40,7 @@ from .interaction import (
     recompute_offset_for_fixed_corner,
     recompute_offset_for_fixed_edge,
     snap_adjacent_corners_to_face,
+    snap_edge_drag_corners_to_face,
     snap_scale_to_parallel_face_edges,
     compute_offset_from_drag,
     compute_rotation_from_drag,
@@ -762,6 +763,16 @@ class MESH_OT_uv_transform_modal(Operator):
             )
 
         elif snapping:
+            # Snap either corner on the moving edge along the stretch axis.
+            # The perpendicular scale remains at its drag-start value.
+            new_su, new_sv = snap_edge_drag_corners_to_face(
+                self._drag_index, self._first_vert_world,
+                proj_x, proj_y,
+                new_su, new_sv, self._tex_meters_u, self._tex_meters_v,
+                new_ox, new_oy,
+                self._snap_edges, VERTEX_SNAP_DISTANCE
+            )
+
             snap_corner = EDGE_TO_SNAP_CORNER[self._drag_index]
             snapped_su, snapped_sv = snap_scale_to_parallel_face_edges(
                 snap_corner, self._drag_start_quad,
