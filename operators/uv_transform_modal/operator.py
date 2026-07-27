@@ -649,6 +649,12 @@ class MESH_OT_uv_transform_modal(Operator):
         if lock_v:
             new_oy = self._drag_start_offset_y
 
+        movement_axis = None
+        if lock_u:
+            movement_axis = proj_y
+        elif lock_v:
+            movement_axis = proj_x
+
         self._offset_x = new_ox
         self._offset_y = new_oy
 
@@ -678,7 +684,7 @@ class MESH_OT_uv_transform_modal(Operator):
                 snap_delta = snap_quad_vertices_to_face_edges(
                     quad, self._snap_edges, proj_x, proj_y,
                     VERTEX_SNAP_DISTANCE,
-                    self._drag_type == 'move_free'
+                    movement_axis
                 )
             if snap_delta is None:
                 snap_delta = snap_quad_edges_to_parallel_face_edges(

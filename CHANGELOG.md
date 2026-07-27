@@ -3,6 +3,7 @@
 # 1.8.3
 - Holding CTRL in UV transform mode turns on pixel snapping
 - UV transform mode can snap 2 corners of the UV at the same time
+- Fix UV transform mode missed snapping cases
 
 # 1.8.2
 - Large weld refactor (look out for issues!)

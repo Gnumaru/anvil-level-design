@@ -824,6 +824,62 @@ def _closest_point_on_edge(point, edge_a, edge_b):
     return edge_a + edge * t, t
 
 
+def _cross_2d(ax, ay, bx, by):
+    """Return the scalar cross product of two 2D vectors."""
+    return ax * by - ay * bx
+
+
+def _snap_quad_vertices_to_edges_along_axis(
+        quad_corners, face_edges, proj_x, proj_y,
+        movement_axis, threshold):
+    """Snap the nearest UV corner/face-edge crossing along one move axis."""
+    if movement_axis.length_squared < 1e-10:
+        return None
+
+    axis = movement_axis.normalized()
+    axis_x = axis.dot(proj_x)
+    axis_y = axis.dot(proj_y)
+    best_delta = None
+    best_distance = threshold
+
+    for corner in quad_corners:
+        for edge_a, edge_b in face_edges:
+            edge = edge_b - edge_a
+            edge_x = edge.dot(proj_x)
+            edge_y = edge.dot(proj_y)
+            determinant = _cross_2d(axis_x, axis_y, edge_x, edge_y)
+            if abs(determinant) < 1e-10:
+                continue
+
+            relative = edge_a - corner
+            relative_x = relative.dot(proj_x)
+            relative_y = relative.dot(proj_y)
+            axis_distance = _cross_2d(
+                relative_x, relative_y, edge_x, edge_y
+            ) / determinant
+            edge_factor = _cross_2d(
+                relative_x, relative_y, axis_x, axis_y
+            ) / determinant
+
+            if edge_factor < 0.0 or edge_factor > 1.0:
+                continue
+
+            distance = abs(axis_distance)
+            if distance <= 1e-6 or distance >= best_distance:
+                continue
+
+            delta = axis * axis_distance
+            moved_corner = corner + delta
+            edge_point = edge_a + edge * edge_factor
+            if (moved_corner - edge_point).length > 1e-5:
+                continue
+
+            best_distance = distance
+            best_delta = delta
+
+    return best_delta
+
+
 def _solve_edge_snap_pair(first, second, threshold):
     """Solve the translation that satisfies two corner-to-edge constraints."""
     normal_a = first['normal']
@@ -868,15 +924,22 @@ def _solve_edge_snap_pair(first, second, threshold):
 
 def snap_quad_vertices_to_face_edges(quad_corners, face_edges,
                                      proj_x, proj_y, threshold,
-                                     allow_multiple):
+                                     movement_axis):
     """Snap UV corners onto one or two compatible face edges.
 
     Translation has two degrees of freedom in the face plane, so two UV
     corners can snap to separate, non-parallel face edges at the same time.
     When no compatible pair exists, the closest single corner-to-edge snap is
-    returned to preserve the normal one-target behavior. Axis-locked moves
-    pass allow_multiple=False because they have only one degree of freedom.
+    returned to preserve the normal one-target behavior. For an axis-locked
+    move, movement_axis selects the nearest corner/edge intersection reachable
+    by travelling strictly along that axis.
     """
+    if movement_axis is not None:
+        return _snap_quad_vertices_to_edges_along_axis(
+            quad_corners, face_edges, proj_x, proj_y,
+            movement_axis, threshold
+        )
+
     constraints = []
     best_single_delta = None
     best_single_dist = threshold
@@ -915,9 +978,6 @@ def snap_quad_vertices_to_face_edges(quad_corners, face_edges,
                 'distance': single_delta.dot(normal),
                 'original_distance': single_dist,
             })
-
-    if not allow_multiple:
-        return best_single_delta
 
     best_pair_delta = None
     best_pair_score = None
