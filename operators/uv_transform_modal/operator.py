@@ -13,7 +13,11 @@ from bpy.types import Operator
 from mathutils import Vector
 from mathutils.geometry import intersect_ray_tri
 
-from bpy_extras.view3d_utils import region_2d_to_vector_3d, region_2d_to_origin_3d
+from bpy_extras.view3d_utils import (
+    location_3d_to_region_2d,
+    region_2d_to_vector_3d,
+    region_2d_to_origin_3d,
+)
 
 from ...core.logging import debug_log
 from ...core.workspace_check import is_level_design_workspace
@@ -48,9 +52,12 @@ from .interaction import (
     snap_quad_edges_to_parallel_face_edges,
     compute_face_edge_angles,
     snap_rotation_to_face_edges,
+    snap_offsets_to_reference_vertex_pixel_corner,
+    snap_scale_to_furthest_vertex_pixel_seam,
     ray_plane_intersection,
     VERTEX_SNAP_DISTANCE,
 )
+from .hotkeys import pixel_snap_shortcut_label, pixel_snap_state_for_event
 
 
 def _pick_primary_face_from_cursor(selected_faces, event, context, world_matrix):
@@ -288,6 +295,16 @@ class MESH_OT_uv_transform_modal(Operator):
         mat = me.materials[face.material_index] if face.material_index < len(me.materials) else None
         self._material = mat
         self._image = get_image_from_material(mat)
+        self._texture_pixel_width = (
+            self._image.size[0]
+            if self._image is not None and self._image.size[0] > 0
+            else 128
+        )
+        self._texture_pixel_height = (
+            self._image.size[1]
+            if self._image is not None and self._image.size[1] > 0
+            else 128
+        )
         self._tex_meters_u, self._tex_meters_v = get_texture_dimensions_from_material(mat, ppm)
         self._ppm = ppm
 
@@ -345,6 +362,11 @@ class MESH_OT_uv_transform_modal(Operator):
         self._hover_type = None
         self._hover_index = None
 
+        # Ctrl-held pixel snapping state. The reference is captured once when
+        # the hotkey is pressed and remains stable until the key is released.
+        self._pixel_snap_active = False
+        self._pixel_snap_reference_vertex = None
+
         # Register draw handler
         self._draw_handler_3d = bpy.types.SpaceView3D.draw_handler_add(
             self._draw_3d, (context,), 'WINDOW', 'POST_VIEW'
@@ -356,9 +378,7 @@ class MESH_OT_uv_transform_modal(Operator):
         MESH_OT_uv_transform_modal._active_instance = self
 
         context.window_manager.modal_handler_add(self)
-        context.workspace.status_text_set(
-            "LMB: Drag handles    LMB (empty)/Enter: Confirm    Esc: Cancel"
-        )
+        self._update_status_text(context)
         tag_redraw_all_3d_views()
 
         return {'RUNNING_MODAL'}
@@ -391,6 +411,21 @@ class MESH_OT_uv_transform_modal(Operator):
                 return {'CANCELLED'}
 
         mouse_pos = (event.mouse_region_x, event.mouse_region_y)
+
+        pixel_snap_state = pixel_snap_state_for_event(
+            context.window_manager, event
+        )
+        if pixel_snap_state is not None:
+            if pixel_snap_state and not self._pixel_snap_active:
+                self._pixel_snap_reference_vertex = (
+                    self._pick_pixel_snap_reference(region, rv3d, mouse_pos)
+                )
+            elif not pixel_snap_state:
+                self._pixel_snap_reference_vertex = None
+            self._pixel_snap_active = pixel_snap_state
+            self._update_status_text(context)
+            tag_redraw_all_3d_views()
+            return {'RUNNING_MODAL'}
 
         # Compute current state for hit testing
         quad = self._compute_quad()
@@ -481,17 +516,28 @@ class MESH_OT_uv_transform_modal(Operator):
         if current_3d is None or self._drag_start_3d is None:
             return
 
-        snapping = is_snapping_enabled(context) and not event.shift
+        pixel_snapping = self._pixel_snap_active
+        snapping = (
+            is_snapping_enabled(context)
+            and not event.shift
+            and not pixel_snapping
+        )
         proj_x, proj_y = self._get_rotated_axes_world()
 
         if self._drag_type == 'corner':
-            self._apply_corner_drag(current_3d, proj_x, proj_y, snapping)
+            self._apply_corner_drag(
+                current_3d, proj_x, proj_y, snapping, pixel_snapping
+            )
 
         elif self._drag_type == 'edge':
-            self._apply_edge_drag(current_3d, proj_x, proj_y, snapping)
+            self._apply_edge_drag(
+                current_3d, proj_x, proj_y, snapping, pixel_snapping
+            )
 
         elif self._drag_type in {'move_free', 'move_v', 'move_h'}:
-            self._apply_move_drag(current_3d, proj_x, proj_y, snapping)
+            self._apply_move_drag(
+                current_3d, proj_x, proj_y, snapping, pixel_snapping
+            )
 
         elif self._drag_type == 'rotation':
             self._apply_rotation_drag(current_3d, snapping)
@@ -499,7 +545,8 @@ class MESH_OT_uv_transform_modal(Operator):
         # Apply to UVs
         self._apply_transform(context)
 
-    def _apply_corner_drag(self, current_3d, proj_x, proj_y, snapping):
+    def _apply_corner_drag(
+            self, current_3d, proj_x, proj_y, snapping, pixel_snapping):
         """Handle corner (resize) drag with snapping."""
         dragged = current_3d
         snap_edge = None
@@ -536,10 +583,24 @@ class MESH_OT_uv_transform_modal(Operator):
                 self._snap_edges, VERTEX_SNAP_DISTANCE
             )
 
-        # Snap to 1:1 aspect ratio if close.
-        # If the dragged corner is on a face edge, slide along the edge
-        # to find the 1:1 point so both constraints apply simultaneously.
-        if snapping:
+        if pixel_snapping:
+            corner_uvs = ((0, 0), (1, 0), (1, 1), (0, 1))
+            opposite_index = (self._drag_index + 2) % 4
+            drag_u, drag_v = corner_uvs[self._drag_index]
+            fixed_u, fixed_v = corner_uvs[opposite_index]
+            fixed_pos = self._drag_start_quad[opposite_index]
+            new_su = snap_scale_to_furthest_vertex_pixel_seam(
+                self._snap_vertices, fixed_pos, proj_x, drag_u - fixed_u,
+                new_su, self._tex_meters_u, self._texture_pixel_width
+            )
+            new_sv = snap_scale_to_furthest_vertex_pixel_seam(
+                self._snap_vertices, fixed_pos, proj_y, drag_v - fixed_v,
+                new_sv, self._tex_meters_v, self._texture_pixel_height
+            )
+
+        # Snap to 1:1 aspect ratio if close. If the dragged corner is on a
+        # face edge, slide along it so both normal snap constraints apply.
+        elif snapping:
             if snap_edge is not None:
                 combined = snap_edge_and_aspect(
                     snap_edge[0], snap_edge[1],
@@ -565,7 +626,8 @@ class MESH_OT_uv_transform_modal(Operator):
         self._offset_x = new_ox
         self._offset_y = new_oy
 
-    def _apply_move_drag(self, current_3d, proj_x, proj_y, snapping):
+    def _apply_move_drag(
+            self, current_3d, proj_x, proj_y, snapping, pixel_snapping):
         """Handle move (offset) drag with optional axis lock and snapping.
 
         drag_type 'move_v' locks the horizontal (U) offset; 'move_h' locks
@@ -589,6 +651,19 @@ class MESH_OT_uv_transform_modal(Operator):
 
         self._offset_x = new_ox
         self._offset_y = new_oy
+
+        if pixel_snapping and self._pixel_snap_reference_vertex is not None:
+            self._offset_x, self._offset_y = (
+                snap_offsets_to_reference_vertex_pixel_corner(
+                    self._pixel_snap_reference_vertex,
+                    self._first_vert_world, proj_x, proj_y,
+                    self._scale_u, self._scale_v,
+                    self._tex_meters_u, self._tex_meters_v,
+                    self._texture_pixel_width, self._texture_pixel_height,
+                    self._offset_x, self._offset_y,
+                    not lock_u, not lock_v,
+                )
+            )
 
         # Snap priority (highest first):
         #   1. Quad corner onto face vertex (vertex-to-vertex)
@@ -620,7 +695,8 @@ class MESH_OT_uv_transform_modal(Operator):
                 if not lock_v and abs(sv) > 0.0001:
                     self._offset_y -= snap_delta.dot(proj_y) / sv
 
-    def _apply_edge_drag(self, current_3d, proj_x, proj_y, snapping):
+    def _apply_edge_drag(
+            self, current_3d, proj_x, proj_y, snapping, pixel_snapping):
         """Handle edge (axis-locked resize) drag with snapping.
 
         Edges 0/2 (bottom/top) resize along V only; edges 1/3 (right/left)
@@ -652,7 +728,33 @@ class MESH_OT_uv_transform_modal(Operator):
         #   edge 2 (top)    → corner 2 (TR, opp=BL on bottom)
         #   edge 3 (left)   → corner 3 (TL, opp=BR on right)
         EDGE_TO_SNAP_CORNER = (0, 2, 2, 3)
-        if snapping:
+        if pixel_snapping:
+            fixed_corner_indices = (2, 0, 0, 1)
+            uv_directions = (-1.0, 1.0, 1.0, -1.0)
+            fixed_pos = self._drag_start_quad[
+                fixed_corner_indices[self._drag_index]
+            ]
+            if self._drag_index % 2 == 0:
+                new_sv = snap_scale_to_furthest_vertex_pixel_seam(
+                    self._snap_vertices, fixed_pos, proj_y,
+                    uv_directions[self._drag_index], new_sv,
+                    self._tex_meters_v, self._texture_pixel_height
+                )
+            else:
+                new_su = snap_scale_to_furthest_vertex_pixel_seam(
+                    self._snap_vertices, fixed_pos, proj_x,
+                    uv_directions[self._drag_index], new_su,
+                    self._tex_meters_u, self._texture_pixel_width
+                )
+
+            new_ox, new_oy = recompute_offset_for_fixed_edge(
+                self._drag_index, self._drag_start_quad,
+                self._first_vert_world, proj_x, proj_y,
+                new_su, new_sv, self._tex_meters_u, self._tex_meters_v,
+                self._drag_start_offset_x, self._drag_start_offset_y,
+            )
+
+        elif snapping:
             snap_corner = EDGE_TO_SNAP_CORNER[self._drag_index]
             snapped_su, snapped_sv = snap_scale_to_parallel_face_edges(
                 snap_corner, self._drag_start_quad,
@@ -814,6 +916,32 @@ class MESH_OT_uv_transform_modal(Operator):
             self._first_vert_world, self._face_normal_world
         )
 
+    def _pick_pixel_snap_reference(self, region, rv3d, mouse_pos):
+        """Pick the selected-face vertex nearest the cursor in screen space."""
+        mouse_x, mouse_y = mouse_pos
+        closest_vertex = None
+        closest_distance_squared = float('inf')
+        for vertex in self._snap_vertices:
+            screen_pos = location_3d_to_region_2d(region, rv3d, vertex)
+            if screen_pos is None:
+                continue
+            dx = screen_pos.x - mouse_x
+            dy = screen_pos.y - mouse_y
+            distance_squared = dx * dx + dy * dy
+            if distance_squared < closest_distance_squared:
+                closest_distance_squared = distance_squared
+                closest_vertex = vertex
+        return closest_vertex.copy() if closest_vertex is not None else None
+
+    def _update_status_text(self, context):
+        pixel_shortcut = pixel_snap_shortcut_label(context.window_manager)
+        pixel_indicator = " [Pixel Snap]" if self._pixel_snap_active else ""
+        context.workspace.status_text_set(
+            f"LMB: Drag handles    {pixel_shortcut}: Pixel Snap    "
+            f"Shift: Disable Snap    LMB (empty)/Enter: Confirm    "
+            f"Esc: Cancel{pixel_indicator}"
+        )
+
     # ------------------------------------------------------------------
     # Drawing callbacks
     # ------------------------------------------------------------------
@@ -845,6 +973,10 @@ class MESH_OT_uv_transform_modal(Operator):
             # available snap targets.
             for corners in self._all_face_corners_world:
                 drawing.draw_face_outline(corners)
+            if self._pixel_snap_active:
+                drawing.draw_pixel_snap_reference(
+                    self._pixel_snap_reference_vertex, quad
+                )
             drawing.draw_handles_3d(
                 quad, self._hover_type, self._hover_index
             )

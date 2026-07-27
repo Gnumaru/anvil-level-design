@@ -6,6 +6,7 @@ with interactive handles for adjusting scale, offset, and rotation.
 
 import bpy
 from . import operator
+from . import hotkeys
 
 
 _addon_keymaps = []
@@ -13,6 +14,7 @@ _addon_keymaps = []
 
 def register():
     """Register the UV transform modal operator and keymap."""
+    hotkeys.register()
     operator.register()
 
     wm = bpy.context.window_manager
@@ -31,6 +33,14 @@ def register():
 
         _addon_keymaps.append((km, kmi))
 
+        kmi = km.keymap_items.new(
+            hotkeys.PIXEL_SNAP_OPERATOR_ID,
+            type=hotkeys.PIXEL_SNAP_DEFAULT_KEY,
+            value='PRESS',
+        )
+
+        _addon_keymaps.append((km, kmi))
+
 
 def unregister():
     """Unregister the UV transform modal operator and keymap."""
@@ -39,3 +49,4 @@ def unregister():
     _addon_keymaps.clear()
 
     operator.unregister()
+    hotkeys.unregister()

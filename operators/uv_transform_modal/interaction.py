@@ -522,6 +522,66 @@ def compute_offset_from_drag(drag_start_3d, drag_current_3d,
     return start_offset_x + delta_offset_x, start_offset_y + delta_offset_y
 
 
+def snap_offsets_to_reference_vertex_pixel_corner(
+        reference_vertex, first_vert_world, proj_x, proj_y,
+        scale_u, scale_v, tex_meters_u, tex_meters_v,
+        pixel_width, pixel_height, offset_x, offset_y, snap_u, snap_v):
+    """Snap a reference vertex's UV coordinate to the nearest pixel corner."""
+    delta = reference_vertex - first_vert_world
+    su = scale_u * tex_meters_u
+    sv = scale_v * tex_meters_v
+
+    if snap_u and pixel_width > 0 and abs(su) > 1e-8:
+        u = delta.dot(proj_x) / su + offset_x
+        pixel_u = u * pixel_width
+        offset_x += (round(pixel_u) - pixel_u) / pixel_width
+
+    if snap_v and pixel_height > 0 and abs(sv) > 1e-8:
+        v = delta.dot(proj_y) / sv + offset_y
+        pixel_v = v * pixel_height
+        offset_y += (round(pixel_v) - pixel_v) / pixel_height
+
+    return offset_x, offset_y
+
+
+def snap_scale_to_furthest_vertex_pixel_seam(
+        vertices, fixed_pos, axis, uv_direction, current_scale,
+        tex_meters, pixel_count):
+    """Snap scale so the furthest vertex in the UV direction lies on a seam.
+
+    ``fixed_pos`` is a texture-tile boundary held in place by the resize
+    operation. The returned scale quantizes the number of pixels between that
+    boundary and the furthest selected vertex while preserving scale sign.
+    """
+    if (not vertices or pixel_count <= 0 or abs(current_scale) < 1e-8
+            or abs(tex_meters) < 1e-8):
+        return current_scale
+
+    scale_sign = 1.0 if current_scale > 0.0 else -1.0
+    world_direction = axis * (uv_direction * scale_sign)
+    furthest = max(
+        vertices,
+        key=lambda vertex: (vertex - fixed_pos).dot(world_direction),
+    )
+    signed_distance = (furthest - fixed_pos).dot(axis)
+    if abs(signed_distance) < 1e-8:
+        return current_scale
+
+    current_pixel_span = (
+        signed_distance / (current_scale * tex_meters) * pixel_count
+    )
+    snapped_pixel_span = round(current_pixel_span)
+    if snapped_pixel_span == 0:
+        return current_scale
+
+    snapped_scale = (
+        signed_distance * pixel_count / (snapped_pixel_span * tex_meters)
+    )
+    if abs(snapped_scale) < 1e-8:
+        return current_scale
+    return snapped_scale
+
+
 def compute_rotation_from_drag(drag_current_3d, quad_center, proj_x, proj_y):
     """Compute new rotation from a rotation handle drag.
 

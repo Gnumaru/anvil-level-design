@@ -24,6 +24,7 @@ HANDLE_COLOR_AXIS_U = (1.0, 0.35, 0.3, 0.9)
 HANDLE_COLOR_AXIS_V = (0.75, 0.4, 1.0, 0.9)
 HANDLE_COLOR_HOVER = (1.0, 1.0, 1.0, 1.0)
 QUAD_OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.35)
+PIXEL_REFERENCE_COLOR = (0.2, 0.85, 1.0, 0.85)
 
 # Shader source for textured quad (image sampling in 3D)
 _VERT_SRC = (
@@ -148,6 +149,39 @@ def draw_face_outline(face_corners_3d):
 
     shader.bind()
     shader.uniform_float("color", FACE_OUTLINE_COLOR)
+    shader.uniform_float("lineWidth", 2.0)
+    shader.uniform_float("viewportSize", _get_viewport_size())
+    batch.draw(shader)
+
+
+def draw_pixel_snap_reference(reference_vertex, quad_corners):
+    """Draw a subtle diamond around the active pixel-snap reference vertex."""
+    if reference_vertex is None:
+        return
+
+    bl, br, _tr, tl = quad_corners
+    right_dir = br - bl
+    up_dir = tl - bl
+    right_len = right_dir.length
+    up_len = up_dir.length
+    if right_len < 0.0001 or up_len < 0.0001:
+        return
+
+    right_dir /= right_len
+    up_dir /= up_len
+    marker_size = (right_len + up_len) * 0.0125
+    positions = [
+        (reference_vertex + up_dir * marker_size)[:],
+        (reference_vertex + right_dir * marker_size)[:],
+        (reference_vertex - up_dir * marker_size)[:],
+        (reference_vertex - right_dir * marker_size)[:],
+        (reference_vertex + up_dir * marker_size)[:],
+    ]
+
+    shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+    batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": positions})
+    shader.bind()
+    shader.uniform_float("color", PIXEL_REFERENCE_COLOR)
     shader.uniform_float("lineWidth", 2.0)
     shader.uniform_float("viewportSize", _get_viewport_size())
     batch.draw(shader)

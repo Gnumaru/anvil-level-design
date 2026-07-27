@@ -446,6 +446,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
             "leveldesign.toggle_edge_length_display": "Tools",
             "leveldesign.cursor_to_grid": "Tools",
             "leveldesign.uv_transform_modal": "UV",
+            "leveldesign.uv_transform_pixel_snap": "UV",
             "leveldesign.snapping_mode_dispatch": "UV",
             "leveldesign.snapping_texture_edge_top": "UV",
             "leveldesign.snapping_texture_edge_left": "UV",
@@ -600,6 +601,8 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                             display_name = "Select Invalid UVs"
                         elif kmi_addon.idname == "leveldesign.snapping_mode_dispatch":
                             display_name = "Face / Grid Snapping Mode"
+                        elif kmi_addon.idname == "leveldesign.uv_transform_pixel_snap":
+                            display_name = "UV Transform: Pixel Snap"
                         elif kmi_addon.idname == "leveldesign.snapping_texture_edge_top":
                             display_name = "Face / Grid Snapping: Texture Edge Top"
                         elif kmi_addon.idname == "leveldesign.snapping_texture_edge_left":

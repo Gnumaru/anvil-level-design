@@ -1,5 +1,8 @@
 # Anvil Level Design Changelog
 
+# 1.8.3
+- Holding CTRL in UV snapping mode turns on pixel snapping 
+
 # 1.8.2
 - Large weld refactor (look out for issues!)
 - Next weld is now clickable in the panel
