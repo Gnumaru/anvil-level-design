@@ -30,6 +30,15 @@ def _project_to_screen(region, rv3d, point_3d):
     return location_3d_to_region_2d(region, rv3d, point_3d)
 
 
+def _screen_distance(region, rv3d, point_a, point_b):
+    """Return the projected pixel distance between two world-space points."""
+    screen_a = _project_to_screen(region, rv3d, point_a)
+    screen_b = _project_to_screen(region, rv3d, point_b)
+    if screen_a is None or screen_b is None:
+        return None
+    return (screen_a - screen_b).length
+
+
 def compute_texture_quad_3d(face_center, proj_x, proj_y, scale_u, scale_v,
                             tex_meters_u, tex_meters_v, offset_x, offset_y):
     """Compute the 4 corners of the full texture tile in 3D world space.
@@ -478,7 +487,8 @@ def snap_edge_drag_corners_to_face(edge_index, first_vert_world,
                                    scale_u, scale_v,
                                    tex_meters_u, tex_meters_v,
                                    offset_x, offset_y,
-                                   face_edges, threshold):
+                                   face_edges, region, rv3d,
+                                   threshold_pixels):
     """Snap either corner of a stretched edge along its active axis.
 
     Both corners on the dragged edge move by the same amount, so this keeps
@@ -503,7 +513,7 @@ def snap_edge_drag_corners_to_face(edge_index, first_vert_world,
     movement_axis = proj_x if axis == 'u' else proj_y
     snap_delta = _snap_quad_vertices_to_edges_along_axis(
         moving_corners, face_edges, proj_x, proj_y,
-        movement_axis, threshold
+        movement_axis, region, rv3d, threshold_pixels
     )
     if snap_delta is None:
         return scale_u, scale_v
@@ -517,7 +527,8 @@ def snap_edge_drag_corners_to_face(edge_index, first_vert_world,
 
 
 def _snap_scale_along_axis(adj_pos, fixed_pos, axis, perp_axis, delta_uv,
-                           face_edges, threshold, min_scale):
+                           face_edges, region, rv3d,
+                           threshold_pixels, min_scale):
     """Find the best scale snap for an adjacent corner along one axis.
 
     The adjacent corner moves along a line: fixed_pos + d * axis (with a
@@ -532,9 +543,8 @@ def _snap_scale_along_axis(adj_pos, fixed_pos, axis, perp_axis, delta_uv,
     A negative return value indicates the edge lies on the mirrored side of
     the fixed corner — valid when the user has dragged the quad through itself.
     """
-    current_dist = (adj_pos - fixed_pos).dot(axis)
     best_snap = None
-    best_delta = threshold
+    best_distance_pixels = threshold_pixels
 
     for a, b in face_edges:
         # Find where the edge crosses the movement line
@@ -556,9 +566,13 @@ def _snap_scale_along_axis(adj_pos, fixed_pos, axis, perp_axis, delta_uv,
         # mirrored quad can snap to face edges on the far side of the pivot.
         if abs(candidate) < min_scale:
             continue
-        delta = abs(current_dist - crossing_dist)
-        if delta < best_delta:
-            best_delta = delta
+        distance_pixels = _screen_distance(
+            region, rv3d, adj_pos, crossing
+        )
+        if (
+                distance_pixels is not None
+                and distance_pixels < best_distance_pixels):
+            best_distance_pixels = distance_pixels
             best_snap = candidate
 
     return best_snap
@@ -568,7 +582,8 @@ def snap_adjacent_corners_to_face(corner_index, fixed_quad_corners,
                                   first_vert_world, proj_x, proj_y,
                                   scale_u, scale_v,
                                   tex_meters_u, tex_meters_v,
-                                  face_edges, threshold):
+                                  face_edges, region, rv3d,
+                                  threshold_pixels):
     """Snap the two adjacent (non-fixed, non-dragged) corners to face features.
 
     When dragging a corner, the opposite corner is fixed and the two adjacent
@@ -576,8 +591,8 @@ def snap_adjacent_corners_to_face(corner_index, fixed_quad_corners,
     - The corner sharing the dragged corner's U controls scale_u
     - The corner sharing the dragged corner's V controls scale_v
 
-    Snapping is done along one axis only per adjacent corner, so distance is
-    measured purely along the controlled axis rather than in full 3D.
+    Snapping is done along one axis only per adjacent corner, with proximity
+    measured in screen pixels.
 
     Returns:
         (scale_u, scale_v) — possibly adjusted.
@@ -609,7 +624,8 @@ def snap_adjacent_corners_to_face(corner_index, fixed_quad_corners,
     delta_u = drag_u - fixed_u  # always +1 or -1
     snapped_su = _snap_scale_along_axis(
         adj_su_pos, fixed_pos, proj_x, proj_y, delta_u,
-        face_edges, threshold, 0.001 * tex_meters_u
+        face_edges, region, rv3d,
+        threshold_pixels, 0.001 * tex_meters_u
     )
     if snapped_su is not None:
         scale_u = snapped_su / tex_meters_u
@@ -627,7 +643,8 @@ def snap_adjacent_corners_to_face(corner_index, fixed_quad_corners,
     delta_v = drag_v - fixed_v  # always +1 or -1
     snapped_sv = _snap_scale_along_axis(
         adj_sv_pos, fixed_pos, proj_y, proj_x, delta_v,
-        face_edges, threshold, 0.001 * tex_meters_v
+        face_edges, region, rv3d,
+        threshold_pixels, 0.001 * tex_meters_v
     )
     if snapped_sv is not None:
         scale_v = snapped_sv / tex_meters_v
@@ -771,8 +788,7 @@ def ray_plane_intersection(ray_origin, ray_direction, plane_point, plane_normal)
 
 # Thresholds for proximity snaps
 ASPECT_SNAP_THRESHOLD = 0.08    # scale ratio tolerance for 1:1 snap
-VERTEX_SNAP_DISTANCE = 0.05     # world-space distance for vertex snaps
-EDGE_SNAP_DISTANCE = 0.05       # world-space distance for edge snaps
+SNAP_DISTANCE_PIXELS = 12.0     # screen-space radius for geometry snaps
 ROTATION_SNAP_DEGREES = 3.0     # degree tolerance for edge-angle snap
 PARALLEL_EDGE_TOLERANCE = 0.01  # sin(angle) tolerance for edge parallelism
 
@@ -896,40 +912,42 @@ def snap_edge_and_aspect(edge_a, edge_b, corner_index, fixed_quad_corners,
     return su / tex_meters_u, sv / tex_meters_v
 
 
-def snap_point_to_face_features(point_3d, face_vertices, face_edges, threshold):
+def snap_point_to_face_features(point_3d, face_vertices, face_edges,
+                                region, rv3d, threshold_pixels):
     """Snap a 3D point to face vertices or edges if close enough.
 
     Vertices take priority over edges. Within each category the closest
-    candidate within the threshold wins.
+    projected candidate within the pixel threshold wins.
     Returns (snapped_point, edge_pair_or_none).
     edge_pair_or_none is (a, b) for edge snaps, None for vertex/no snap.
     """
-    # Vertex snap — find the closest vertex within threshold
+    # Vertex snap — find the closest vertex within the pixel radius
     best_vert = None
-    best_vert_dist = threshold
+    best_vert_distance_pixels = threshold_pixels
     for vert in face_vertices:
-        dist = (point_3d - vert).length
-        if dist < best_vert_dist:
-            best_vert_dist = dist
+        distance_pixels = _screen_distance(region, rv3d, point_3d, vert)
+        if (
+                distance_pixels is not None
+                and distance_pixels < best_vert_distance_pixels):
+            best_vert_distance_pixels = distance_pixels
             best_vert = vert
     if best_vert is not None:
         return best_vert.copy(), None
 
-    # Edge snap — find the closest edge within threshold
+    # Edge snap — find the closest edge within the pixel radius
     best_edge_point = None
     best_edge_pair = None
-    best_edge_dist = threshold
+    best_edge_distance_pixels = threshold_pixels
     for a, b in face_edges:
-        edge = b - a
-        edge_len_sq = edge.length_squared
-        if edge_len_sq < 1e-10:
-            continue
-        t = (point_3d - a).dot(edge) / edge_len_sq
-        t = max(0.0, min(1.0, t))
-        closest = a + edge * t
-        dist = (point_3d - closest).length
-        if dist < best_edge_dist:
-            best_edge_dist = dist
+        closest, _edge_factor, distance_pixels = (
+            _closest_point_on_edge_screen(
+                point_3d, a, b, region, rv3d
+            )
+        )
+        if (
+                distance_pixels is not None
+                and distance_pixels < best_edge_distance_pixels):
+            best_edge_distance_pixels = distance_pixels
             best_edge_point = closest
             best_edge_pair = (a, b)
     if best_edge_point is not None:
@@ -938,21 +956,26 @@ def snap_point_to_face_features(point_3d, face_vertices, face_edges, threshold):
     return point_3d, None
 
 
-def snap_quad_vertices_to_face_vertices(quad_corners, face_vertices, threshold):
+def snap_quad_vertices_to_face_vertices(quad_corners, face_vertices,
+                                        region, rv3d, threshold_pixels):
     """Snap the closest quad corner onto the closest face vertex.
 
     Returns the offset delta (Vector3) to apply, or None if no pair is
-    within threshold. Vertex-only; use as a higher-priority pass before
-    any edge-based snap.
+    within the pixel threshold. Vertex-only; use as a higher-priority pass
+    before any edge-based snap.
     """
     best_delta = None
-    best_dist = threshold
+    best_distance_pixels = threshold_pixels
     for qc in quad_corners:
         for fv in face_vertices:
             delta = fv - qc
-            dist = delta.length
-            if 1e-6 < dist < best_dist:
-                best_dist = dist
+            if delta.length <= 1e-6:
+                continue
+            distance_pixels = _screen_distance(region, rv3d, qc, fv)
+            if (
+                    distance_pixels is not None
+                    and distance_pixels < best_distance_pixels):
+                best_distance_pixels = distance_pixels
                 best_delta = delta
     return best_delta
 
@@ -968,6 +991,50 @@ def _closest_point_on_edge(point, edge_a, edge_b):
     return edge_a + edge * t, t
 
 
+def _closest_point_on_edge_screen(point, edge_a, edge_b, region, rv3d):
+    """Return the edge point visually closest to point in the viewport."""
+    point_screen = _project_to_screen(region, rv3d, point)
+    edge_a_screen = _project_to_screen(region, rv3d, edge_a)
+    edge_b_screen = _project_to_screen(region, rv3d, edge_b)
+    if (
+            point_screen is None
+            or edge_a_screen is None
+            or edge_b_screen is None):
+        return None, None, None
+
+    edge_screen = edge_b_screen - edge_a_screen
+    edge_screen_length_squared = edge_screen.length_squared
+    if edge_screen_length_squared < 1e-10:
+        return None, None, None
+
+    screen_factor = (
+        (point_screen - edge_a_screen).dot(edge_screen)
+        / edge_screen_length_squared
+    )
+    screen_factor = max(0.0, min(1.0, screen_factor))
+    closest_screen = edge_a_screen + edge_screen * screen_factor
+
+    if rv3d.is_perspective:
+        depth_a = -(rv3d.view_matrix @ edge_a).z
+        depth_b = -(rv3d.view_matrix @ edge_b).z
+        if depth_a <= 1e-10 or depth_b <= 1e-10:
+            return None, None, None
+        denominator = (
+            (1.0 - screen_factor) * depth_b
+            + screen_factor * depth_a
+        )
+        if abs(denominator) < 1e-10:
+            return None, None, None
+        edge_factor = screen_factor * depth_a / denominator
+    else:
+        edge_factor = screen_factor
+
+    edge_factor = max(0.0, min(1.0, edge_factor))
+    closest = edge_a + (edge_b - edge_a) * edge_factor
+    distance_pixels = (point_screen - closest_screen).length
+    return closest, edge_factor, distance_pixels
+
+
 def _cross_2d(ax, ay, bx, by):
     """Return the scalar cross product of two 2D vectors."""
     return ax * by - ay * bx
@@ -975,7 +1042,7 @@ def _cross_2d(ax, ay, bx, by):
 
 def _snap_quad_vertices_to_edges_along_axis(
         quad_corners, face_edges, proj_x, proj_y,
-        movement_axis, threshold):
+        movement_axis, region, rv3d, threshold_pixels):
     """Snap the nearest UV corner/face-edge crossing along one move axis."""
     if movement_axis.length_squared < 1e-10:
         return None
@@ -984,7 +1051,7 @@ def _snap_quad_vertices_to_edges_along_axis(
     axis_x = axis.dot(proj_x)
     axis_y = axis.dot(proj_y)
     best_delta = None
-    best_distance = threshold
+    best_distance_pixels = threshold_pixels
 
     for corner in quad_corners:
         for edge_a, edge_b in face_edges:
@@ -1009,7 +1076,7 @@ def _snap_quad_vertices_to_edges_along_axis(
                 continue
 
             distance = abs(axis_distance)
-            if distance <= 1e-6 or distance >= best_distance:
+            if distance <= 1e-6:
                 continue
 
             delta = axis * axis_distance
@@ -1018,13 +1085,21 @@ def _snap_quad_vertices_to_edges_along_axis(
             if (moved_corner - edge_point).length > 1e-5:
                 continue
 
-            best_distance = distance
+            distance_pixels = _screen_distance(
+                region, rv3d, corner, moved_corner
+            )
+            if (
+                    distance_pixels is None
+                    or distance_pixels >= best_distance_pixels):
+                continue
+
+            best_distance_pixels = distance_pixels
             best_delta = delta
 
     return best_delta
 
 
-def _solve_edge_snap_pair(first, second, threshold):
+def _solve_edge_snap_pair(first, second, region, rv3d, threshold_pixels):
     """Solve the translation that satisfies two corner-to-edge constraints."""
     normal_a = first['normal']
     normal_b = second['normal']
@@ -1050,13 +1125,17 @@ def _solve_edge_snap_pair(first, second, threshold):
         ) / determinant
         delta = normal_a * coeff_a + normal_b * coeff_b
 
-    # Two perpendicular snaps can legitimately combine into a diagonal move,
-    # but shallow-angle solutions must not pull the preview from far away.
-    if delta.length > threshold * math.sqrt(2.0):
-        return None
-
     for constraint in (first, second):
         moved_corner = constraint['corner'] + delta
+        distance_pixels = _screen_distance(
+            region, rv3d, constraint['corner'], moved_corner
+        )
+        # Two perpendicular snaps can legitimately combine into a diagonal
+        # move, but shallow-angle solutions must not pull the preview far away.
+        if (
+                distance_pixels is None
+                or distance_pixels > threshold_pixels * math.sqrt(2.0)):
+            return None
         closest, _t = _closest_point_on_edge(
             moved_corner, constraint['edge_a'], constraint['edge_b']
         )
@@ -1067,7 +1146,8 @@ def _solve_edge_snap_pair(first, second, threshold):
 
 
 def snap_quad_vertices_to_face_edges(quad_corners, face_edges,
-                                     proj_x, proj_y, threshold,
+                                     proj_x, proj_y,
+                                     region, rv3d, threshold_pixels,
                                      movement_axis):
     """Snap UV corners onto one or two compatible face edges.
 
@@ -1081,28 +1161,39 @@ def snap_quad_vertices_to_face_edges(quad_corners, face_edges,
     if movement_axis is not None:
         return _snap_quad_vertices_to_edges_along_axis(
             quad_corners, face_edges, proj_x, proj_y,
-            movement_axis, threshold
+            movement_axis, region, rv3d, threshold_pixels
         )
 
     constraints = []
     best_single_delta = None
-    best_single_dist = threshold
+    best_single_distance_pixels = threshold_pixels
 
     for corner_index, corner in enumerate(quad_corners):
         for edge_a, edge_b in face_edges:
-            closest, t = _closest_point_on_edge(corner, edge_a, edge_b)
+            closest, t, single_distance_pixels = (
+                _closest_point_on_edge_screen(
+                    corner, edge_a, edge_b, region, rv3d
+                )
+            )
             if closest is None:
                 continue
 
             single_delta = closest - corner
             single_dist = single_delta.length
-            if 1e-6 < single_dist < best_single_dist:
-                best_single_dist = single_dist
+            if (
+                    single_dist > 1e-6
+                    and single_distance_pixels is not None
+                    and single_distance_pixels < best_single_distance_pixels):
+                best_single_distance_pixels = single_distance_pixels
                 best_single_delta = single_delta
 
             # Endpoint proximity is handled by the higher-priority face-vertex
             # snap. Multi-edge constraints use the interior of each edge.
-            if t <= 1e-6 or t >= 1.0 - 1e-6 or single_dist >= threshold:
+            if (
+                    t <= 1e-6
+                    or t >= 1.0 - 1e-6
+                    or single_distance_pixels is None
+                    or single_distance_pixels >= threshold_pixels):
                 continue
 
             edge = edge_b - edge_a
@@ -1120,7 +1211,7 @@ def snap_quad_vertices_to_face_edges(quad_corners, face_edges,
                 'edge_b': edge_b,
                 'normal': normal,
                 'distance': single_delta.dot(normal),
-                'original_distance': single_dist,
+                'original_distance_pixels': single_distance_pixels,
             })
 
     best_pair_delta = None
@@ -1129,12 +1220,20 @@ def snap_quad_vertices_to_face_edges(quad_corners, face_edges,
         for second in constraints[first_index + 1:]:
             if first['corner_index'] == second['corner_index']:
                 continue
-            delta = _solve_edge_snap_pair(first, second, threshold)
+            delta = _solve_edge_snap_pair(
+                first, second, region, rv3d, threshold_pixels
+            )
             if delta is None or delta.length <= 1e-6:
                 continue
+            delta_distance_pixels = _screen_distance(
+                region, rv3d, first['corner'], first['corner'] + delta
+            )
+            if delta_distance_pixels is None:
+                continue
             score = (
-                delta.length,
-                first['original_distance'] + second['original_distance'],
+                delta_distance_pixels,
+                first['original_distance_pixels']
+                + second['original_distance_pixels'],
             )
             if best_pair_score is None or score < best_pair_score:
                 best_pair_score = score
@@ -1183,7 +1282,8 @@ def snap_rotation_to_face_edges(rotation, face_edge_angles):
 
 def _snap_scale_to_parallel_face_edge(fixed_pos, axis, perp_axis, delta_uv,
                                       face_edges, current_scale_world,
-                                      threshold, min_scale_world):
+                                      region, rv3d,
+                                      threshold_pixels, min_scale_world):
     """Snap a preview edge (at axis-coord = current_scale_world * delta_uv)
     to a face edge that runs perpendicular to axis (i.e. parallel to perp_axis).
 
@@ -1193,8 +1293,9 @@ def _snap_scale_to_parallel_face_edge(fixed_pos, axis, perp_axis, delta_uv,
     Returns the snapped world-scale, or None.
     """
     current_dist = current_scale_world * delta_uv
+    current_point = fixed_pos + axis * current_dist
     best_snap = None
-    best_delta = threshold
+    best_distance_pixels = threshold_pixels
     for a, b in face_edges:
         edge = b - a
         edge_len = edge.length
@@ -1209,9 +1310,14 @@ def _snap_scale_to_parallel_face_edge(fixed_pos, axis, perp_axis, delta_uv,
         # mirrored quad can snap to face edges on the far side of the pivot.
         if abs(candidate) < min_scale_world:
             continue
-        delta = abs(current_dist - face_axis_coord)
-        if delta < best_delta:
-            best_delta = delta
+        target_point = fixed_pos + axis * face_axis_coord
+        distance_pixels = _screen_distance(
+            region, rv3d, current_point, target_point
+        )
+        if (
+                distance_pixels is not None
+                and distance_pixels < best_distance_pixels):
+            best_distance_pixels = distance_pixels
             best_snap = candidate
     return best_snap
 
@@ -1220,7 +1326,8 @@ def snap_scale_to_parallel_face_edges(corner_index, fixed_quad_corners,
                                       proj_x, proj_y,
                                       scale_u, scale_v,
                                       tex_meters_u, tex_meters_v,
-                                      face_edges, threshold):
+                                      face_edges, region, rv3d,
+                                      threshold_pixels):
     """Snap scale by bringing a dragged-side preview edge flush with a
     parallel face edge.
 
@@ -1243,7 +1350,8 @@ def snap_scale_to_parallel_face_edges(corner_index, fixed_quad_corners,
         fixed_pos, proj_x, proj_y, delta_u,
         face_edges,
         scale_u * tex_meters_u,
-        threshold, 0.001 * tex_meters_u,
+        region, rv3d,
+        threshold_pixels, 0.001 * tex_meters_u,
     )
     if snapped_su is not None:
         scale_u = snapped_su / tex_meters_u
@@ -1253,7 +1361,8 @@ def snap_scale_to_parallel_face_edges(corner_index, fixed_quad_corners,
         fixed_pos, proj_y, proj_x, delta_v,
         face_edges,
         scale_v * tex_meters_v,
-        threshold, 0.001 * tex_meters_v,
+        region, rv3d,
+        threshold_pixels, 0.001 * tex_meters_v,
     )
     if snapped_sv is not None:
         scale_v = snapped_sv / tex_meters_v
@@ -1262,7 +1371,8 @@ def snap_scale_to_parallel_face_edges(corner_index, fixed_quad_corners,
 
 
 def _best_perp_snap_to_face_edge(preview_points, perp_axis,
-                                 face_edges, threshold):
+                                 face_edges, region, rv3d,
+                                 threshold_pixels):
     """Smallest perp-axis shift that brings one of preview_points onto a
     face edge running perpendicular to perp_axis (i.e. the preview edges
     at those points are parallel to the face edge).
@@ -1270,7 +1380,7 @@ def _best_perp_snap_to_face_edge(preview_points, perp_axis,
     Returns the signed perp shift, or None.
     """
     best_delta = None
-    best_dist = threshold
+    best_distance_pixels = threshold_pixels
     for point in preview_points:
         for a, b in face_edges:
             edge = b - a
@@ -1282,14 +1392,24 @@ def _best_perp_snap_to_face_edge(preview_points, perp_axis,
                 continue
             face_perp = (a - point).dot(perp_axis)
             dist = abs(face_perp)
-            if 1e-6 < dist < best_dist:
-                best_dist = dist
+            if dist <= 1e-6:
+                continue
+            target_point = point + perp_axis * face_perp
+            distance_pixels = _screen_distance(
+                region, rv3d, point, target_point
+            )
+            if (
+                    distance_pixels is not None
+                    and distance_pixels < best_distance_pixels):
+                best_distance_pixels = distance_pixels
                 best_delta = face_perp
     return best_delta
 
 
 def snap_quad_edges_to_parallel_face_edges(quad_corners, face_edges,
-                                           proj_x, proj_y, threshold):
+                                           proj_x, proj_y,
+                                           region, rv3d,
+                                           threshold_pixels):
     """Translation that brings preview edges flush with parallel face edges.
 
     Each preview axis (proj_x, proj_y) is snapped independently so orthogonal
@@ -1306,10 +1426,12 @@ def snap_quad_edges_to_parallel_face_edges(quad_corners, face_edges,
     right_mid = (br + tr) * 0.5
 
     delta_y = _best_perp_snap_to_face_edge(
-        [bottom_mid, top_mid], proj_y, face_edges, threshold,
+        [bottom_mid, top_mid], proj_y, face_edges,
+        region, rv3d, threshold_pixels,
     )
     delta_x = _best_perp_snap_to_face_edge(
-        [left_mid, right_mid], proj_x, face_edges, threshold,
+        [left_mid, right_mid], proj_x, face_edges,
+        region, rv3d, threshold_pixels,
     )
 
     if delta_x is None and delta_y is None:

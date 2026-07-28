@@ -57,7 +57,7 @@ from .interaction import (
     snap_scale_to_furthest_vertex_pixel_seam,
     ray_plane_intersection,
     HANDLE_HIT_RADIUS,
-    VERTEX_SNAP_DISTANCE,
+    SNAP_DISTANCE_PIXELS,
 )
 from .hotkeys import pixel_snap_shortcut_label, pixel_snap_state_for_event
 
@@ -531,21 +531,25 @@ class MESH_OT_uv_transform_modal(Operator):
             and not event.shift
             and not pixel_snapping
         )
+        snap_distance_pixels = SNAP_DISTANCE_PIXELS
         proj_x, proj_y = self._get_rotated_axes_world()
 
         if self._drag_type == 'corner':
             self._apply_corner_drag(
-                current_3d, proj_x, proj_y, snapping, pixel_snapping
+                current_3d, proj_x, proj_y, snapping, pixel_snapping,
+                region, rv3d, snap_distance_pixels
             )
 
         elif self._drag_type == 'edge':
             self._apply_edge_drag(
-                current_3d, proj_x, proj_y, snapping, pixel_snapping
+                current_3d, proj_x, proj_y, snapping, pixel_snapping,
+                region, rv3d, snap_distance_pixels
             )
 
         elif self._drag_type in {'move_free', 'move_v', 'move_h'}:
             self._apply_move_drag(
-                current_3d, proj_x, proj_y, snapping, pixel_snapping
+                current_3d, proj_x, proj_y, snapping, pixel_snapping,
+                region, rv3d, snap_distance_pixels
             )
 
         elif self._drag_type == 'rotation':
@@ -555,7 +559,8 @@ class MESH_OT_uv_transform_modal(Operator):
         self._apply_transform(context)
 
     def _apply_corner_drag(
-            self, current_3d, proj_x, proj_y, snapping, pixel_snapping):
+            self, current_3d, proj_x, proj_y, snapping, pixel_snapping,
+            region, rv3d, snap_distance_pixels):
         """Handle corner (resize) drag with snapping."""
         dragged = current_3d
         snap_edge = None
@@ -564,7 +569,7 @@ class MESH_OT_uv_transform_modal(Operator):
         if snapping:
             dragged, snap_edge = snap_point_to_face_features(
                 dragged, self._snap_vertices, self._snap_edges,
-                VERTEX_SNAP_DISTANCE
+                region, rv3d, snap_distance_pixels
             )
 
         new_su, new_sv, new_ox, new_oy = compute_scale_offset_from_corner_drag(
@@ -580,7 +585,7 @@ class MESH_OT_uv_transform_modal(Operator):
                 self._drag_index, self._drag_start_quad,
                 self._first_vert_world, proj_x, proj_y,
                 new_su, new_sv, self._tex_meters_u, self._tex_meters_v,
-                self._snap_edges, VERTEX_SNAP_DISTANCE
+                self._snap_edges, region, rv3d, snap_distance_pixels
             )
             # Edge-to-edge: snap preview edges to parallel face edges.
             # Covers the "preview larger than face" case where adjacent
@@ -589,7 +594,7 @@ class MESH_OT_uv_transform_modal(Operator):
                 self._drag_index, self._drag_start_quad,
                 proj_x, proj_y,
                 new_su, new_sv, self._tex_meters_u, self._tex_meters_v,
-                self._snap_edges, VERTEX_SNAP_DISTANCE
+                self._snap_edges, region, rv3d, snap_distance_pixels
             )
 
         if pixel_snapping:
@@ -636,7 +641,8 @@ class MESH_OT_uv_transform_modal(Operator):
         self._offset_y = new_oy
 
     def _apply_move_drag(
-            self, current_3d, proj_x, proj_y, snapping, pixel_snapping):
+            self, current_3d, proj_x, proj_y, snapping, pixel_snapping,
+            region, rv3d, snap_distance_pixels):
         """Handle move (offset) drag with optional axis lock and snapping.
 
         drag_type 'move_v' locks the horizontal (U) offset; 'move_h' locks
@@ -687,18 +693,19 @@ class MESH_OT_uv_transform_modal(Operator):
         if snapping:
             quad = self._compute_quad()
             snap_delta = snap_quad_vertices_to_face_vertices(
-                quad, self._snap_vertices, VERTEX_SNAP_DISTANCE
+                quad, self._snap_vertices,
+                region, rv3d, snap_distance_pixels
             )
             if snap_delta is None:
                 snap_delta = snap_quad_vertices_to_face_edges(
                     quad, self._snap_edges, proj_x, proj_y,
-                    VERTEX_SNAP_DISTANCE,
+                    region, rv3d, snap_distance_pixels,
                     movement_axis
                 )
             if snap_delta is None:
                 snap_delta = snap_quad_edges_to_parallel_face_edges(
                     quad, self._snap_edges,
-                    proj_x, proj_y, VERTEX_SNAP_DISTANCE
+                    proj_x, proj_y, region, rv3d, snap_distance_pixels
                 )
             if snap_delta is not None:
                 # Convert the 3D delta to offset delta (negate for same
@@ -712,7 +719,8 @@ class MESH_OT_uv_transform_modal(Operator):
                     self._offset_y -= snap_delta.dot(proj_y) / sv
 
     def _apply_edge_drag(
-            self, current_3d, proj_x, proj_y, snapping, pixel_snapping):
+            self, current_3d, proj_x, proj_y, snapping, pixel_snapping,
+            region, rv3d, snap_distance_pixels):
         """Handle edge (axis-locked resize) drag with snapping.
 
         Edges 0/2 (bottom/top) resize along V only; edges 1/3 (right/left)
@@ -723,7 +731,7 @@ class MESH_OT_uv_transform_modal(Operator):
         if snapping:
             dragged, _snap_edge = snap_point_to_face_features(
                 dragged, self._snap_vertices, self._snap_edges,
-                VERTEX_SNAP_DISTANCE
+                region, rv3d, snap_distance_pixels
             )
 
         new_su, new_sv, new_ox, new_oy = compute_scale_offset_from_edge_drag(
@@ -778,7 +786,7 @@ class MESH_OT_uv_transform_modal(Operator):
                 proj_x, proj_y,
                 new_su, new_sv, self._tex_meters_u, self._tex_meters_v,
                 new_ox, new_oy,
-                self._snap_edges, VERTEX_SNAP_DISTANCE
+                self._snap_edges, region, rv3d, snap_distance_pixels
             )
 
             snap_corner = EDGE_TO_SNAP_CORNER[self._drag_index]
@@ -786,7 +794,7 @@ class MESH_OT_uv_transform_modal(Operator):
                 snap_corner, self._drag_start_quad,
                 proj_x, proj_y,
                 new_su, new_sv, self._tex_meters_u, self._tex_meters_v,
-                self._snap_edges, VERTEX_SNAP_DISTANCE
+                self._snap_edges, region, rv3d, snap_distance_pixels
             )
             if self._drag_index % 2 == 0:
                 new_sv = snapped_sv

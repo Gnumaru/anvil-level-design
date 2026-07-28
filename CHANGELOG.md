@@ -5,6 +5,7 @@
 - UV transform mode can snap 2 corners of the UV at the same time
 - Fix UV transform mode missed snapping cases
 - UV transform gizmos remain a constant size regardless of zoom
+- UV transform snapping is now based on pixel distance (zoom in for finer controls without snapping)
 
 # 1.8.2
 - Large weld refactor (look out for issues!)
