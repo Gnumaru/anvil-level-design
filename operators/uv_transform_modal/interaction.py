@@ -10,8 +10,13 @@ from mathutils import Vector
 from bpy_extras.view3d_utils import location_3d_to_region_2d
 
 
-# Handle radius in screen pixels for hit-testing
-HANDLE_RADIUS = 10
+# Handle sizing and spacing in screen pixels. These values are scaled by
+# Blender's UI scale at the call site.
+HANDLE_HIT_RADIUS = 11.0
+FULL_HANDLE_HALF_EXTENT = 36.0
+COMPACT_HANDLE_HALF_EXTENT = 14.0
+MINIMAL_SCALE_CORNER_INDEX = 2
+_SCREEN_AXIS_EPSILON = 0.001
 # Minimum drag distance (pixels) before a drag starts
 DRAG_THRESHOLD = 4
 # Rotation handle distance factor (proportion of average quad half-size)
@@ -113,28 +118,127 @@ def compute_handle_positions(quad_corners):
     }
 
 
-def hit_test_handles(region, rv3d, mouse_pos, handle_positions):
+def compute_handle_screen_layout(region, rv3d, quad_corners, ui_scale):
+    """Project exact handle anchors and select an uncluttered visibility tier.
+
+    Full-size quads show every control. Smaller quads hide the axis-specific
+    controls, and extremely small quads show free move plus one both-axis
+    corner scale handle. No displayed handle is moved away from its true
+    projected anchor.
+
+    Returns None when the handle center cannot be projected into the viewport.
+    """
+    handle_positions = compute_handle_positions(quad_corners)
+    corners = [
+        _project_to_screen(region, rv3d, position)
+        for position in handle_positions['corners']
+    ]
+    edge_midpoints = [
+        _project_to_screen(region, rv3d, position)
+        for position in handle_positions['edge_midpoints']
+    ]
+    center = _project_to_screen(region, rv3d, handle_positions['center'])
+    move_axis_v = _project_to_screen(
+        region, rv3d, handle_positions['move_axis_v']
+    )
+    move_axis_h = _project_to_screen(
+        region, rv3d, handle_positions['move_axis_h']
+    )
+    rotation = _project_to_screen(
+        region, rv3d, handle_positions['rotation']
+    )
+    projected_positions = (
+        corners + edge_midpoints
+        + [center, move_axis_v, move_axis_h, rotation]
+    )
+    if any(position is None for position in projected_positions):
+        return None
+
+    axis_u = edge_midpoints[1] - center
+    axis_v = edge_midpoints[2] - center
+
+    if axis_u.length > _SCREEN_AXIS_EPSILON:
+        axis_u_direction = axis_u.normalized()
+    elif axis_v.length > _SCREEN_AXIS_EPSILON:
+        axis_u_direction = Vector((axis_v.y, -axis_v.x)).normalized()
+    else:
+        axis_u_direction = Vector((1.0, 0.0))
+
+    if axis_v.length > _SCREEN_AXIS_EPSILON:
+        axis_v_direction = axis_v.normalized()
+    elif axis_u.length > _SCREEN_AXIS_EPSILON:
+        axis_v_direction = Vector((-axis_u.y, axis_u.x)).normalized()
+    else:
+        axis_v_direction = Vector((0.0, 1.0))
+
+    shortest_half_extent = min(axis_u.length, axis_v.length)
+    full_threshold = FULL_HANDLE_HALF_EXTENT * ui_scale
+    compact_threshold = COMPACT_HANDLE_HALF_EXTENT * ui_scale
+
+    if shortest_half_extent >= full_threshold:
+        visible_corner_indices = (0, 1, 2, 3)
+        visible_edge_indices = (0, 1, 2, 3)
+        show_move_axis_v = True
+        show_move_axis_h = True
+        show_move_free = True
+        show_rotation = True
+    elif shortest_half_extent >= compact_threshold:
+        visible_corner_indices = (0, 1, 2, 3)
+        visible_edge_indices = ()
+        show_move_axis_v = False
+        show_move_axis_h = False
+        show_move_free = True
+        show_rotation = True
+    else:
+        visible_corner_indices = (MINIMAL_SCALE_CORNER_INDEX,)
+        visible_edge_indices = ()
+        show_move_axis_v = False
+        show_move_axis_h = False
+        show_move_free = True
+        show_rotation = False
+
+    return {
+        'corners': corners,
+        'edge_midpoints': edge_midpoints,
+        'center': center,
+        'move_axis_v': move_axis_v,
+        'move_axis_h': move_axis_h,
+        'rotation': rotation,
+        'axis_u': axis_u_direction,
+        'axis_v': axis_v_direction,
+        'visible_corner_indices': visible_corner_indices,
+        'visible_edge_indices': visible_edge_indices,
+        'show_move_axis_v': show_move_axis_v,
+        'show_move_axis_h': show_move_axis_h,
+        'show_move_free': show_move_free,
+        'show_rotation': show_rotation,
+    }
+
+
+def hit_test_handles(mouse_pos, handle_layout, hit_radius):
     """Test which handle (if any) the mouse is over.
 
     Args:
-        region: 3D view region
-        rv3d: RegionView3D
         mouse_pos: (x, y) tuple of mouse position in region coords
-        handle_positions: dict from compute_handle_positions
+        handle_layout: screen-space dict from compute_handle_screen_layout
+        hit_radius: maximum screen-space distance from a handle center
 
     Returns:
         Tuple of (handle_type, handle_index) or (None, None).
         handle_type is one of: 'corner', 'edge', 'move_free',
         'move_v', 'move_h', 'rotation'.
     """
+    if handle_layout is None:
+        return None, None
+
     mx, my = mouse_pos
-    best_dist = HANDLE_RADIUS
+    best_dist = hit_radius
     best_type = None
     best_index = None
 
     # Test rotation handle first (highest priority since it's smallest target)
-    screen = _project_to_screen(region, rv3d, handle_positions['rotation'])
-    if screen is not None:
+    if handle_layout['show_rotation']:
+        screen = handle_layout['rotation']
         dist = math.hypot(screen.x - mx, screen.y - my)
         if dist < best_dist:
             best_dist = dist
@@ -142,37 +246,35 @@ def hit_test_handles(region, rv3d, mouse_pos, handle_positions):
             best_index = 0
 
     # Test corner handles (scale)
-    for i, pos in enumerate(handle_positions['corners']):
-        screen = _project_to_screen(region, rv3d, pos)
-        if screen is not None:
-            dist = math.hypot(screen.x - mx, screen.y - my)
-            if dist < best_dist:
-                best_dist = dist
-                best_type = 'corner'
-                best_index = i
+    for i in handle_layout['visible_corner_indices']:
+        screen = handle_layout['corners'][i]
+        dist = math.hypot(screen.x - mx, screen.y - my)
+        if dist < best_dist:
+            best_dist = dist
+            best_type = 'corner'
+            best_index = i
 
     # Test edge handles (axis-locked resize)
-    for i, pos in enumerate(handle_positions['edge_midpoints']):
-        screen = _project_to_screen(region, rv3d, pos)
-        if screen is not None:
-            dist = math.hypot(screen.x - mx, screen.y - my)
-            if dist < best_dist:
-                best_dist = dist
-                best_type = 'edge'
-                best_index = i
+    for i in handle_layout['visible_edge_indices']:
+        screen = handle_layout['edge_midpoints'][i]
+        dist = math.hypot(screen.x - mx, screen.y - my)
+        if dist < best_dist:
+            best_dist = dist
+            best_type = 'edge'
+            best_index = i
 
     # Test axis-constrained move handles (checked before free-move center
     # so they win when overlapping the center handle's hit radius)
-    screen = _project_to_screen(region, rv3d, handle_positions['move_axis_v'])
-    if screen is not None:
+    if handle_layout['show_move_axis_v']:
+        screen = handle_layout['move_axis_v']
         dist = math.hypot(screen.x - mx, screen.y - my)
         if dist < best_dist:
             best_dist = dist
             best_type = 'move_v'
             best_index = 0
 
-    screen = _project_to_screen(region, rv3d, handle_positions['move_axis_h'])
-    if screen is not None:
+    if handle_layout['show_move_axis_h']:
+        screen = handle_layout['move_axis_h']
         dist = math.hypot(screen.x - mx, screen.y - my)
         if dist < best_dist:
             best_dist = dist
@@ -180,11 +282,10 @@ def hit_test_handles(region, rv3d, mouse_pos, handle_positions):
             best_index = 0
 
     # Test center handle (unconstrained move)
-    screen = _project_to_screen(region, rv3d, handle_positions['center'])
-    if screen is not None:
+    if handle_layout['show_move_free']:
+        screen = handle_layout['center']
         dist = math.hypot(screen.x - mx, screen.y - my)
         if dist < best_dist:
-            best_dist = dist
             best_type = 'move_free'
             best_index = 0
 

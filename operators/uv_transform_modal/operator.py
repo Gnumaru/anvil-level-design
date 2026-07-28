@@ -33,7 +33,7 @@ from ..texture_apply import _dispatch_set_uv_from_other_face
 from . import drawing
 from .interaction import (
     compute_texture_quad_3d,
-    compute_handle_positions,
+    compute_handle_screen_layout,
     hit_test_handles,
     compute_scale_offset_from_corner_drag,
     compute_scale_offset_from_edge_drag,
@@ -56,6 +56,7 @@ from .interaction import (
     snap_offsets_to_reference_vertex_pixel_corner,
     snap_scale_to_furthest_vertex_pixel_seam,
     ray_plane_intersection,
+    HANDLE_HIT_RADIUS,
     VERTEX_SNAP_DISTANCE,
 )
 from .hotkeys import pixel_snap_shortcut_label, pixel_snap_state_for_event
@@ -368,9 +369,12 @@ class MESH_OT_uv_transform_modal(Operator):
         self._pixel_snap_active = False
         self._pixel_snap_reference_vertex = None
 
-        # Register draw handler
+        # Register world-space preview and screen-space handle draw handlers.
         self._draw_handler_3d = bpy.types.SpaceView3D.draw_handler_add(
             self._draw_3d, (context,), 'WINDOW', 'POST_VIEW'
+        )
+        self._draw_handler_2d = bpy.types.SpaceView3D.draw_handler_add(
+            self._draw_2d, (context,), 'WINDOW', 'POST_PIXEL'
         )
 
         # Claim the active-instance slot only after all validation has passed.
@@ -430,7 +434,11 @@ class MESH_OT_uv_transform_modal(Operator):
 
         # Compute current state for hit testing
         quad = self._compute_quad()
-        handle_positions = compute_handle_positions(quad)
+        ui_scale = context.preferences.system.ui_scale
+        handle_layout = compute_handle_screen_layout(
+            region, rv3d, quad, ui_scale
+        )
+        hit_radius = HANDLE_HIT_RADIUS * ui_scale
 
         # ---- Cancel ----
         if event.type == 'ESC' and event.value == 'PRESS':
@@ -447,7 +455,7 @@ class MESH_OT_uv_transform_modal(Operator):
         # ---- Mouse press - start drag or confirm ----
         if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             hit_type, hit_index = hit_test_handles(
-                region, rv3d, mouse_pos, handle_positions
+                mouse_pos, handle_layout, hit_radius
             )
             if hit_type is not None:
                 self._dragging = True
@@ -490,7 +498,7 @@ class MESH_OT_uv_transform_modal(Operator):
             else:
                 # Update hover
                 hit_type, hit_index = hit_test_handles(
-                    region, rv3d, mouse_pos, handle_positions
+                    mouse_pos, handle_layout, hit_radius
                 )
                 if hit_type != self._hover_type or hit_index != self._hover_index:
                     self._hover_type = hit_type
@@ -965,7 +973,10 @@ class MESH_OT_uv_transform_modal(Operator):
     # ------------------------------------------------------------------
 
     def _draw_3d(self, context):
-        """POST_VIEW draw callback: ghost texture, quad outline, handles."""
+        """POST_VIEW draw callback: ghost texture and world-space outlines."""
+        if not is_level_design_workspace():
+            return
+
         try:
             quad = self._compute_quad()
         except Exception:
@@ -983,8 +994,7 @@ class MESH_OT_uv_transform_modal(Operator):
             use_linear_filter = tex_node is None or tex_node.interpolation != 'Closest'
             drawing.draw_ghost_texture(quad, self._image, use_linear_filter)
 
-            # Gizmo overlays: drawn through geometry so the handles stay
-            # reachable when the face is partly hidden by other meshes.
+            # Outlines and the pixel reference are drawn through geometry.
             gpu.state.depth_test_set('NONE')
             drawing.draw_quad_outline(quad)
             # Outline every selected face so the user can see all the
@@ -995,13 +1005,41 @@ class MESH_OT_uv_transform_modal(Operator):
                 drawing.draw_pixel_snap_reference(
                     self._pixel_snap_reference_vertex, quad
                 )
-            drawing.draw_handles_3d(
-                quad, self._hover_type, self._hover_index
-            )
         finally:
             gpu.state.blend_set('NONE')
             gpu.state.depth_test_set('NONE')
             gpu.state.depth_mask_set(True)
+
+    def _draw_2d(self, context):
+        """POST_PIXEL draw callback for constant-size interactive handles."""
+        if not is_level_design_workspace():
+            return
+
+        draw_context = bpy.context
+        region = draw_context.region
+        rv3d = draw_context.region_data
+        if region is None or rv3d is None:
+            return
+
+        try:
+            quad = self._compute_quad()
+            ui_scale = draw_context.preferences.system.ui_scale
+            handle_layout = compute_handle_screen_layout(
+                region, rv3d, quad, ui_scale
+            )
+        except Exception:
+            return
+
+        gpu.state.blend_set('ALPHA')
+        gpu.state.depth_test_set('NONE')
+        try:
+            drawing.draw_handles_2d(
+                handle_layout, self._hover_type, self._hover_index,
+                self._drag_type, self._drag_index, ui_scale
+            )
+        finally:
+            gpu.state.blend_set('NONE')
+            gpu.state.depth_test_set('NONE')
 
     # ------------------------------------------------------------------
     # Cleanup / Revert
@@ -1103,6 +1141,10 @@ class MESH_OT_uv_transform_modal(Operator):
         if self._draw_handler_3d is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler_3d, 'WINDOW')
             self._draw_handler_3d = None
+
+        if self._draw_handler_2d is not None:
+            bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler_2d, 'WINDOW')
+            self._draw_handler_2d = None
 
         context.window.cursor_modal_restore()
         context.workspace.status_text_set(None)

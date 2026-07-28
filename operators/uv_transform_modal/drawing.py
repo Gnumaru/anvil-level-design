@@ -9,8 +9,7 @@ Draws:
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
-
-from .interaction import compute_handle_positions
+from mathutils import Vector
 
 
 # Visual constants
@@ -25,6 +24,11 @@ HANDLE_COLOR_AXIS_V = (0.75, 0.4, 1.0, 0.9)
 HANDLE_COLOR_HOVER = (1.0, 1.0, 1.0, 1.0)
 QUAD_OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.35)
 PIXEL_REFERENCE_COLOR = (0.2, 0.85, 1.0, 0.85)
+HANDLE_CORNER_RADIUS = 7.0
+HANDLE_MOVE_RADIUS = 8.0
+HANDLE_ROTATION_RADIUS = 7.0
+HANDLE_BAR_HALF_LENGTH = 8.5
+HANDLE_BAR_HALF_WIDTH = 3.5
 
 # Shader source for textured quad (image sampling in 3D)
 _VERT_SRC = (
@@ -187,36 +191,65 @@ def draw_pixel_snap_reference(reference_vertex, quad_corners):
     batch.draw(shader)
 
 
-def draw_handles_3d(quad_corners, hover_type, hover_index):
-    """Draw handle indicators in 3D space (POST_VIEW).
+def draw_handles_2d(
+        handle_layout, hover_type, hover_index,
+        drag_type, drag_index, ui_scale):
+    """Draw constant-size handle indicators in screen space (POST_PIXEL)."""
+    if handle_layout is None:
+        return
 
-    Draws small diamond shapes at each handle position using 3D coordinates.
-    """
-    handle_info = compute_handle_positions(quad_corners)
+    visible_corner_indices = list(
+        handle_layout['visible_corner_indices']
+    )
+    visible_edge_indices = list(handle_layout['visible_edge_indices'])
+    show_move_axis_v = handle_layout['show_move_axis_v']
+    show_move_axis_h = handle_layout['show_move_axis_h']
+    show_move_free = handle_layout['show_move_free']
+    show_rotation = handle_layout['show_rotation']
+
+    # A drag may cross a decluttering threshold. Keep its active handle drawn
+    # until release even when that tier would normally hide it.
+    if drag_type == 'corner' and drag_index not in visible_corner_indices:
+        visible_corner_indices.append(drag_index)
+    elif drag_type == 'edge' and drag_index not in visible_edge_indices:
+        visible_edge_indices.append(drag_index)
+    elif drag_type == 'move_v':
+        show_move_axis_v = True
+    elif drag_type == 'move_h':
+        show_move_axis_h = True
+    elif drag_type == 'move_free':
+        show_move_free = True
+    elif drag_type == 'rotation':
+        show_rotation = True
+
+    corner_radius = HANDLE_CORNER_RADIUS * ui_scale
+    move_radius = HANDLE_MOVE_RADIUS * ui_scale
+    rotation_radius = HANDLE_ROTATION_RADIUS * ui_scale
+    bar_half_length = HANDLE_BAR_HALF_LENGTH * ui_scale
+    bar_half_width = HANDLE_BAR_HALF_WIDTH * ui_scale
+
+    if show_rotation:
+        top_mid = handle_layout['edge_midpoints'][2]
+        rot_pos = handle_layout['rotation']
+        line_shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+        line_batch = batch_for_shader(line_shader, 'LINE_STRIP', {
+            "pos": [top_mid[:], rot_pos[:]]
+        })
+        line_shader.bind()
+        line_shader.uniform_float(
+            "color", HANDLE_COLOR_ROTATION[:3] + (0.5,)
+        )
+        line_shader.uniform_float("lineWidth", 1.0)
+        line_shader.uniform_float("viewportSize", _get_viewport_size())
+        line_batch.draw(line_shader)
 
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
 
-    # Get face-plane directions from the quad edges
-    bl, br, tr, tl = quad_corners
-    right_dir = (br - bl)
-    up_dir = (tl - bl)
-    r_len = right_dir.length
-    u_len = up_dir.length
-    if r_len > 0.0001:
-        right_dir = right_dir / r_len
-    if u_len > 0.0001:
-        up_dir = up_dir / u_len
-    avg_size = (r_len + u_len) * 0.5
-
-    def _draw_diamond_3d(center, size_factor, color):
-        """Draw a diamond shape in the face plane using 3D coords."""
-        s = avg_size * size_factor
-
-        top = center + up_dir * s
-        bottom = center - up_dir * s
-        left = center - right_dir * s
-        right = center + right_dir * s
-
+    def _draw_diamond_2d(center, radius, color):
+        top = center + Vector((0.0, radius))
+        right = center + Vector((radius, 0.0))
+        bottom = center - Vector((0.0, radius))
+        left = center - Vector((radius, 0.0))
         positions = [
             center[:], top[:], right[:],
             center[:], right[:], bottom[:],
@@ -227,17 +260,14 @@ def draw_handles_3d(quad_corners, hover_type, hover_index):
         shader.uniform_float("color", color)
         batch.draw(shader)
 
-    def _draw_bar_3d(center, along_dir, across_dir, length_factor,
-                     width_factor, color):
-        """Draw a thin filled rectangle aligned to the face plane."""
-        half_len = avg_size * length_factor
-        half_wid = avg_size * width_factor
-        a = along_dir * half_len
-        b = across_dir * half_wid
-        p0 = center - a - b
-        p1 = center + a - b
-        p2 = center + a + b
-        p3 = center - a + b
+    def _draw_bar_2d(center, along_dir, color):
+        across_dir = Vector((-along_dir.y, along_dir.x))
+        along = along_dir * bar_half_length
+        across = across_dir * bar_half_width
+        p0 = center - along - across
+        p1 = center + along - across
+        p2 = center + along + across
+        p3 = center - along + across
         positions = [p0[:], p1[:], p2[:], p0[:], p2[:], p3[:]]
         batch = batch_for_shader(shader, 'TRIS', {"pos": positions})
         shader.uniform_float("color", color)
@@ -246,49 +276,70 @@ def draw_handles_3d(quad_corners, hover_type, hover_index):
     shader.bind()
 
     # Corner handles (scale both axes)
-    for i, pos in enumerate(handle_info['corners']):
-        color = HANDLE_COLOR_HOVER if (hover_type == 'corner' and hover_index == i) else HANDLE_COLOR_CORNER
-        _draw_diamond_3d(pos, 0.03, color)
+    for i in visible_corner_indices:
+        pos = handle_layout['corners'][i]
+        color = (
+            HANDLE_COLOR_HOVER
+            if hover_type == 'corner' and hover_index == i
+            else HANDLE_COLOR_CORNER
+        )
+        _draw_diamond_2d(pos, corner_radius, color)
 
     # Edge handles (axis-locked resize). Even indices are horizontal edges
     # (bottom/top) which scale V; odd indices are vertical edges which
     # scale U. Draw as bars aligned with the edge they sit on.
-    for i, pos in enumerate(handle_info['edge_midpoints']):
+    for i in visible_edge_indices:
+        pos = handle_layout['edge_midpoints'][i]
         if i % 2 == 0:  # horizontal edge → V axis resize
             base_color = HANDLE_COLOR_AXIS_V
-            along = right_dir
-            across = up_dir
+            along_dir = handle_layout['axis_u']
         else:           # vertical edge → U axis resize
             base_color = HANDLE_COLOR_AXIS_U
-            along = up_dir
-            across = right_dir
-        color = HANDLE_COLOR_HOVER if (hover_type == 'edge' and hover_index == i) else base_color
-        _draw_bar_3d(pos, along, across, 0.04, 0.012, color)
+            along_dir = handle_layout['axis_v']
+        color = (
+            HANDLE_COLOR_HOVER
+            if hover_type == 'edge' and hover_index == i
+            else base_color
+        )
+        _draw_bar_2d(pos, along_dir, color)
 
     # Axis-constrained move handles (bars aligned with their active axis)
-    color = HANDLE_COLOR_HOVER if hover_type == 'move_v' else HANDLE_COLOR_AXIS_V
-    _draw_bar_3d(handle_info['move_axis_v'], up_dir, right_dir, 0.045, 0.012, color)
+    if show_move_axis_v:
+        color = (
+            HANDLE_COLOR_HOVER
+            if hover_type == 'move_v'
+            else HANDLE_COLOR_AXIS_V
+        )
+        _draw_bar_2d(
+            handle_layout['move_axis_v'], handle_layout['axis_v'], color
+        )
 
-    color = HANDLE_COLOR_HOVER if hover_type == 'move_h' else HANDLE_COLOR_AXIS_U
-    _draw_bar_3d(handle_info['move_axis_h'], right_dir, up_dir, 0.045, 0.012, color)
+    if show_move_axis_h:
+        color = (
+            HANDLE_COLOR_HOVER
+            if hover_type == 'move_h'
+            else HANDLE_COLOR_AXIS_U
+        )
+        _draw_bar_2d(
+            handle_layout['move_axis_h'], handle_layout['axis_u'], color
+        )
 
     # Free-move center handle (unconstrained)
-    color = HANDLE_COLOR_HOVER if hover_type == 'move_free' else HANDLE_COLOR_MOVE
-    _draw_diamond_3d(handle_info['center'], 0.035, color)
+    if show_move_free:
+        color = (
+            HANDLE_COLOR_HOVER
+            if hover_type == 'move_free'
+            else HANDLE_COLOR_MOVE
+        )
+        _draw_diamond_2d(handle_layout['center'], move_radius, color)
 
     # Rotation handle
-    color = HANDLE_COLOR_HOVER if hover_type == 'rotation' else HANDLE_COLOR_ROTATION
-    _draw_diamond_3d(handle_info['rotation'], 0.025, color)
-
-    # Line from top midpoint to rotation handle
-    top_mid = handle_info['edge_midpoints'][2]
-    rot_pos = handle_info['rotation']
-    line_shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
-    line_batch = batch_for_shader(line_shader, 'LINE_STRIP', {
-        "pos": [top_mid[:], rot_pos[:]]
-    })
-    line_shader.bind()
-    line_shader.uniform_float("color", HANDLE_COLOR_ROTATION[:3] + (0.5,))
-    line_shader.uniform_float("lineWidth", 1.0)
-    line_shader.uniform_float("viewportSize", _get_viewport_size())
-    line_batch.draw(line_shader)
+    if show_rotation:
+        color = (
+            HANDLE_COLOR_HOVER
+            if hover_type == 'rotation'
+            else HANDLE_COLOR_ROTATION
+        )
+        _draw_diamond_2d(
+            handle_layout['rotation'], rotation_radius, color
+        )
