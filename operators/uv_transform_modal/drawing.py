@@ -22,11 +22,13 @@ HANDLE_COLOR_ROTATION = (0.3, 1.0, 0.5, 0.9)
 HANDLE_COLOR_AXIS_U = (1.0, 0.35, 0.3, 0.9)
 HANDLE_COLOR_AXIS_V = (0.75, 0.4, 1.0, 0.9)
 HANDLE_COLOR_HOVER = (1.0, 1.0, 1.0, 1.0)
+HANDLE_COLOR_REPETITION = (0.3, 0.7, 1.0, 0.45)
 QUAD_OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.35)
 PIXEL_REFERENCE_COLOR = (0.2, 0.85, 1.0, 0.85)
 HANDLE_CORNER_RADIUS = 7.0
 HANDLE_MOVE_RADIUS = 8.0
 HANDLE_ROTATION_RADIUS = 7.0
+HANDLE_REPETITION_RADIUS = 6.0
 HANDLE_BAR_HALF_LENGTH = 8.5
 HANDLE_BAR_HALF_WIDTH = 3.5
 
@@ -343,3 +345,44 @@ def draw_handles_2d(
         _draw_diamond_2d(
             handle_layout['rotation'], rotation_radius, color
         )
+
+
+def draw_repetition_handles_2d(
+        repetition_layouts, hover_repetition, ui_scale):
+    """Draw lightweight activation handles for inactive visible UV tiles."""
+    if not repetition_layouts:
+        return
+
+    radius = HANDLE_REPETITION_RADIUS * ui_scale
+    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    normal_positions = []
+    hover_positions = []
+
+    for layout in repetition_layouts:
+        center = layout['center']
+        top = center + Vector((0.0, radius))
+        right = center + Vector((radius, 0.0))
+        bottom = center - Vector((0.0, radius))
+        left = center - Vector((radius, 0.0))
+        positions = [
+            center[:], top[:], right[:],
+            center[:], right[:], bottom[:],
+            center[:], bottom[:], left[:],
+            center[:], left[:], top[:],
+        ]
+        repeat_key = (layout['repeat_u'], layout['repeat_v'])
+        if hover_repetition == repeat_key:
+            hover_positions.extend(positions)
+        else:
+            normal_positions.extend(positions)
+
+    def draw_batch(positions, color):
+        if not positions:
+            return
+        batch = batch_for_shader(shader, 'TRIS', {"pos": positions})
+        shader.bind()
+        shader.uniform_float("color", color)
+        batch.draw(shader)
+
+    draw_batch(normal_positions, HANDLE_COLOR_REPETITION)
+    draw_batch(hover_positions, HANDLE_COLOR_HOVER)

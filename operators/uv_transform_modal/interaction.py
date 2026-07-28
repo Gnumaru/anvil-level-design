@@ -7,7 +7,11 @@ the scale/offset/rotation handles.
 import math
 from mathutils import Vector
 
-from bpy_extras.view3d_utils import location_3d_to_region_2d
+from bpy_extras.view3d_utils import (
+    location_3d_to_region_2d,
+    region_2d_to_origin_3d,
+    region_2d_to_vector_3d,
+)
 
 
 # Handle sizing and spacing in screen pixels. These values are scaled by
@@ -17,6 +21,8 @@ FULL_HANDLE_HALF_EXTENT = 36.0
 COMPACT_HANDLE_HALF_EXTENT = 14.0
 MINIMAL_SCALE_CORNER_INDEX = 2
 _SCREEN_AXIS_EPSILON = 0.001
+MAX_VISIBLE_REPETITIONS = 24
+REPETITION_CANDIDATE_SCAN_FACTOR = 4
 # Minimum drag distance (pixels) before a drag starts
 DRAG_THRESHOLD = 4
 # Rotation handle distance factor (proportion of average quad half-size)
@@ -222,6 +228,125 @@ def compute_handle_screen_layout(region, rv3d, quad_corners, ui_scale):
         'show_move_free': show_move_free,
         'show_rotation': show_rotation,
     }
+
+
+def _world_to_quad_uv(point, quad_origin, axis_u, axis_v):
+    """Map a coplanar world point into the active tile's UV coordinate space."""
+    delta = point - quad_origin
+    uu = axis_u.dot(axis_u)
+    uv = axis_u.dot(axis_v)
+    vv = axis_v.dot(axis_v)
+    du = delta.dot(axis_u)
+    dv = delta.dot(axis_v)
+    determinant = uu * vv - uv * uv
+    if abs(determinant) < 1e-12:
+        return None
+    return Vector((
+        (du * vv - dv * uv) / determinant,
+        (dv * uu - du * uv) / determinant,
+    ))
+
+
+def _candidate_indices_near_focus(
+        focus_uv, maximum):
+    """Return repetition indices nearest a UV-space focus point."""
+    focus_u = math.floor(focus_uv.x)
+    focus_v = math.floor(focus_uv.y)
+    candidates = []
+    radius = 0
+
+    while len(candidates) < maximum:
+        for repeat_u in range(focus_u - radius, focus_u + radius + 1):
+            for repeat_v in range(focus_v - radius, focus_v + radius + 1):
+                if max(abs(repeat_u - focus_u), abs(repeat_v - focus_v)) != radius:
+                    continue
+                candidates.append((repeat_u, repeat_v))
+                if len(candidates) >= maximum:
+                    return candidates
+        radius += 1
+    return candidates
+
+
+def compute_visible_repetition_layouts(
+        region, rv3d, active_quad, ui_scale, maximum):
+    """Find inactive texture repetitions visible on the tile's infinite plane.
+
+    Each returned layout contains the integer shift from the active tile and
+    the true projected centre used as its lightweight activation handle.
+    """
+    if len(active_quad) != 4:
+        return []
+
+    quad_origin = active_quad[0]
+    axis_u = active_quad[1] - quad_origin
+    axis_v = active_quad[3] - quad_origin
+    if axis_u.length_squared < 1e-12 or axis_v.length_squared < 1e-12:
+        return []
+
+    viewport_center = Vector((region.width * 0.5, region.height * 0.5))
+    ray_origin = region_2d_to_origin_3d(region, rv3d, viewport_center)
+    ray_direction = region_2d_to_vector_3d(region, rv3d, viewport_center)
+    plane_normal = axis_u.cross(axis_v)
+    focus_world = ray_plane_intersection(
+        ray_origin, ray_direction, quad_origin, plane_normal
+    )
+    focus_uv = (
+        _world_to_quad_uv(focus_world, quad_origin, axis_u, axis_v)
+        if focus_world is not None
+        else None
+    )
+    if focus_uv is None:
+        return []
+
+    scan_limit = max(maximum * REPETITION_CANDIDATE_SCAN_FACTOR, maximum)
+    candidate_indices = _candidate_indices_near_focus(
+        focus_uv, scan_limit
+    )
+
+    viewport_margin = HANDLE_HIT_RADIUS * ui_scale
+    layouts = []
+    for repeat_u, repeat_v in candidate_indices:
+        if repeat_u == 0 and repeat_v == 0:
+            continue
+
+        center_world = (
+            quad_origin
+            + axis_u * (repeat_u + 0.5)
+            + axis_v * (repeat_v + 0.5)
+        )
+        center_screen = _project_to_screen(region, rv3d, center_world)
+        if center_screen is None:
+            continue
+        if not (
+                viewport_margin <= center_screen.x
+                <= region.width - viewport_margin
+                and viewport_margin <= center_screen.y
+                <= region.height - viewport_margin):
+            continue
+
+        delta = center_screen - viewport_center
+        layouts.append({
+            'repeat_u': repeat_u,
+            'repeat_v': repeat_v,
+            'center': center_screen,
+            'distance_squared': delta.length_squared,
+        })
+
+    layouts.sort(key=lambda layout: layout['distance_squared'])
+    return layouts[:maximum]
+
+
+def hit_test_repetition_handles(mouse_pos, repetition_layouts, hit_radius):
+    """Return the nearest inactive repetition handle under the mouse."""
+    mouse = Vector(mouse_pos)
+    best_layout = None
+    best_distance = hit_radius
+    for layout in repetition_layouts:
+        distance = (layout['center'] - mouse).length
+        if distance < best_distance:
+            best_distance = distance
+            best_layout = layout
+    return best_layout
 
 
 def hit_test_handles(mouse_pos, handle_layout, hit_radius):
