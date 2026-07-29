@@ -5,6 +5,11 @@ from bpy.props import IntProperty
 from bpy.types import Operator
 
 from ..core.logging import debug_log
+from ..core.preferences_browser_roles import (
+    BROWSER_ROLE_PREFAB,
+    area_is_preferences,
+    browser_role_for_area,
+)
 from ..core.modal_image_grid import (
     ImageGridSpec,
     PreferencesImageGridModal,
@@ -12,7 +17,10 @@ from ..core.modal_image_grid import (
     draw_image_grid_text,
     draw_image_grid_texture,
 )
-from ..core.workspace_check import is_level_design_workspace
+from ..core.workspace_check import (
+    LEVEL_DESIGN_WORKSPACE_NAME,
+    is_level_design_workspace,
+)
 from .assets import scan_library_prefab_assets
 from .previews import (
     prefab_browser_cached_preview_texture,
@@ -197,7 +205,8 @@ def _draw_prefab_browser_header(
         scene,
         window_manager,
         preferences,
-        active_section_is_compatible):
+        active_section_is_compatible,
+        docked_host):
     layout.row().template_header()
     row = layout.row(align=True)
     title_row = row.row(align=True)
@@ -210,6 +219,13 @@ def _draw_prefab_browser_header(
     row.separator(factor=0.7)
     row.prop(window_manager, "anvil_prefab_browser_preview_scale", text="", slider=True)
     row.operator("leveldesign.prefab_refresh_libraries", text="", icon='FILE_REFRESH')
+    if docked_host:
+        row.separator(factor=0.75)
+        row.operator(
+            "leveldesign.browser_area_choose_another",
+            text="",
+            icon='PREFERENCES',
+        )
     if not active_section_is_compatible:
         sub = row.row(align=True)
         sub.alert = True
@@ -563,6 +579,40 @@ def _prefab_browser_warm_texture_item(item):
     return True
 
 
+def _screen_has_docked_workspace_area(screen):
+    if screen is None:
+        return False
+    try:
+        areas = list(screen.areas)
+    except ReferenceError:
+        return False
+    for area in areas:
+        try:
+            if area_is_preferences(area):
+                continue
+            if area.type not in {'TOPBAR', 'STATUSBAR'}:
+                return True
+        except ReferenceError:
+            continue
+    return False
+
+
+def _context_is_prefab_browser_addon_preferences(
+        workspace_name,
+        active_section,
+        area,
+        screen):
+    if workspace_name != LEVEL_DESIGN_WORKSPACE_NAME:
+        return False
+    if active_section != 'ADDONS':
+        return False
+    if not area_is_preferences(area):
+        return False
+    if not _screen_has_docked_workspace_area(screen):
+        return False
+    return browser_role_for_area(screen, area) == BROWSER_ROLE_PREFAB
+
+
 prefab_browser_modal = PreferencesImageGridModal(
     "prefab browser",
     _PREFAB_BROWSER_SCREEN_KEY,
@@ -586,6 +636,9 @@ prefab_browser_modal = PreferencesImageGridModal(
     _prefab_browser_activate_item,
     _prefab_browser_warm_texture_item,
     _PREFAB_BROWSER_GRID_SPEC,
+)
+prefab_browser_modal.context_allowed_func = (
+    _context_is_prefab_browser_addon_preferences
 )
 
 

@@ -23,6 +23,17 @@ from ..core.modal_image_grid import (
     image_grid_texture_bounds,
 )
 from ..core.logging import debug_log
+from ..core.preferences_browser_roles import (
+    BROWSER_ROLE_PREFAB,
+    BROWSER_ROLE_TEXTURE,
+    area_is_preferences,
+    assign_browser_role,
+    browser_area_for_role,
+    browser_role_for_area,
+    clear_browser_role,
+    reset_browser_roles,
+    sync_browser_roles,
+)
 from ..core.workspace_check import (
     HOTSPOT_MAPPING_WORKSPACE_NAME,
     LEVEL_DESIGN_WORKSPACE_NAME,
@@ -659,7 +670,8 @@ def _draw_texture_browser_header(
         scene,
         window_manager,
         preferences,
-        active_section_is_compatible):
+        active_section_is_compatible,
+        docked_host):
     collection = _current_collection(window_manager)
     favorite = _current_favorite(window_manager)
 
@@ -715,6 +727,13 @@ def _draw_texture_browser_header(
     create_image.directory = _display_path(
         window_manager.anvil_texture_browser_folder_path
     )
+    if docked_host:
+        actions_row.separator(factor=0.75)
+        actions_row.operator(
+            "leveldesign.browser_area_choose_another",
+            text="",
+            icon='PREFERENCES',
+        )
     if not active_section_is_compatible:
         sub = row.row(align=True)
         sub.alert = True
@@ -1437,7 +1456,11 @@ def _screen_has_docked_workspace_area(screen):
     return any(_area_is_workspace_editor(area) for area in areas)
 
 
-def _context_is_texture_browser_addon_preferences(workspace_name, active_section, area, screen):
+def _context_is_assignable_browser_addon_preferences(
+        workspace_name,
+        active_section,
+        area,
+        screen):
     if workspace_name not in _TEXTURE_BROWSER_WORKSPACE_NAMES:
         return False
     if active_section != 'ADDONS':
@@ -1447,6 +1470,82 @@ def _context_is_texture_browser_addon_preferences(workspace_name, active_section
     if not _area_is_preferences(area):
         return False
     return _screen_has_docked_workspace_area(screen)
+
+
+def _context_is_texture_browser_addon_preferences(
+        workspace_name,
+        active_section,
+        area,
+        screen):
+    if not _context_is_assignable_browser_addon_preferences(
+            workspace_name,
+            active_section,
+            area,
+            screen):
+        return False
+    return browser_role_for_area(screen, area) == BROWSER_ROLE_TEXTURE
+
+
+def _context_is_unassigned_browser_addon_preferences(
+        workspace_name,
+        active_section,
+        area,
+        screen):
+    if not _context_is_assignable_browser_addon_preferences(
+            workspace_name,
+            active_section,
+            area,
+            screen):
+        return False
+    return browser_role_for_area(screen, area) is None
+
+
+def _draw_browser_chooser_navigation(layout, scene, window_manager):
+    layout.label(text="Anvil Browser", icon='WINDOW')
+
+
+def _draw_browser_chooser_header(layout, scene, window_manager):
+    layout.row().template_header()
+    row = layout.row(align=True)
+    row.label(text="Choose Anvil Browser", icon='WINDOW')
+
+
+def _draw_browser_chooser_content(
+        layout,
+        scene,
+        window_manager,
+        region_width,
+        ui_scale,
+        pixel_size):
+    column = layout.column()
+    column.separator(factor=3.0)
+    title = column.row()
+    title.alignment = 'CENTER'
+    title.label(text="Choose a browser for this area")
+    column.separator()
+
+    buttons = column.row(align=True)
+    buttons.alignment = 'CENTER'
+    buttons.scale_y = 1.8
+    texture_operator = buttons.operator(
+        "leveldesign.browser_area_assign",
+        text="Texture Browser",
+        icon='IMAGE_DATA',
+    )
+    texture_operator.role = BROWSER_ROLE_TEXTURE
+
+    prefab_button = buttons.row(align=True)
+    prefab_button.enabled = (
+        is_level_design_workspace()
+        and scene is not None
+        and getattr(scene, "anvil_prefab_mode", 'SCENE') == 'SCENE'
+    )
+    prefab_operator = prefab_button.operator(
+        "leveldesign.browser_area_assign",
+        text="Prefab Browser",
+        icon='ASSET_MANAGER',
+    )
+    prefab_operator.role = BROWSER_ROLE_PREFAB
 
 
 texture_browser_modal = PreferencesImageGridModal(
@@ -1474,6 +1573,12 @@ texture_browser_modal = PreferencesImageGridModal(
     _TEXTURE_BROWSER_GRID_SPEC,
 )
 texture_browser_modal.context_allowed_func = _context_is_texture_browser_addon_preferences
+texture_browser_modal.unassigned_context_allowed_func = (
+    _context_is_unassigned_browser_addon_preferences
+)
+texture_browser_modal.draw_unassigned_navigation_func = _draw_browser_chooser_navigation
+texture_browser_modal.draw_unassigned_header_func = _draw_browser_chooser_header
+texture_browser_modal.draw_unassigned_content_func = _draw_browser_chooser_content
 
 
 def _screen_is_texture_browser_workspace_screen(screen):
@@ -1537,7 +1642,14 @@ def _open_texture_browser_region(window_manager):
     for window in window_manager.windows:
         if not _window_is_texture_browser_recovery_host(window):
             continue
-        area = texture_browser_modal.preferences_area_for_window(window)
+        if texture_browser_modal.is_window(window):
+            area = texture_browser_modal.preferences_area_for_window(window)
+        else:
+            try:
+                screen = getattr(window, "screen", None)
+            except ReferenceError:
+                continue
+            area = browser_area_for_role(screen, BROWSER_ROLE_TEXTURE)
         if area is None:
             continue
         region = texture_browser_modal.region_for_area(area)
@@ -1590,6 +1702,7 @@ def _scroll_texture_browser_to_filepath(
 
 def _recover_texture_browser_active_section():
     try:
+        sync_browser_roles()
         window_manager = getattr(bpy.context, "window_manager", None)
         preferences = getattr(bpy.context, "preferences", None)
         if window_manager is not None and preferences is not None:
@@ -1685,6 +1798,84 @@ def _texture_browser_collection_enum_items(operator, context):
         name = collection.name or f"Collection {index + 1}"
         items.append((str(index), name, name))
     return items
+
+
+class LEVELDESIGN_OT_browser_area_assign(Operator):
+    """Choose which Anvil browser is hosted by this Preferences area"""
+    bl_idname = "leveldesign.browser_area_assign"
+    bl_label = "Choose Anvil Browser"
+    bl_options = {'INTERNAL'}
+
+    role: EnumProperty(
+        items=(
+            (BROWSER_ROLE_TEXTURE, "Texture Browser", "Show the Texture Browser"),
+            (BROWSER_ROLE_PREFAB, "Prefab Browser", "Show the Prefab Browser"),
+        ),
+    )
+
+    @classmethod
+    def poll(cls, context):
+        screen = getattr(getattr(context, "window", None), "screen", None)
+        return (
+            _texture_browser_workspace_is_allowed()
+            and context.preferences.active_section == 'ADDONS'
+            and area_is_preferences(getattr(context, "area", None))
+            and _screen_has_docked_workspace_area(screen)
+        )
+
+    def execute(self, context):
+        if self.role == BROWSER_ROLE_PREFAB and not is_level_design_workspace():
+            self.report({'ERROR'}, "The Prefab Browser is only available in Level Design")
+            return {'CANCELLED'}
+        if (
+                self.role == BROWSER_ROLE_PREFAB
+                and getattr(context.scene, "anvil_prefab_mode", 'SCENE') != 'SCENE'):
+            self.report({'ERROR'}, "The Prefab Browser is not available in Prefab Library mode")
+            return {'CANCELLED'}
+
+        from ..prefabs import browser as prefab_browser
+
+        windows = context.window_manager.windows
+        texture_browser_modal.stop_interaction(True, windows)
+        prefab_browser.prefab_browser_modal.stop_interaction(True, windows)
+        try:
+            assign_browser_role(context.window.screen, context.area, self.role)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+
+        if self.role == BROWSER_ROLE_PREFAB:
+            prefab_browser.update_prefab_browser_availability(context.scene)
+        texture_browser_modal.tag_preferences_areas(windows)
+        prefab_browser.prefab_browser_modal.tag_preferences_areas(windows)
+        return {'FINISHED'}
+
+
+class LEVELDESIGN_OT_browser_area_choose_another(Operator):
+    """Return this area to the Anvil browser chooser"""
+    bl_idname = "leveldesign.browser_area_choose_another"
+    bl_label = "Choose Another Browser"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        screen = getattr(getattr(context, "window", None), "screen", None)
+        return (
+            _texture_browser_workspace_is_allowed()
+            and area_is_preferences(getattr(context, "area", None))
+            and browser_role_for_area(screen, context.area) is not None
+        )
+
+    def execute(self, context):
+        from ..prefabs import browser as prefab_browser
+
+        windows = context.window_manager.windows
+        texture_browser_modal.stop_interaction(True, windows)
+        prefab_browser.prefab_browser_modal.stop_interaction(True, windows)
+        clear_browser_role(context.window.screen, context.area)
+        texture_browser_modal.tag_preferences_areas(windows)
+        prefab_browser.prefab_browser_modal.tag_preferences_areas(windows)
+        return {'FINISHED'}
 
 
 class LEVELDESIGN_OT_texture_browser(Operator):
@@ -2444,6 +2635,8 @@ class LEVELDESIGN_OT_texture_browser_restore_default_include_filters(Operator):
 
 
 classes = (
+    LEVELDESIGN_OT_browser_area_assign,
+    LEVELDESIGN_OT_browser_area_choose_another,
     LEVELDESIGN_OT_texture_browser,
     LEVELDESIGN_OT_texture_browser_locate_file,
     LEVELDESIGN_OT_texture_browser_apply_file,
@@ -2551,6 +2744,7 @@ def register():
 
 def unregister():
     _reset_mapping_selection()
+    reset_browser_roles()
     persistence.save_texture_browser_data()
     if bpy.app.timers.is_registered(_recover_texture_browser_active_section):
         bpy.app.timers.unregister(_recover_texture_browser_active_section)

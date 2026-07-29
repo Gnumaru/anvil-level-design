@@ -106,6 +106,10 @@ class PreferencesImageGridModal:
         self.userpref_draws = {}
         self.area_types = {}
         self.context_allowed_func = None
+        self.unassigned_context_allowed_func = None
+        self.draw_unassigned_navigation_func = None
+        self.draw_unassigned_header_func = None
+        self.draw_unassigned_content_func = None
         self.persistent_draw_overrides = False
         self.persistent_draw_handler = False
         self.previous_active_section = None
@@ -180,6 +184,24 @@ class PreferencesImageGridModal:
             if self.context_allowed_func is None:
                 return False
             return self.context_allowed_func(
+                workspace_name,
+                active_section,
+                area,
+                screen,
+            )
+        except (AttributeError, ReferenceError):
+            return False
+
+    def context_uses_unassigned_host(
+            self,
+            screen,
+            workspace_name,
+            active_section,
+            area):
+        if self.unassigned_context_allowed_func is None:
+            return False
+        try:
+            return self.unassigned_context_allowed_func(
                 workspace_name,
                 active_section,
                 area,
@@ -957,21 +979,33 @@ class PreferencesImageGridModal:
         screen = getattr(window, "screen", None)
         workspace = getattr(context, "workspace", None)
         workspace_name = getattr(workspace, "name", "")
-        if not self.context_uses_browser(
+        if self.context_uses_browser(
                 window,
                 screen,
                 workspace_name,
                 context.preferences.active_section,
                 context.area):
-            draw_func = self.userpref_draws.get(type(panel).__name__)
-            if draw_func is not None:
-                return draw_func(panel, context)
+            self.draw_navigation_func(
+                panel.layout,
+                context.scene,
+                context.window_manager,
+            )
             return None
-        self.draw_navigation_func(
-            panel.layout,
-            context.scene,
-            context.window_manager,
-        )
+        if self.context_uses_unassigned_host(
+                screen,
+                workspace_name,
+                context.preferences.active_section,
+                context.area):
+            if self.draw_unassigned_navigation_func is not None:
+                self.draw_unassigned_navigation_func(
+                    panel.layout,
+                    context.scene,
+                    context.window_manager,
+                )
+            return None
+        draw_func = self.userpref_draws.get(type(panel).__name__)
+        if draw_func is not None:
+            return draw_func(panel, context)
         return None
 
     def _header_draw_override(self, panel, context):
@@ -979,23 +1013,36 @@ class PreferencesImageGridModal:
         screen = getattr(window, "screen", None)
         workspace = getattr(context, "workspace", None)
         workspace_name = getattr(workspace, "name", "")
-        if not self.context_uses_browser(
+        if self.context_uses_browser(
                 window,
                 screen,
                 workspace_name,
                 context.preferences.active_section,
                 context.area):
-            draw_func = self.userpref_draws.get(type(panel).__name__)
-            if draw_func is not None:
-                return draw_func(panel, context)
+            self.draw_header_func(
+                panel.layout,
+                context.scene,
+                context.window_manager,
+                context.preferences,
+                self.active_section_is_compatible(context.preferences),
+                not self.is_window(window),
+            )
             return None
-        self.draw_header_func(
-            panel.layout,
-            context.scene,
-            context.window_manager,
-            context.preferences,
-            self.active_section_is_compatible(context.preferences),
-        )
+        if self.context_uses_unassigned_host(
+                screen,
+                workspace_name,
+                context.preferences.active_section,
+                context.area):
+            if self.draw_unassigned_header_func is not None:
+                self.draw_unassigned_header_func(
+                    panel.layout,
+                    context.scene,
+                    context.window_manager,
+                )
+            return None
+        draw_func = self.userpref_draws.get(type(panel).__name__)
+        if draw_func is not None:
+            return draw_func(panel, context)
         return None
 
     def _content_draw_override(self, panel, context):
@@ -1003,24 +1050,39 @@ class PreferencesImageGridModal:
         screen = getattr(window, "screen", None)
         workspace = getattr(context, "workspace", None)
         workspace_name = getattr(workspace, "name", "")
-        if not self.context_uses_browser(
+        if self.context_uses_browser(
                 window,
                 screen,
                 workspace_name,
                 context.preferences.active_section,
                 context.area):
-            draw_func = self.userpref_draws.get(type(panel).__name__)
-            if draw_func is not None:
-                return draw_func(panel, context)
+            self.draw_content_func(
+                panel.layout,
+                context.scene,
+                context.window_manager,
+                context.region.width,
+                context.preferences.system.ui_scale,
+                context.preferences.system.pixel_size,
+            )
             return None
-        self.draw_content_func(
-            panel.layout,
-            context.scene,
-            context.window_manager,
-            context.region.width,
-            context.preferences.system.ui_scale,
-            context.preferences.system.pixel_size,
-        )
+        if self.context_uses_unassigned_host(
+                screen,
+                workspace_name,
+                context.preferences.active_section,
+                context.area):
+            if self.draw_unassigned_content_func is not None:
+                self.draw_unassigned_content_func(
+                    panel.layout,
+                    context.scene,
+                    context.window_manager,
+                    context.region.width,
+                    context.preferences.system.ui_scale,
+                    context.preferences.system.pixel_size,
+                )
+            return None
+        draw_func = self.userpref_draws.get(type(panel).__name__)
+        if draw_func is not None:
+            return draw_func(panel, context)
         return None
 
     def _empty_draw_override(self, panel, context):
@@ -1028,15 +1090,22 @@ class PreferencesImageGridModal:
         screen = getattr(window, "screen", None)
         workspace = getattr(context, "workspace", None)
         workspace_name = getattr(workspace, "name", "")
-        if not self.context_uses_browser(
+        if self.context_uses_browser(
                 window,
                 screen,
                 workspace_name,
                 context.preferences.active_section,
                 context.area):
-            draw_func = self.userpref_draws.get(type(panel).__name__)
-            if draw_func is not None:
-                return draw_func(panel, context)
+            return None
+        if self.context_uses_unassigned_host(
+                screen,
+                workspace_name,
+                context.preferences.active_section,
+                context.area):
+            return None
+        draw_func = self.userpref_draws.get(type(panel).__name__)
+        if draw_func is not None:
+            return draw_func(panel, context)
         return None
 
     def invoke_interaction(
@@ -1322,6 +1391,21 @@ class PreferencesImageGridModal:
             return {'FINISHED'}
         if (not self.is_window_live(browser_window, windows)
                 or not self.is_area_live(area, windows)):
+            self.finish_invalid_interaction(preferences, windows)
+            return {'FINISHED'}
+        try:
+            browser_screen = getattr(browser_window, "screen", None)
+            browser_workspace = getattr(browser_window, "workspace", None)
+            browser_workspace_name = getattr(browser_workspace, "name", "")
+        except ReferenceError:
+            self.finish_invalid_interaction(preferences, windows)
+            return {'FINISHED'}
+        if not self.context_uses_browser(
+                browser_window,
+                browser_screen,
+                browser_workspace_name,
+                preferences.active_section,
+                area):
             self.finish_invalid_interaction(preferences, windows)
             return {'FINISHED'}
         region = self.region_for_area(area)

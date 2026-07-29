@@ -1438,6 +1438,10 @@ def register():
     )
 
     wm = bpy.context.window_manager
+    browser.prefab_browser_modal.persistent_draw_overrides = True
+    browser.prefab_browser_modal.persistent_draw_handler = True
+    browser.prefab_browser_modal.install_draw_overrides(wm.windows)
+    browser.prefab_browser_modal.ensure_draw_handler()
     kc = wm.keyconfigs.addon
     if kc:
         for km_name, space_type in KEYMAPS_TO_REGISTER:
@@ -1459,6 +1463,8 @@ def register():
 
 
 def unregister():
+    browser.prefab_browser_modal.persistent_draw_overrides = False
+    browser.prefab_browser_modal.persistent_draw_handler = False
     browser.prefab_browser_modal.restore_preferences(
         bpy.context.preferences,
         bpy.context.window_manager.windows,

@@ -14,6 +14,10 @@ from ..core.materials import (
     remember_pixels_per_meter,
     reset_duplicate_material_consolidation,
 )
+from ..core.preferences_browser_roles import (
+    reset_browser_roles,
+    sync_browser_roles,
+)
 from ..core.uv_layers import sync_uv_map_settings
 from ..workspace import setup_addon_workspaces, subscribe_splash_watcher, reset_specialized_template_flag
 
@@ -284,6 +288,7 @@ def _make_prefab_library_paths_relative():
 @persistent
 def on_save_pre(dummy):
     """Handler called before saving a .blend file."""
+    sync_browser_roles()
     set_was_first_save(not bpy.data.filepath)
     if not bpy.data.filepath:
         for scene in bpy.data.scenes:
@@ -339,6 +344,7 @@ def on_load_post(dummy):
     """Handler called after a .blend file is loaded."""
     global _file_loaded_into_edit_depsgraph
 
+    reset_browser_roles()
     reset_specialized_template_flag()
     if not bpy.data.filepath:
         setup_addon_workspaces()
