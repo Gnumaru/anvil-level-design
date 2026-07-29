@@ -8,6 +8,7 @@
 - UV transform gizmos remain a constant size regardless of zoom
 - UV transform snapping is now based on pixel distance (zoom in for finer controls without snapping)
 - UV transform mode disables face overlay when enabled (view the applied texture in full clarity)
+- Cube cut displays intersections during draw (helps identify missed faces)
 
 # 1.8.2
 - Large weld refactor (look out for issues!)

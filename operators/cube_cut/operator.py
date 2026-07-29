@@ -1,16 +1,25 @@
 """
 Cube Cut Tool - Main Modal Operator
 
-Thin subclass of ModalDrawBase that executes cube cut geometry.
+ModalDrawBase subclass that previews and executes cube cut geometry.
 """
 
+import bmesh
 import bpy
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty
 from mathutils import Vector
 
 from . import geometry
+from .analysis import analyze_cube_cut, build_cube_cut_cuboid
 from ..modal_draw.base_operator import ModalDrawBase, MIN_RECTANGLE_SIZE
+from ..modal_draw import utils as modal_draw_utils
 from ...core.workspace_check import is_level_design_workspace
+from ...core.logging import (
+    add_performance_detail,
+    begin_performance_operation_report,
+    finish_performance_operation_report,
+    performance_stage,
+)
 from ..pending_mesh_action import store_from_edge_selection, snapshot_coplanar_sides
 
 
@@ -54,6 +63,157 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
             context.active_object is not None and
             context.active_object.type == 'MESH' and
             context.mode == 'EDIT_MESH'
+        )
+
+    def invoke(self, context, event):
+        # The preview cache key is made only from the snapped cut dimensions.
+        # Mouse movement within one snap cell therefore redraws the cached Xs
+        # without re-running the mesh analysis.
+        self._cut_preview_dimensions = None
+        return super().invoke(context, event)
+
+    def _update_second_vertex_preview(self, context, event):
+        super()._update_second_vertex_preview(context, event)
+        self._update_cut_vertex_preview(context)
+
+    def _update_depth_preview(self, context, event):
+        super()._update_depth_preview(context, event)
+        self._update_cut_vertex_preview(context)
+
+    def _update_cut_vertex_preview(self, context):
+        """Refresh predicted vertex Xs only when snapped dimensions change."""
+        if self._first_vertex is None or self._second_vertex is None:
+            return
+        if self._local_x is None or self._local_y is None or self._local_z is None:
+            return
+
+        preview_first, preview_second, preview_depth, preview_phase = (
+            self._get_cut_preview_parameters()
+        )
+        diff = preview_second - preview_first
+
+        # Signed dimensions distinguish opposite draw directions while keeping
+        # the cache independent of raw mouse coordinates and redraw frequency.
+        dimensions = (
+            diff.dot(self._local_x),
+            diff.dot(self._local_y),
+            preview_depth,
+        )
+        if dimensions == self._cut_preview_dimensions:
+            return
+        self._cut_preview_dimensions = dimensions
+
+        if self._invalid_message is not None:
+            self._preview.update_cut_vertex_markers([])
+            return
+
+        obj = context.active_object
+        if obj is None or obj.type != 'MESH':
+            self._preview.update_cut_vertex_markers([])
+            return
+
+        performance_report = begin_performance_operation_report(
+            "Cube Cut Preview Recalculation",
+            "Read-only BMesh scan and face-oriented marker preparation; "
+            "GPU drawing excluded; BVH disabled",
+        )
+        add_performance_detail(
+            performance_report, "Preview phase", preview_phase
+        )
+        add_performance_detail(
+            performance_report,
+            "Snapped dimensions",
+            f"{dimensions[0]:.4f} x {dimensions[1]:.4f} x "
+            f"{preview_depth:.4f}",
+        )
+
+        analysis = None
+        markers = []
+        try:
+            with performance_stage(performance_report, "Get edit BMesh"):
+                bm = bmesh.from_edit_mesh(obj.data)
+
+            add_performance_detail(performance_report, "Mesh vertices", len(bm.verts))
+            add_performance_detail(performance_report, "Mesh edges", len(bm.edges))
+            add_performance_detail(performance_report, "Mesh faces", len(bm.faces))
+
+            with performance_stage(performance_report, "Build cut cuboid"):
+                cuboid = build_cube_cut_cuboid(
+                    obj.matrix_world,
+                    preview_first,
+                    preview_second,
+                    preview_depth,
+                    self._local_x,
+                    self._local_y,
+                    self._local_z,
+                )
+
+            # This deliberately uses the existing direct BMesh scan. A BVH can
+            # be introduced later without changing the analysis/preview contract.
+            with performance_stage(performance_report, "Analyze intersections"):
+                analysis = analyze_cube_cut(bm, cuboid)
+
+            with performance_stage(
+                    performance_report, "Prepare face-oriented X markers"):
+                markers = _build_world_cut_vertex_markers(
+                    obj.matrix_world,
+                    analysis.candidate_vertex_markers,
+                )
+
+            add_performance_detail(
+                performance_report,
+                "Faces to cut",
+                len(analysis.faces_to_cut),
+            )
+            add_performance_detail(
+                performance_report,
+                "Predicted vertex positions",
+                len(analysis.candidate_vertex_points),
+            )
+            add_performance_detail(
+                performance_report,
+                "Face-oriented X markers",
+                len(markers),
+            )
+        except Exception as error:
+            print(
+                "Level Design Tools: Error updating Cube Cut vertex preview: "
+                f"{error}"
+            )
+            markers = []
+        finally:
+            finish_performance_operation_report(performance_report)
+
+        self._preview.update_cut_vertex_markers(markers)
+
+    def _get_cut_preview_parameters(self):
+        """Return the cut volume represented by the current modal stage."""
+        if self._state == self.STATE_SECOND_VERTEX and self._is_2d_view:
+            # Orthographic Cube Cut executes immediately after the rectangle.
+            # Preview the same effectively infinite depth used by execution.
+            offset = self._local_z * -5000
+            return (
+                self._first_vertex + offset,
+                self._second_vertex + offset,
+                10000,
+                "Rectangle (orthographic infinite depth)",
+            )
+
+        if self._state == self.STATE_SECOND_VERTEX:
+            # A zero-depth cuboid is sufficient to find intersections on the
+            # drawn rectangle plane before the user starts choosing depth.
+            return (
+                self._first_vertex,
+                self._second_vertex,
+                0.0,
+                "Rectangle (zero depth)",
+            )
+
+        return (
+            self._first_vertex,
+            self._second_vertex,
+            self._depth,
+            "Depth",
         )
 
     def _confirm_second_vertex(self, context, event):
@@ -196,6 +356,45 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
 
     def _get_tool_name(self):
         return "Cube Cut"
+
+
+def _build_world_cut_vertex_markers(matrix_world, candidate_markers):
+    """Transform mesh-local candidates into face-oriented world-space frames."""
+    rotation_scale = matrix_world.to_3x3()
+    world_markers = []
+
+    for candidate in candidate_markers:
+        # Start with an orthonormal basis on the candidate's supporting face.
+        # Transforming both tangents (rather than only its normal) keeps the X
+        # on the visible face plane even when the object has non-uniform scale.
+        tangent1, tangent2 = modal_draw_utils.get_face_tangents(
+            candidate.face_normal
+        )
+        world_tangent1 = rotation_scale @ tangent1
+        world_tangent2 = rotation_scale @ tangent2
+        if world_tangent1.length_squared < 1e-10:
+            continue
+        if world_tangent2.length_squared < 1e-10:
+            continue
+
+        world_tangent1.normalize()
+
+        # Restore an orthonormal in-plane basis after object scaling so every
+        # marker remains a compact, square X rather than a stretched cross.
+        world_tangent2 -= (
+            world_tangent1 * world_tangent2.dot(world_tangent1)
+        )
+        if world_tangent2.length_squared < 1e-10:
+            continue
+        world_tangent2.normalize()
+
+        world_markers.append((
+            matrix_world @ candidate.point,
+            world_tangent1,
+            world_tangent2,
+        ))
+
+    return world_markers
 
 
 def register():

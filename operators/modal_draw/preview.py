@@ -22,10 +22,13 @@ COLOR_CUBOID = (1.0, 0.5, 0.0, 0.9)           # Orange - cuboid preview
 COLOR_DEPTH_INDICATOR = (0.0, 1.0, 0.5, 0.9)  # Green - depth direction
 COLOR_GRID_POINT = (0.7, 0.7, 0.7)            # Light grey (no alpha - set per-point)
 COLOR_INVALID = (1.0, 0.05, 0.0, 0.95)        # Red - invalid candidate
+COLOR_CUT_VERTEX = (1.0, 1.0, 1.0, 1.0)       # White - predicted cut vertex
 
 POINT_SIZE = 10.0
 LINE_WIDTH = 2.0
 GRID_LINE_WIDTH = 1.5
+CUT_VERTEX_LINE_WIDTH = 1.5
+CUT_VERTEX_CROSS_SIZE = 0.06
 
 # Grid overlay settings
 GRID_FADE_RADIUS = 5  # Number of grid cells before fully faded
@@ -64,6 +67,10 @@ class ModalDrawPreview:
         self._line_mode = False        # Whether in rotated/line mode
         self._line_end = None          # Current line end point
         self._candidate_valid = True   # Whether current candidate can be confirmed
+
+        # Predicted Cube Cut vertices. Each entry contains a world-space
+        # position and two tangents derived from its supporting face normal.
+        self._cut_vertex_markers = []
 
         # Prefab placement ghost data
         self._prefab_ghost = None
@@ -131,6 +138,10 @@ class ModalDrawPreview:
         """Set whether the current preview candidate is valid."""
         self._candidate_valid = valid
 
+    def update_cut_vertex_markers(self, markers):
+        """Replace the cached world-space, face-oriented cut vertex markers."""
+        self._cut_vertex_markers = markers
+
     def set_prefab_ghost(self, prefab_ghost):
         """Set local-space albedo data for the prefab placement ghost."""
         self._prefab_ghost = prefab_ghost
@@ -179,6 +190,7 @@ class ModalDrawPreview:
         self._line_mode = False
         self._line_end = None
         self._candidate_valid = True
+        self._cut_vertex_markers = []
         self._prefab_ghost = None
         self._ghost_matrix = None
 
@@ -206,8 +218,10 @@ class ModalDrawPreview:
                 self._draw_line_preview()
             elif self._state == 'SECOND_VERTEX':
                 self._draw_rectangle_preview()
+                self._draw_cut_vertex_markers()
             elif self._state == 'DEPTH':
                 self._draw_cuboid_preview()
+                self._draw_cut_vertex_markers()
         finally:
             # Restore GPU state
             gpu.state.blend_set('NONE')
@@ -257,6 +271,53 @@ class ModalDrawPreview:
             tangent2 = self._snap_tangent2
 
         self._draw_cross(self._snap_point, tangent1, tangent2, COLOR_SNAP_POINT, LINE_WIDTH)
+
+    def _draw_cut_vertex_markers(self):
+        """Draw all predicted vertices as one batched set of face-aligned Xs."""
+        if not self._cut_vertex_markers:
+            return
+
+        line_points = []
+        for position, tangent1, tangent2 in self._cut_vertex_markers:
+            # Rotate the face tangent axes by 45 degrees so each marker reads
+            # as an X rather than the snap/grid plus symbol.
+            diagonal1 = tangent1 + tangent2
+            diagonal2 = tangent1 - tangent2
+            if diagonal1.length_squared < 1e-10:
+                continue
+            if diagonal2.length_squared < 1e-10:
+                continue
+            diagonal1.normalize()
+            diagonal2.normalize()
+
+            line_points.extend((
+                (position + diagonal1 * CUT_VERTEX_CROSS_SIZE)[:],
+                (position - diagonal1 * CUT_VERTEX_CROSS_SIZE)[:],
+                (position + diagonal2 * CUT_VERTEX_CROSS_SIZE)[:],
+                (position - diagonal2 * CUT_VERTEX_CROSS_SIZE)[:],
+            ))
+
+        if not line_points:
+            return
+
+        try:
+            shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+            region = bpy.context.region
+            if region is None:
+                return
+            shader.uniform_float("viewportSize", (region.width, region.height))
+            shader.uniform_float("lineWidth", CUT_VERTEX_LINE_WIDTH)
+            shader.uniform_float("color", COLOR_CUT_VERTEX)
+            batch = batch_for_shader(shader, 'LINES', {"pos": line_points})
+            batch.draw(shader)
+        except Exception:
+            try:
+                shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+                shader.uniform_float("color", COLOR_CUT_VERTEX)
+                batch = batch_for_shader(shader, 'LINES', {"pos": line_points})
+                batch.draw(shader)
+            except Exception:
+                pass  # Silent fail if drawing is not possible
 
     def _draw_line_preview(self):
         """Draw the line segment from first vertex to line end point."""

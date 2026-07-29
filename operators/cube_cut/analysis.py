@@ -128,18 +128,33 @@ class CuboidPlanes:
         ))
 
 
+class CubeCutCandidateMarker:
+    """A predicted vertex location paired with one supporting face normal.
+
+    A new vertex on a sharp edge can have more than one marker entry because
+    each affected face supplies a different plane for orienting the preview X.
+    Coplanar face entries are deduplicated later by point and normal.
+    """
+
+    def __init__(self, point, face_normal):
+        self.point = point
+        self.face_normal = face_normal
+
+
 class CubeCutAnalysis:
     """Read-only result describing what a Cube Cut would operate on.
 
     The face and edge collections contain live BMesh references so geometry
     execution can consume this result without rediscovering intersections.
-    candidate_vertex_points is the coordinate-only view intended for a future
-    preview; its points are in mesh-local space and are unique by position.
+    candidate_vertex_points is the coordinate-only view used for counts; its
+    points are in mesh-local space and are unique by position. The corresponding
+    candidate_vertex_markers retain supporting face normals for preview drawing.
     """
 
     def __init__(self, cuboid, any_faces_selected, faces_fully_inside,
                  faces_to_cut, face_interior_points, edge_splits,
-                 skipped_unselected_count, candidate_vertex_points):
+                 skipped_unselected_count, candidate_vertex_points,
+                 candidate_vertex_markers):
         self.cuboid = cuboid
         self.any_faces_selected = any_faces_selected
         self.faces_fully_inside = faces_fully_inside
@@ -148,6 +163,7 @@ class CubeCutAnalysis:
         self.edge_splits = edge_splits
         self.skipped_unselected_count = skipped_unselected_count
         self.candidate_vertex_points = candidate_vertex_points
+        self.candidate_vertex_markers = candidate_vertex_markers
 
 
 def build_cube_cut_cuboid(matrix_world, first_vertex, second_vertex, depth,
@@ -352,8 +368,12 @@ def analyze_cube_cut(bm, cuboid):
         )
 
     edge_splits = _find_edge_plane_intersections(bm, cuboid, faces_to_cut)
-    candidate_vertex_points = _collect_candidate_vertex_points(
-        face_interior_points, faces_to_cut, edge_splits
+    candidate_vertex_points, candidate_vertex_markers = (
+        _collect_candidate_vertex_data(
+            face_interior_points,
+            faces_to_cut,
+            edge_splits,
+        )
     )
 
     return CubeCutAnalysis(
@@ -365,6 +385,7 @@ def analyze_cube_cut(bm, cuboid):
         edge_splits,
         skipped_unselected_count,
         candidate_vertex_points,
+        candidate_vertex_markers,
     )
 
 
@@ -631,15 +652,18 @@ def _find_cuboid_face_intersections(faces, cuboid):
     return face_interior_points
 
 
-def _collect_candidate_vertex_points(face_interior_points, faces_to_cut,
-                                     edge_splits):
-    """Collect unique locations where analysis predicts vertex creation."""
+def _collect_candidate_vertex_data(face_interior_points, faces_to_cut,
+                                   edge_splits):
+    """Collect predicted vertex locations and their supporting face planes."""
     unique_points = {}
+    unique_markers = {}
 
     # Interior points become new vertices when their host face is rebuilt.
     for face in faces_to_cut:
         for point in face_interior_points.get(face, []):
-            unique_points.setdefault(_point_key(point), point.copy())
+            _add_candidate_vertex(
+                unique_points, unique_markers, point, face.normal
+            )
 
     # Edge intersections at an existing endpoint record cuboid-plane membership
     # during execution, but do not create a new vertex.
@@ -652,15 +676,45 @@ def _collect_candidate_vertex_points(face_interior_points, faces_to_cut,
             if (point - endpoint_b).length < EPSILON:
                 continue
 
-            # Match execution's coordinate-level uniqueness: one marker location
-            # represents a predicted vertex even if multiple faces share it.
-            unique_points.setdefault(_point_key(point), point.copy())
+            # The edge is split once, so its position stays unique. Keep a
+            # marker orientation for each distinct affected face plane. This
+            # lets a sharp edge show the prediction on both of its faces while
+            # coplanar faces still collapse to one X.
+            for face in edge.link_faces:
+                if face not in faces_to_cut or not face_is_available(face):
+                    continue
+                _add_candidate_vertex(
+                    unique_points, unique_markers, point, face.normal
+                )
 
-    return list(unique_points.values())
+    return (list(unique_points.values()), list(unique_markers.values()))
+
+
+def _add_candidate_vertex(unique_points, unique_markers, point, face_normal):
+    """Add one coordinate and one distinct face-oriented marker entry."""
+    point_key = _point_key(point)
+    unique_points.setdefault(point_key, point.copy())
+
+    if face_normal.length < EPSILON:
+        return
+
+    normalized_normal = face_normal.normalized()
+    marker_key = point_key + _face_plane_key(normalized_normal)
+    unique_markers.setdefault(
+        marker_key,
+        CubeCutCandidateMarker(point.copy(), normalized_normal.copy()),
+    )
 
 
 def _point_key(point):
     return (round(point.x, 5), round(point.y, 5), round(point.z, 5))
+
+
+def _face_plane_key(normal):
+    """Return one orientation key for parallel normals in either direction."""
+    normal_key = _point_key(normal)
+    opposite_key = tuple(-component for component in normal_key)
+    return min(normal_key, opposite_key)
 
 
 def _point_within_plane_bounds(point, plane_idx, cuboid):
