@@ -1,5 +1,9 @@
 # Anvil Level Design Changelog
 
+# 1.8.4
+- Split meshes during gltf now cannot affect rigged meshes
+- Fix naming issue for rigged meshes during gltf export
+
 # 1.8.3
 - UV Transform now shows gizmos on an infinite grid (gizmos available outside of face bounds)
 - Holding CTRL in UV transform mode turns on pixel snapping

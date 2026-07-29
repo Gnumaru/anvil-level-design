@@ -217,6 +217,38 @@ def _create_loose_mesh_object(collection, object_name, mesh_name):
     return obj
 
 
+def _create_rigged_loose_mesh_object(
+        collection,
+        object_name,
+        mesh_name,
+        armature_object_name,
+        armature_name,
+        bone_name):
+    obj = _create_loose_mesh_object(collection, object_name, mesh_name)
+
+    armature = bpy.data.armatures.new(armature_name)
+    armature_obj = bpy.data.objects.new(armature_object_name, armature)
+    collection.objects.link(armature_obj)
+
+    for scene_obj in bpy.context.scene.objects:
+        scene_obj.select_set(False)
+    armature_obj.select_set(True)
+    bpy.context.view_layer.objects.active = armature_obj
+
+    bpy.ops.object.mode_set(mode='EDIT')
+    bone = armature.edit_bones.new(bone_name)
+    bone.head = (0.0, 0.0, 0.0)
+    bone.tail = (0.0, 0.0, 1.0)
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    vertex_group = obj.vertex_groups.new(name=bone_name)
+    vertex_group.add(list(range(len(obj.data.vertices))), 1.0, 'REPLACE')
+    modifier = obj.modifiers.new("Armature", 'ARMATURE')
+    modifier.object = armature_obj
+    obj.parent = armature_obj
+    return obj, armature_obj
+
+
 def _create_linked_duplicate(collection, source_object, object_name):
     duplicate = source_object.copy()
     duplicate.name = object_name
@@ -276,6 +308,10 @@ def _node_names(gltf_data):
 
 def _mesh_names(gltf_data):
     return [mesh.get("name") for mesh in gltf_data.get("meshes", [])]
+
+
+def _skin_names(gltf_data):
+    return [skin.get("name") for skin in gltf_data.get("skins", [])]
 
 
 def _node_for_name(gltf_data, node_name):
@@ -417,6 +453,12 @@ def _assert_no_temp_export_datablocks(test_case):
 
 
 class GltfExportFeatureMatrixTest(AnvilTestCase):
+    def test_gltf_anvil_separate_loose_defaults_to_disabled(self):
+        separate_loose_property = bpy.context.scene.level_design_props.bl_rna.properties[
+            "gltf_anvil_separate_loose"
+        ]
+        self.assertFalse(separate_loose_property.default)
+
     def _run_scale_export_route_test(self, route):
         scene = bpy.context.scene
         scene.name = "Scene"
@@ -756,6 +798,49 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
         self.assertEqual(len(gltf_data.get("nodes", [])), 2)
         self.assertEqual(scene.level_design_props.last_export_filepath, filepath)
 
+    def _run_separate_loose_rigged_mesh_export_route_test(self, route):
+        scene = bpy.context.scene
+        scene.name = "Scene"
+        collection = _create_export_collection(scene)
+        _create_rigged_loose_mesh_object(
+            collection,
+            "Cube",
+            "Cube.001",
+            "CharacterRig",
+            "CharacterRigData",
+            "RootBone",
+        )
+
+        scene.level_design_props.gltf_anvil_enabled = False
+        _, native_gltf_data = _export_using_route(
+            route,
+            collection,
+            f"rigged_loose_mesh_native_{route}.gltf",
+            False,
+        )
+
+        _set_anvil_export_settings(scene, 1.0, True, True)
+        _, anvil_gltf_data = _export_using_route(
+            route,
+            collection,
+            f"rigged_loose_mesh_anvil_{route}.gltf",
+            False,
+        )
+
+        native_names = {
+            "scenes": _scene_names(native_gltf_data),
+            "nodes": _node_names(native_gltf_data),
+            "meshes": _mesh_names(native_gltf_data),
+            "skins": _skin_names(native_gltf_data),
+        }
+        anvil_names = {
+            "scenes": _scene_names(anvil_gltf_data),
+            "nodes": _node_names(anvil_gltf_data),
+            "meshes": _mesh_names(anvil_gltf_data),
+            "skins": _skin_names(anvil_gltf_data),
+        }
+        self.assertEqual(anvil_names, native_names)
+
     def _run_selected_objects_with_anvil_operations_export_route_test(self, route):
         scene = bpy.context.scene
         scene.name = "Scene"
@@ -860,6 +945,12 @@ class GltfExportFeatureMatrixTest(AnvilTestCase):
 
     def test_gltf_anvil_separate_loose_collection_export_route_with_linked_duplicate_skips_splitting_and_writes_one_shared_mesh(self):
         self._run_separate_loose_linked_duplicate_export_route_test(COLLECTION_EXPORT_ROUTE)
+
+    def test_gltf_anvil_separate_loose_full_export_route_with_rigged_mesh_skips_splitting_and_preserves_native_gltf_names(self):
+        self._run_separate_loose_rigged_mesh_export_route_test(FULL_EXPORT_ROUTE)
+
+    def test_gltf_anvil_separate_loose_collection_export_route_with_rigged_mesh_skips_splitting_and_preserves_native_gltf_names(self):
+        self._run_separate_loose_rigged_mesh_export_route_test(COLLECTION_EXPORT_ROUTE)
 
     def test_gltf_anvil_selected_objects_full_export_route_with_apply_modifiers_and_separate_loose_preserves_selected_source_and_generated_parts(self):
         self._run_selected_objects_with_anvil_operations_export_route_test(FULL_EXPORT_ROUTE)

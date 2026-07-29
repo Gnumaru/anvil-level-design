@@ -205,6 +205,14 @@ class glTF2ExportUserExtension:
         if original_name:
             gltf_mesh.name = original_name
 
+    def gather_skin_hook(self, gltf_skin, blender_armature_object, export_settings):
+        original_name = _get_original_export_name(
+            blender_armature_object,
+            self._original_names_by_pointer,
+        )
+        if original_name:
+            gltf_skin.name = original_name
+
     def gather_material_hook(self, gltf_material, blender_material, export_settings):
         material_name = _get_export_material_name(
             blender_material,
@@ -1247,6 +1255,12 @@ def _separate_loose(scene, enabled, prefab_object_pointers, export_selection):
     for obj in mesh_objects:
         if obj.as_pointer() in prefab_object_pointers:
             debug_log(f"[glTF Anvil]   Skipping prefab mesh {obj.name}")
+            continue
+
+        if _has_armature_modifier(obj):
+            debug_log(
+                f"[glTF Anvil]   Skipping rigged mesh {obj.name} during loose separation"
+            )
             continue
 
         if obj.data is not None and obj.data.as_pointer() in shared_mesh_pointers:
