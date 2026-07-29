@@ -10,148 +10,20 @@ Custom intersection algorithm that:
 
 import bmesh
 from mathutils import Vector
-from mathutils.geometry import intersect_line_plane, intersect_line_line_2d
+from mathutils.geometry import intersect_line_line_2d
 
+from .analysis import (
+    CuboidPlanes,
+    EPSILON,
+    analyze_cube_cut,
+    build_cube_cut_cuboid,
+    face_is_available,
+)
 from ...core.logging import debug_log
 from ...core.geometry import compute_normal_from_verts
 from ...core.uv_projection import compute_uv_projection_from_face, apply_uv_projection_to_face
 from ...core.uv_layers import get_all_uv_layers
 from ...handlers import cache_face_data
-
-
-# Epsilon for floating point comparisons
-EPSILON = 1e-5
-
-
-class CuboidPlanes:
-    """Represents the 6 planes of a cuboid for intersection testing."""
-
-    def __init__(self, first_vertex, second_vertex, depth, local_x, local_y, local_z):
-        # Calculate rectangle dimensions
-        diff = second_vertex - first_vertex
-        dx = diff.dot(local_x)
-        dy = diff.dot(local_y)
-
-        # Normalize direction so min/max work correctly
-        if dx < 0:
-            dx = -dx
-            local_x = -local_x
-        if dy < 0:
-            dy = -dy
-            local_y = -local_y
-
-        # Handle depth direction
-        if depth < 0:
-            self.depth_min = depth
-            self.depth_max = 0
-        else:
-            self.depth_min = 0
-            self.depth_max = depth
-
-        self.local_x = local_x
-        self.local_y = local_y
-        self.local_z = local_z
-        self.dx = dx
-        self.dy = dy
-        self.origin = first_vertex.copy()
-
-        # Track which plane index is the "rectangle plane" (at depth=0)
-        if depth >= 0:
-            self.rectangle_plane_idx = 0
-        else:
-            self.rectangle_plane_idx = 1
-
-        # Build the 6 planes: (point_on_plane, outward_normal)
-        self.planes = self._build_planes()
-
-    def _build_planes(self):
-        """Build the 6 bounding planes with outward-pointing normals."""
-        planes = []
-
-        # Plane 0: "Front" at depth_min
-        planes.append((
-            self.origin + self.local_z * self.depth_min,
-            -self.local_z.copy()
-        ))
-
-        # Plane 1: "Back" at depth_max
-        planes.append((
-            self.origin + self.local_z * self.depth_max,
-            self.local_z.copy()
-        ))
-
-        # Plane 2: "Left" at x=0
-        planes.append((
-            self.origin.copy(),
-            -self.local_x.copy()
-        ))
-
-        # Plane 3: "Right" at x=dx
-        planes.append((
-            self.origin + self.local_x * self.dx,
-            self.local_x.copy()
-        ))
-
-        # Plane 4: "Bottom" at y=0
-        planes.append((
-            self.origin.copy(),
-            -self.local_y.copy()
-        ))
-
-        # Plane 5: "Top" at y=dy
-        planes.append((
-            self.origin + self.local_y * self.dy,
-            self.local_y.copy()
-        ))
-
-        return planes
-
-    def point_inside(self, point):
-        """Test if a point is inside the cuboid (or on boundary)."""
-        local = self.to_local(point)
-        x, y, z = local.x, local.y, local.z
-
-        return (
-            -EPSILON <= x <= self.dx + EPSILON and
-            -EPSILON <= y <= self.dy + EPSILON and
-            self.depth_min - EPSILON <= z <= self.depth_max + EPSILON
-        )
-
-    def point_strictly_inside(self, point):
-        """Test if a point is strictly inside the cuboid (not on boundary)."""
-        local = self.to_local(point)
-        x, y, z = local.x, local.y, local.z
-
-        return (
-            EPSILON < x < self.dx - EPSILON and
-            EPSILON < y < self.dy - EPSILON and
-            self.depth_min + EPSILON < z < self.depth_max - EPSILON
-        )
-
-    def point_on_surface(self, point):
-        """Test if a point is on the cuboid surface (on boundary, not strictly inside)."""
-        return self.point_inside(point) and not self.point_strictly_inside(point)
-
-    def to_local(self, point):
-        """Convert point to local cuboid coordinates (x, y, z)."""
-        offset = point - self.origin
-        return Vector((
-            offset.dot(self.local_x),
-            offset.dot(self.local_y),
-            offset.dot(self.local_z)
-        ))
-
-
-def _face_is_available(face):
-    return face.is_valid and not face.hide
-
-
-def _should_process_face(face, any_faces_selected):
-    if not _face_is_available(face):
-        return False
-    if any_faces_selected and not face.select:
-        return False
-    return True
 
 
 def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local_y, local_z):
@@ -168,11 +40,6 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
     if obj is None or obj.type != 'MESH':
         return (False, "No active mesh object")
 
-    # Handle zero depth
-    effective_depth = depth
-    if abs(depth) < EPSILON:
-        effective_depth = EPSILON * 2 if depth >= 0 else -EPSILON * 2
-
     me = obj.data
     bm = bmesh.from_edit_mesh(me)
 
@@ -180,204 +47,36 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
     props = context.scene.level_design_props
     ppm = props.pixels_per_meter
 
-    # Transform cuboid to object local space
-    world_to_local = obj.matrix_world.inverted()
-
-    local_first = world_to_local @ first_vertex
-    local_second = world_to_local @ second_vertex
-    local_x_trans = (world_to_local.to_3x3() @ local_x).normalized()
-    local_y_trans = (world_to_local.to_3x3() @ local_y).normalized()
-    local_z_trans = (world_to_local.to_3x3() @ local_z).normalized()
-
-    scale_factor = (world_to_local.to_3x3() @ local_z).length
-    local_depth = effective_depth * scale_factor
-
-    cuboid = CuboidPlanes(
-        local_first, local_second, local_depth,
-        local_x_trans, local_y_trans, local_z_trans
+    cuboid = build_cube_cut_cuboid(
+        obj.matrix_world,
+        first_vertex,
+        second_vertex,
+        depth,
+        local_x,
+        local_y,
+        local_z,
     )
 
-    # === PRE-STEP: Identify faces to delete (all vertices inside cuboid) ===
-    debug_log(f"\n[CubeCut] === PRE-STEP: Find faces entirely inside cuboid ===")
-    bm.faces.ensure_lookup_table()
-
-    # Apply selection filter: only process selected faces (or all if none selected)
-    any_faces_selected = any(f.select for f in bm.faces if _face_is_available(f))
-    if any_faces_selected:
-        debug_log(f"[CubeCut] Selection mode: only processing selected faces")
-    else:
-        debug_log(f"[CubeCut] No faces selected: processing all faces")
-
-    faces_to_delete = set()
-    for face in bm.faces:
-        if not _should_process_face(face, any_faces_selected):
-            continue
-
-        # Check if ALL vertices are inside the cuboid
-        all_inside = all(cuboid.point_inside(v.co) for v in face.verts)
-        if all_inside:
-            faces_to_delete.add(face)
-            debug_log(f"[CubeCut] Face {face.index} has all vertices inside cuboid - will be deleted")
+    # Analyze the unchanged BMesh before any geometry is deleted or split.
+    # The result keeps the face and edge references that execution consumes;
+    # faces_fully_inside is disjoint from faces_to_cut, and FACES_ONLY deletion
+    # preserves the boundary geometry referenced by the remaining analysis.
+    analysis = analyze_cube_cut(bm, cuboid)
+    faces_to_be_cut = analysis.faces_to_cut
+    face_interior_points = analysis.face_interior_points
 
     # Delete faces that are entirely inside the cuboid
-    if faces_to_delete:
-        debug_log(f"[CubeCut] Deleting {len(faces_to_delete)} faces entirely inside cuboid")
-        bmesh.ops.delete(bm, geom=list(faces_to_delete), context='FACES_ONLY')
+    if analysis.faces_fully_inside:
+        debug_log(
+            f"[CubeCut] Deleting {len(analysis.faces_fully_inside)} faces "
+            "entirely inside cuboid"
+        )
+        bmesh.ops.delete(
+            bm,
+            geom=list(analysis.faces_fully_inside),
+            context='FACES_ONLY',
+        )
         bm.faces.ensure_lookup_table()
-
-    # === STEP 1: Determine which faces will be cut ===
-    # A face needs cutting if:
-    # 1. Any cuboid edge pierces the face interior, OR
-    # 2. Any face edge crosses a cuboid plane (cube wider than face case)
-    debug_log(f"\n[CubeCut] === STEP 1: Find faces to cut ===")
-    face_interior_points = _find_cuboid_face_intersections(bm, cuboid)
-
-    # Determine which faces will actually be cut
-    faces_to_be_cut = set()
-    skipped_unselected_count = 0
-
-    # First: add faces with interior intersections (cuboid corners pierce face)
-    for face_idx, points in face_interior_points.items():
-        face = bm.faces[face_idx] if face_idx < len(bm.faces) else None
-        if face is None or not _face_is_available(face):
-            continue
-        if not points:
-            continue
-
-        # Only cut selected faces (unless no faces are selected, then cut all)
-        if any_faces_selected and not face.select:
-            skipped_unselected_count += 1
-            debug_log(f"[CubeCut] Face {face_idx} skipped (not selected)")
-            continue
-
-        faces_to_be_cut.add(face)
-        debug_log(f"[CubeCut] Face {face_idx} will be cut ({len(points)} interior points)")
-
-    # Second: check for faces where face edges cross cuboid planes (cube wider than face)
-    # Only mark for cutting if crossings are on at least 2 DIFFERENT edges (cube passes through)
-    # If all crossings are on the same edge, it's just an edge that got split multiple times
-    for face in bm.faces:
-        if not _should_process_face(face, any_faces_selected):
-            continue
-        if face in faces_to_be_cut:
-            continue  # Already marked for cutting
-
-        # Skip faces coplanar with side boundary planes (2-5) only if
-        # they face into the cuboid.  Outward-facing coplanar faces sit on
-        # the boundary and need to be cut/deleted (e.g. the top face of a
-        # cube when the cut is flush with the top).
-        is_coplanar_side_inward = False
-        for plane_point, plane_normal in cuboid.planes[2:]:
-            if all(
-                abs((v.co - plane_point).dot(plane_normal)) <= EPSILON
-                for v in face.verts
-            ):
-                if face.normal.dot(plane_normal) < 0:
-                    is_coplanar_side_inward = True
-                break
-        if is_coplanar_side_inward:
-            debug_log(f"[CubeCut] Face {face.index} is coplanar with cuboid side boundary (inward) - skipping")
-            continue
-
-        zero_depth = abs(cuboid.depth_max - cuboid.depth_min) <= EPSILON * 3
-        debug_log(f"[CubeCut] Face {face.index} zero_depth={zero_depth} (depth_min={cuboid.depth_min}, depth_max={cuboid.depth_max})")
-        if zero_depth:
-            is_coplanar_depth = False
-            for plane_point, plane_normal in cuboid.planes[:2]:
-                if all(
-                    abs((v.co - plane_point).dot(plane_normal)) <= EPSILON
-                    for v in face.verts
-                ):
-                    is_coplanar_depth = True
-                    break
-            if not is_coplanar_depth:
-                debug_log(f"[CubeCut] Face {face.index} skipped - zero-depth cut only affects coplanar faces")
-                continue
-
-        # Collect all edges that have crossings within cuboid bounds
-        edges_with_crossings = set()
-        for edge in face.edges:
-            v1_co = edge.verts[0].co
-            v2_co = edge.verts[1].co
-
-            for plane_idx, (plane_point, plane_normal) in enumerate(cuboid.planes):
-                d1 = (v1_co - plane_point).dot(plane_normal)
-                d2 = (v2_co - plane_point).dot(plane_normal)
-
-                # Edge crosses plane if endpoints are on strictly opposite sides
-                crosses = (d1 > EPSILON and d2 < -EPSILON) or (d1 < -EPSILON and d2 > EPSILON)
-                if not crosses:
-                    continue
-
-                intersection = intersect_line_plane(v1_co, v2_co, plane_point, plane_normal)
-                if intersection is None:
-                    continue
-
-                # Check if intersection is within cuboid bounds on this plane
-                if _point_within_plane_bounds(intersection, plane_idx, cuboid):
-                    edges_with_crossings.add(edge)
-                    debug_log(f"[CubeCut] Face {face.index} edge crosses cuboid plane {plane_idx}")
-                    break  # This edge has a crossing, check next edge
-
-        # Only mark for cutting if crossings are on at least 2 different edges
-        # (meaning cube actually passes through the face, not just touches one edge)
-        if len(edges_with_crossings) >= 2:
-            faces_to_be_cut.add(face)
-            # Initialize empty interior points list for this face
-            if face.index not in face_interior_points:
-                face_interior_points[face.index] = []
-            debug_log(f"[CubeCut] Face {face.index} will be cut ({len(edges_with_crossings)} edges have crossings)")
-        elif len(edges_with_crossings) == 1:
-            debug_log(f"[CubeCut] Face {face.index} has only 1 edge with crossings - NOT cutting (just edge split)")
-
-    # Third: check for faces where any vertex is inside the cuboid
-    # (face partially overlaps cuboid but cuboid vertices land on existing edges)
-    for face in bm.faces:
-        if not _should_process_face(face, any_faces_selected):
-            continue
-        if face in faces_to_be_cut:
-            continue
-
-        # Skip faces coplanar with a cuboid side boundary only if inward (same guard as Second)
-        is_coplanar_side_inward = False
-        for plane_point, plane_normal in cuboid.planes[2:]:
-            if all(
-                abs((v.co - plane_point).dot(plane_normal)) <= EPSILON
-                for v in face.verts
-            ):
-                if face.normal.dot(plane_normal) < 0:
-                    is_coplanar_side_inward = True
-                break
-        if is_coplanar_side_inward:
-            debug_log(f"[CubeCut] Face {face.index} is coplanar with cuboid side boundary (inward) - skipping vertex check")
-            continue
-
-        # Zero-depth: only cut faces coplanar with depth planes (same guard as Second)
-        zero_depth = abs(cuboid.depth_max - cuboid.depth_min) <= EPSILON * 3
-        if zero_depth:
-            is_coplanar_depth = False
-            for plane_point, plane_normal in cuboid.planes[:2]:
-                if all(
-                    abs((v.co - plane_point).dot(plane_normal)) <= EPSILON
-                    for v in face.verts
-                ):
-                    is_coplanar_depth = True
-                    break
-            if not is_coplanar_depth:
-                debug_log(f"[CubeCut] Face {face.index} skipped - zero-depth cut only affects coplanar faces")
-                continue
-
-        for vert in face.verts:
-            if cuboid.point_inside(vert.co):
-                faces_to_be_cut.add(face)
-                if face.index not in face_interior_points:
-                    face_interior_points[face.index] = []
-                debug_log(f"[CubeCut] Face {face.index} will be cut (vertex inside cuboid)")
-                break
-
-    debug_log(f"[CubeCut] Faces to be cut: {len(faces_to_be_cut)}")
-    if skipped_unselected_count > 0:
-        debug_log(f"[CubeCut] Skipped {skipped_unselected_count} unselected faces")
 
     # Check for degenerate geometry (duplicate vertices at same position) on faces to be cut.
     # This can happen from previous operations leaving zero-length edges. Proceeding would
@@ -399,7 +98,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
     # === STEP 2: Find edge-plane intersections and split edges ===
     # Only split edges that belong to faces that will be cut
     debug_log(f"\n[CubeCut] === STEP 2: Find edge-plane intersections ===")
-    edge_splits = _find_edge_plane_intersections(bm, cuboid, faces_to_be_cut)
+    edge_splits = analysis.edge_splits
     debug_log(f"[CubeCut] Found {len(edge_splits)} edges to split")
 
     # Split edges (must do this before face operations)
@@ -431,7 +130,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
         if face is None or not face.is_valid:
             continue
 
-        points = face_interior_points.get(face.index, [])
+        points = face_interior_points.get(face, [])
 
         interior_verts = []
         for point in points:
@@ -559,7 +258,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
     # Check adjacent faces that had their edges split (but weren't deleted/cut)
     for face in faces_with_split_edges:
-        if not _face_is_available(face):
+        if not face_is_available(face):
             continue
         if len(face.verts) > 4:
             # This is an n-gon that needs quadrilating
@@ -618,7 +317,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
             all_ngon_verts |= ngon_verts
 
         for face in bm.faces:
-            if not _face_is_available(face):
+            if not face_is_available(face):
                 continue
             face_verts = set(face.verts)
             if not face_verts <= all_ngon_verts:
@@ -691,73 +390,6 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
     cache_face_data(context)
 
     return (True, "Cut complete")
-
-
-def _find_edge_plane_intersections(bm, cuboid, faces_to_cut):
-    """
-    Find all points where mesh edges cross cuboid planes.
-
-    Only considers edges that belong to at least one face in faces_to_cut.
-    This prevents adding edge splits to faces that won't actually be cut.
-
-    Args:
-        bm: BMesh
-        cuboid: CuboidPlanes instance
-        faces_to_cut: Set of BMFace that will be cut (have interior intersections)
-
-    Returns:
-        dict: edge -> list of (intersection_point, plane_idx)
-    """
-    edge_splits = {}
-
-    debug_log(f"[CubeCut] Checking {len(bm.edges)} edges for plane intersections")
-
-    for edge in bm.edges:
-        if not edge.is_valid:
-            continue
-
-        # Only split edges that belong to faces that will be cut
-        edge_belongs_to_cut_face = any(f in faces_to_cut for f in edge.link_faces)
-        if not edge_belongs_to_cut_face:
-            continue
-
-        v1_co = edge.verts[0].co
-        v2_co = edge.verts[1].co
-
-        intersections = []
-
-        for plane_idx, (plane_point, plane_normal) in enumerate(cuboid.planes):
-            d1 = (v1_co - plane_point).dot(plane_normal)
-            d2 = (v2_co - plane_point).dot(plane_normal)
-
-            # Edge crosses plane only if endpoints are on strictly opposite sides
-            crosses = (d1 > EPSILON and d2 < -EPSILON) or (d1 < -EPSILON and d2 > EPSILON)
-            if not crosses:
-                continue
-
-            intersection = intersect_line_plane(v1_co, v2_co, plane_point, plane_normal)
-            if intersection is None:
-                continue
-
-            # Check if intersection is within cuboid bounds on this plane
-            within_bounds = _point_within_plane_bounds(intersection, plane_idx, cuboid)
-            if not within_bounds:
-                debug_log(f"[CubeCut] Edge {edge.index} crosses plane {plane_idx} at {intersection} but OUTSIDE bounds")
-                continue
-
-            # Calculate parameter t along edge (for ordering multiple splits)
-            edge_vec = v2_co - v1_co
-            t = (intersection - v1_co).dot(edge_vec) / edge_vec.length_squared
-
-            intersections.append((intersection.copy(), plane_idx, t))
-            debug_log(f"[CubeCut] Edge {edge.index} ({v1_co} -> {v2_co}) crosses plane {plane_idx} at {intersection}, t={t:.3f}")
-
-        if intersections:
-            # Sort by t parameter so we split in order from v1 to v2
-            intersections.sort(key=lambda x: x[2])
-            edge_splits[edge] = intersections
-
-    return edge_splits
 
 
 def _split_edges_at_intersections(bm, edge_splits):
@@ -902,100 +534,6 @@ def _remove_doubles_within_connected_components(bm, verts, dist):
         if len(valid_component) < 2:
             continue
         bmesh.ops.remove_doubles(bm, verts=valid_component, dist=dist)
-
-
-def _find_cuboid_face_intersections(bm, cuboid):
-    """
-    Find where cuboid edges pierce mesh face interiors.
-
-    Returns:
-        dict: face_index -> list of intersection points
-    """
-    face_interior_verts = {}
-
-    # Build cuboid vertices and edges
-    cuboid_verts = _build_cuboid_vertices_local(cuboid)
-    cuboid_edges = [
-        (0, 1), (1, 2), (2, 3), (3, 0),  # Front face
-        (4, 5), (5, 6), (6, 7), (7, 4),  # Back face
-        (0, 4), (1, 5), (2, 6), (3, 7),  # Connecting edges
-    ]
-
-    debug_log(f"[CubeCut] Checking {len(bm.faces)} faces for cuboid-face intersections")
-    debug_log(f"[CubeCut] Cuboid vertices: {[str(v) for v in cuboid_verts]}")
-
-    for face in bm.faces:
-        if not _face_is_available(face):
-            continue
-
-        face_normal = face.normal
-        if face_normal.length < EPSILON:
-            continue
-        face_point = face.verts[0].co
-        face_verts = [v.co for v in face.verts]
-
-        for edge_idx, (v1_idx, v2_idx) in enumerate(cuboid_edges):
-            edge_start = cuboid_verts[v1_idx]
-            edge_end = cuboid_verts[v2_idx]
-
-            d1 = (edge_start - face_point).dot(face_normal)
-            d2 = (edge_end - face_point).dot(face_normal)
-
-            # Check if edge crosses the face plane (endpoints on opposite sides)
-            crosses = (d1 > EPSILON and d2 < -EPSILON) or (d1 < -EPSILON and d2 > EPSILON)
-
-            # Special case: endpoint ON the face plane, other endpoint on one side
-            # Only allow exact alignment cutting for front/back faces (parallel to local_z)
-            # Side faces (left/right/top/bottom) still require crossing through
-            endpoint_on_face = None
-            if not crosses:
-                # Check if mesh face is parallel to front/back planes (normal parallel to local_z)
-                face_parallel_to_depth = abs(abs(face_normal.dot(cuboid.local_z)) - 1.0) < EPSILON * 10
-
-                if face_parallel_to_depth:
-                    # Check if one endpoint is on the face plane
-                    if abs(d1) <= EPSILON and abs(d2) > EPSILON:
-                        # edge_start (v1) is on the face plane
-                        endpoint_on_face = edge_start.copy()
-                        debug_log(f"[CubeCut] Cuboid vertex {v1_idx} is ON face {face.index} (depth-aligned)")
-
-                    elif abs(d2) <= EPSILON and abs(d1) > EPSILON:
-                        # edge_end (v2) is on the face plane
-                        endpoint_on_face = edge_end.copy()
-                        debug_log(f"[CubeCut] Cuboid vertex {v2_idx} is ON face {face.index} (depth-aligned)")
-
-            if not crosses and endpoint_on_face is None:
-                if edge_idx >= 8:  # Connecting edges are indices 8-11
-                    debug_log(f"[CubeCut] Cuboid edge {edge_idx} ({v1_idx}->{v2_idx}) did NOT cross face {face.index}: d1={d1:.4f}, d2={d2:.4f}")
-                continue
-
-            # Determine intersection point
-            if endpoint_on_face is not None:
-                intersection = endpoint_on_face
-            else:
-                intersection = intersect_line_plane(edge_start, edge_end, face_point, face_normal)
-                if intersection is None:
-                    continue
-
-            debug_log(f"[CubeCut] Cuboid edge {edge_idx} intersects face {face.index} plane at {intersection}")
-
-            # Check if inside face polygon (not on edge)
-            in_polygon = _point_in_polygon(intersection, face_verts, face_normal)
-            boundary_epsilon = _intersection_boundary_epsilon(cuboid)
-            in_interior = _point_in_face_interior(
-                intersection, face_verts, face_normal, boundary_epsilon)
-            debug_log(f"[CubeCut]   in_polygon={in_polygon}, in_interior={in_interior}")
-
-            if not in_interior:
-                continue
-
-            if face.index not in face_interior_verts:
-                face_interior_verts[face.index] = []
-            face_interior_verts[face.index].append(intersection.copy())
-            debug_log(f"[CubeCut]   Added interior intersection!")
-
-    debug_log(f"[CubeCut] Found {len(face_interior_verts)} faces with interior intersections")
-    return face_interior_verts
 
 
 def _sort_verts_by_angle(verts):
@@ -1355,121 +893,3 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
                 debug_log(f"[CubeCut]   Failed to create face: {e}")
 
     return created_faces
-
-
-def _point_within_plane_bounds(point, plane_idx, cuboid):
-    """Check if a point on a cuboid plane is within that plane's bounds."""
-    local = cuboid.to_local(point)
-    x, y, z = local.x, local.y, local.z
-
-    if plane_idx in (0, 1):  # Front/back planes
-        return (
-            -EPSILON <= x <= cuboid.dx + EPSILON and
-            -EPSILON <= y <= cuboid.dy + EPSILON
-        )
-    elif plane_idx in (2, 3):  # Left/right planes
-        return (
-            -EPSILON <= y <= cuboid.dy + EPSILON and
-            cuboid.depth_min - EPSILON <= z <= cuboid.depth_max + EPSILON
-        )
-    else:  # Top/bottom planes
-        return (
-            -EPSILON <= x <= cuboid.dx + EPSILON and
-            cuboid.depth_min - EPSILON <= z <= cuboid.depth_max + EPSILON
-        )
-
-
-def _build_cuboid_vertices_local(cuboid):
-    """Build the 8 vertices of the cuboid in mesh local space."""
-    o = cuboid.origin
-    lx = cuboid.local_x
-    ly = cuboid.local_y
-    lz = cuboid.local_z
-    dx = cuboid.dx
-    dy = cuboid.dy
-    d_min = cuboid.depth_min
-    d_max = cuboid.depth_max
-
-    return [
-        o + lz * d_min,                          # 0: front_bl
-        o + lx * dx + lz * d_min,                # 1: front_br
-        o + lx * dx + ly * dy + lz * d_min,      # 2: front_tr
-        o + ly * dy + lz * d_min,                # 3: front_tl
-        o + lz * d_max,                          # 4: back_bl
-        o + lx * dx + lz * d_max,                # 5: back_br
-        o + lx * dx + ly * dy + lz * d_max,      # 6: back_tr
-        o + ly * dy + lz * d_max,                # 7: back_tl
-    ]
-
-
-def _intersection_boundary_epsilon(cuboid):
-    """Return tolerance for classifying cuboid-face intersections near edges."""
-    depth_extent = abs(cuboid.depth_max - cuboid.depth_min)
-    max_extent = max(cuboid.dx, cuboid.dy, depth_extent)
-    return max(EPSILON * 10, max_extent * 1e-7)
-
-
-def _point_in_face_interior(point, face_verts, face_normal, boundary_epsilon):
-    """
-    Test if a point is strictly inside a face (not on edges).
-    """
-    if len(face_verts) < 3:
-        return False
-
-    # First check if point is in the polygon at all
-    if not _point_in_polygon(point, face_verts, face_normal):
-        return False
-
-    # Check distance to all edges - must not be too close
-    n = len(face_verts)
-    for i in range(n):
-        v1 = face_verts[i]
-        v2 = face_verts[(i + 1) % n]
-
-        # Distance from point to edge
-        edge_vec = v2 - v1
-        edge_len_sq = edge_vec.length_squared
-        if edge_len_sq < EPSILON * EPSILON:
-            continue
-
-        t = max(0, min(1, (point - v1).dot(edge_vec) / edge_len_sq))
-        closest = v1 + edge_vec * t
-        dist = (point - closest).length
-
-        if dist < boundary_epsilon:  # Too close to edge
-            return False
-
-    return True
-
-
-def _point_in_polygon(point, face_verts, face_normal):
-    """Test if a point is inside a polygon using ray casting."""
-    if len(face_verts) < 3:
-        return False
-
-    normal_abs = Vector([abs(n) for n in face_normal])
-
-    if normal_abs.x >= normal_abs.y and normal_abs.x >= normal_abs.z:
-        def to_2d(p):
-            return (p.y, p.z)
-    elif normal_abs.y >= normal_abs.x and normal_abs.y >= normal_abs.z:
-        def to_2d(p):
-            return (p.x, p.z)
-    else:
-        def to_2d(p):
-            return (p.x, p.y)
-
-    px, py = to_2d(point)
-    n = len(face_verts)
-    inside = False
-
-    j = n - 1
-    for i in range(n):
-        xi, yi = to_2d(face_verts[i])
-        xj, yj = to_2d(face_verts[j])
-
-        if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
-            inside = not inside
-        j = i
-
-    return inside
