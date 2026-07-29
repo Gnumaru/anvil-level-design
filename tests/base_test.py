@@ -67,7 +67,7 @@ def _purge_all():
     props.gltf_anvil_enabled = True
     props.gltf_anvil_scale = 1.0
     props.gltf_anvil_apply_modifiers = True
-    props.gltf_anvil_separate_loose = False
+    props.gltf_anvil_separate_loose = True
     props.gltf_anvil_always_combine_materials = True
     props.gltf_anvil_debug = False
     props.default_interpolation = 'Linear'

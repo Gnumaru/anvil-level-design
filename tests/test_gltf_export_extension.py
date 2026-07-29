@@ -453,11 +453,11 @@ def _assert_no_temp_export_datablocks(test_case):
 
 
 class GltfExportFeatureMatrixTest(AnvilTestCase):
-    def test_gltf_anvil_separate_loose_defaults_to_disabled(self):
+    def test_gltf_anvil_separate_loose_defaults_to_enabled(self):
         separate_loose_property = bpy.context.scene.level_design_props.bl_rna.properties[
             "gltf_anvil_separate_loose"
         ]
-        self.assertFalse(separate_loose_property.default)
+        self.assertTrue(separate_loose_property.default)
 
     def _run_scale_export_route_test(self, route):
         scene = bpy.context.scene
