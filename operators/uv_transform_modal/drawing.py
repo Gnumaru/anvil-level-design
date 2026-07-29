@@ -26,6 +26,7 @@ REPETITION_GRID_COLOR = (0.3, 0.7, 1.0, 0.12)
 REPETITION_GRID_HOVER_COLOR = (0.3, 0.7, 1.0, 0.8)
 QUAD_OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.35)
 PIXEL_REFERENCE_COLOR = (0.2, 0.85, 1.0, 0.85)
+PIXEL_REFERENCE_RADIUS = 7.0
 HANDLE_CORNER_RADIUS = 7.0
 HANDLE_MOVE_RADIUS = 8.0
 HANDLE_ROTATION_RADIUS = 7.0
@@ -160,28 +161,20 @@ def draw_face_outline(face_corners_3d):
     batch.draw(shader)
 
 
-def draw_pixel_snap_reference(reference_vertex, quad_corners):
-    """Draw a subtle diamond around the active pixel-snap reference vertex."""
-    if reference_vertex is None:
+def draw_pixel_snap_reference_2d(reference_position, ui_scale):
+    """Draw a constant-size diamond around the pixel-snap reference."""
+    if reference_position is None:
         return
 
-    bl, br, _tr, tl = quad_corners
-    right_dir = br - bl
-    up_dir = tl - bl
-    right_len = right_dir.length
-    up_len = up_dir.length
-    if right_len < 0.0001 or up_len < 0.0001:
-        return
-
-    right_dir /= right_len
-    up_dir /= up_len
-    marker_size = (right_len + up_len) * 0.0125
+    marker_radius = PIXEL_REFERENCE_RADIUS * ui_scale
+    horizontal_offset = Vector((marker_radius, 0.0))
+    vertical_offset = Vector((0.0, marker_radius))
     positions = [
-        (reference_vertex + up_dir * marker_size)[:],
-        (reference_vertex + right_dir * marker_size)[:],
-        (reference_vertex - up_dir * marker_size)[:],
-        (reference_vertex - right_dir * marker_size)[:],
-        (reference_vertex + up_dir * marker_size)[:],
+        (reference_position + vertical_offset)[:],
+        (reference_position + horizontal_offset)[:],
+        (reference_position - vertical_offset)[:],
+        (reference_position - horizontal_offset)[:],
+        (reference_position + vertical_offset)[:],
     ]
 
     shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')

@@ -1136,7 +1136,7 @@ class MESH_OT_uv_transform_modal(Operator):
             use_linear_filter = tex_node is None or tex_node.interpolation != 'Closest'
             drawing.draw_ghost_texture(quad, self._image, use_linear_filter)
 
-            # Outlines and the pixel reference are drawn through geometry.
+            # Outlines are drawn through geometry.
             gpu.state.depth_test_set('NONE')
             drawing.draw_repetition_grid_3d(
                 repetition_grid[0], repetition_grid[1], None
@@ -1146,10 +1146,6 @@ class MESH_OT_uv_transform_modal(Operator):
             # available snap targets.
             for corners in self._all_face_corners_world:
                 drawing.draw_face_outline(corners)
-            if self._pixel_snap_active:
-                drawing.draw_pixel_snap_reference(
-                    self._pixel_snap_reference_vertex, quad
-                )
         finally:
             gpu.state.blend_set('NONE')
             gpu.state.depth_test_set('NONE')
@@ -1172,12 +1168,21 @@ class MESH_OT_uv_transform_modal(Operator):
             handle_layout = compute_handle_screen_layout(
                 region, rv3d, quad, ui_scale
             )
+            pixel_reference_position = None
+            reference_vertex = self._pixel_snap_reference_vertex
+            if self._pixel_snap_active and reference_vertex is not None:
+                pixel_reference_position = location_3d_to_region_2d(
+                    region, rv3d, reference_vertex
+                )
         except Exception:
             return
 
         gpu.state.blend_set('ALPHA')
         gpu.state.depth_test_set('NONE')
         try:
+            drawing.draw_pixel_snap_reference_2d(
+                pixel_reference_position, ui_scale
+            )
             drawing.draw_handles_2d(
                 handle_layout, self._hover_type, self._hover_index,
                 self._drag_type, self._drag_index, ui_scale
