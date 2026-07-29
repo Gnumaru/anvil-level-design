@@ -202,6 +202,12 @@ class MESH_OT_uv_transform_modal(Operator):
             return {'CANCELLED'}
 
         self._cancelled = False
+        self._draw_handler_3d = None
+        self._draw_handler_2d = None
+        self._face_overlay_space = None
+        self._saved_face_overlay_show_faces = None
+        self._modal_window = context.window
+        self._modal_workspace = context.workspace
 
         obj = context.active_object
         me = obj.data
@@ -401,6 +407,11 @@ class MESH_OT_uv_transform_modal(Operator):
             self._draw_2d, (context,), 'WINDOW', 'POST_PIXEL'
         )
 
+        # Blender's native selected-face fill obscures the texture preview.
+        # This is a per-viewport overlay setting, not a user preference. Keep
+        # its exact prior state so cleanup can restore it after the modal.
+        self._disable_face_selection_overlay(context)
+
         # Claim the active-instance slot only after all validation has passed.
         # Early returns above must not leak this class-level reference, or
         # subsequent invocations would bail at the guard at the top.
@@ -419,6 +430,7 @@ class MESH_OT_uv_transform_modal(Operator):
     def modal(self, context, event):
         # Another invocation cancelled us - just exit
         if self._cancelled:
+            self._cleanup(context)
             return {'CANCELLED'}
 
         # Exit if user left edit mode (e.g. pressed Tab)
@@ -1195,6 +1207,32 @@ class MESH_OT_uv_transform_modal(Operator):
     # Cleanup / Revert
     # ------------------------------------------------------------------
 
+    def _disable_face_selection_overlay(self, context):
+        """Hide Blender's selected-face fill in the invoking 3D viewport."""
+        space = context.space_data
+        if space is None or space.type != 'VIEW_3D':
+            return
+
+        self._face_overlay_space = space
+        self._saved_face_overlay_show_faces = space.overlay.show_faces
+        space.overlay.show_faces = False
+
+    def _restore_face_selection_overlay(self):
+        """Restore the invoking viewport's selected-face fill setting."""
+        space = self._face_overlay_space
+        saved_show_faces = self._saved_face_overlay_show_faces
+        self._face_overlay_space = None
+        self._saved_face_overlay_show_faces = None
+
+        if space is None or saved_show_faces is None:
+            return
+
+        try:
+            space.overlay.show_faces = saved_show_faces
+        except ReferenceError:
+            # The invoking area can be destroyed while the modal is active.
+            pass
+
     def _revert(self, context):
         """Restore the original UVs of every selected face on cancel."""
         obj = context.active_object
@@ -1288,6 +1326,8 @@ class MESH_OT_uv_transform_modal(Operator):
         if MESH_OT_uv_transform_modal._active_instance is self:
             MESH_OT_uv_transform_modal._active_instance = None
 
+        self._restore_face_selection_overlay()
+
         if self._draw_handler_3d is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler_3d, 'WINDOW')
             self._draw_handler_3d = None
@@ -1296,8 +1336,10 @@ class MESH_OT_uv_transform_modal(Operator):
             bpy.types.SpaceView3D.draw_handler_remove(self._draw_handler_2d, 'WINDOW')
             self._draw_handler_2d = None
 
-        context.window.cursor_modal_restore()
-        context.workspace.status_text_set(None)
+        if self._modal_window is not None:
+            self._modal_window.cursor_modal_restore()
+        if self._modal_workspace is not None:
+            self._modal_workspace.status_text_set(None)
         tag_redraw_all_3d_views()
 
 
@@ -1306,4 +1348,8 @@ def register():
 
 
 def unregister():
+    active_instance = MESH_OT_uv_transform_modal._active_instance
+    if active_instance is not None:
+        active_instance._cancelled = True
+        active_instance._cleanup(bpy.context)
     bpy.utils.unregister_class(MESH_OT_uv_transform_modal)

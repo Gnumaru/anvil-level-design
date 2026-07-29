@@ -246,6 +246,10 @@ class APIAvailabilityTest(AnvilTestCase):
                 missing.append("Area.regions HEADER")
             elif not hasattr(header_region, "alignment"):
                 missing.append("Region.alignment")
+        if not hasattr(bpy.types, "View3DOverlay"):
+            missing.append("bpy.types.View3DOverlay")
+        elif bpy.types.View3DOverlay.bl_rna.properties.get("show_faces") is None:
+            missing.append("View3DOverlay.show_faces")
         if not hasattr(bpy.context.preferences, "active_section"):
             missing.append("Preferences.active_section")
         if not hasattr(bpy.context.preferences, "system"):
