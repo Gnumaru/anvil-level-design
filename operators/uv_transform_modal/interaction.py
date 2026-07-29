@@ -21,14 +21,17 @@ FULL_HANDLE_HALF_EXTENT = 36.0
 COMPACT_HANDLE_HALF_EXTENT = 14.0
 MINIMAL_SCALE_CORNER_INDEX = 2
 _SCREEN_AXIS_EPSILON = 0.001
-MAX_VISIBLE_REPETITIONS = 24
-REPETITION_CANDIDATE_SCAN_FACTOR = 4
 # Minimum drag distance (pixels) before a drag starts
 DRAG_THRESHOLD = 4
 # Rotation handle distance factor (proportion of average quad half-size)
 ROTATION_HANDLE_DISTANCE = 0.25
 # Axis-constrained move handle distance (proportion of center→edge-midpoint)
 MOVE_AXIS_HANDLE_DISTANCE = 0.4
+REPETITION_GRID_MAX_TILE_RADIUS = 24
+REPETITION_GRID_EDGE_FADE_WIDTH = 12.0
+REPETITION_GRID_LINE_SUBDIVISIONS = 6
+REPETITION_GRID_DENSITY_FADE_MINIMUM = 1.5
+REPETITION_GRID_DENSITY_FADE_MAXIMUM = 5.0
 
 
 def _project_to_screen(region, rv3d, point_3d):
@@ -247,106 +250,286 @@ def _world_to_quad_uv(point, quad_origin, axis_u, axis_v):
     ))
 
 
-def _candidate_indices_near_focus(
-        focus_uv, maximum):
-    """Return repetition indices nearest a UV-space focus point."""
-    focus_u = math.floor(focus_uv.x)
-    focus_v = math.floor(focus_uv.y)
-    candidates = []
-    radius = 0
-
-    while len(candidates) < maximum:
-        for repeat_u in range(focus_u - radius, focus_u + radius + 1):
-            for repeat_v in range(focus_v - radius, focus_v + radius + 1):
-                if max(abs(repeat_u - focus_u), abs(repeat_v - focus_v)) != radius:
-                    continue
-                candidates.append((repeat_u, repeat_v))
-                if len(candidates) >= maximum:
-                    return candidates
-        radius += 1
-    return candidates
-
-
-def compute_visible_repetition_layouts(
-        region, rv3d, active_quad, ui_scale, maximum):
-    """Find inactive texture repetitions visible on the tile's infinite plane.
-
-    Each returned layout contains the integer shift from the active tile and
-    the true projected centre used as its lightweight activation handle.
-    """
+def compute_repetition_focus_uv(
+        region, rv3d, active_quad, focus_screen, ui_scale):
+    """Map the mouse focus onto the active tile's infinite UV plane."""
     if len(active_quad) != 4:
-        return []
+        return None
 
     quad_origin = active_quad[0]
     axis_u = active_quad[1] - quad_origin
     axis_v = active_quad[3] - quad_origin
     if axis_u.length_squared < 1e-12 or axis_v.length_squared < 1e-12:
-        return []
+        return None
 
-    viewport_center = Vector((region.width * 0.5, region.height * 0.5))
-    ray_origin = region_2d_to_origin_3d(region, rv3d, viewport_center)
-    ray_direction = region_2d_to_vector_3d(region, rv3d, viewport_center)
+    viewport_margin = HANDLE_HIT_RADIUS * ui_scale
+    focus = Vector((
+        min(max(focus_screen[0], viewport_margin),
+            region.width - viewport_margin),
+        min(max(focus_screen[1], viewport_margin),
+            region.height - viewport_margin),
+    ))
+    ray_origin = region_2d_to_origin_3d(region, rv3d, focus)
+    ray_direction = region_2d_to_vector_3d(region, rv3d, focus)
     plane_normal = axis_u.cross(axis_v)
     focus_world = ray_plane_intersection(
         ray_origin, ray_direction, quad_origin, plane_normal
     )
-    focus_uv = (
+    return (
         _world_to_quad_uv(focus_world, quad_origin, axis_u, axis_v)
         if focus_world is not None
         else None
     )
-    if focus_uv is None:
-        return []
 
-    scan_limit = max(maximum * REPETITION_CANDIDATE_SCAN_FACTOR, maximum)
-    candidate_indices = _candidate_indices_near_focus(
-        focus_uv, scan_limit
+
+def _smoothstep(minimum, maximum, value):
+    """Return a smooth zero-to-one transition between two values."""
+    if value <= minimum:
+        return 0.0
+    if value >= maximum:
+        return 1.0
+    factor = (value - minimum) / (maximum - minimum)
+    return factor * factor * (3.0 - 2.0 * factor)
+
+
+def _grid_boundary_opacity(
+        value, minimum, maximum, fade_minimum, fade_maximum, fade_width):
+    """Fade only boundaries introduced by the grid's safety extent."""
+    opacity = 1.0
+    if fade_minimum:
+        opacity *= _smoothstep(minimum, minimum + fade_width, value)
+    if fade_maximum:
+        opacity *= 1.0 - _smoothstep(
+            maximum - fade_width, maximum, value
+        )
+    return opacity
+
+
+def _grid_density_opacity(region, rv3d, point, spacing_axis):
+    """Fade a grid family only as its projected spacing becomes sub-pixel."""
+    screen_spacing = _screen_distance(
+        region, rv3d, point, point + spacing_axis
+    )
+    if screen_spacing is None:
+        return 0.0
+    return _smoothstep(
+        REPETITION_GRID_DENSITY_FADE_MINIMUM,
+        REPETITION_GRID_DENSITY_FADE_MAXIMUM,
+        screen_spacing,
     )
 
-    viewport_margin = HANDLE_HIT_RADIUS * ui_scale
-    layouts = []
-    for repeat_u, repeat_v in candidate_indices:
-        if repeat_u == 0 and repeat_v == 0:
-            continue
 
-        center_world = (
-            quad_origin
-            + axis_u * (repeat_u + 0.5)
-            + axis_v * (repeat_v + 0.5)
+def _repetition_grid_uv_from_screen(
+        region, rv3d, screen_point, quad_origin, axis_u, axis_v,
+        plane_normal):
+    """Project a viewport point onto the forward-facing half of the grid."""
+    ray_origin = region_2d_to_origin_3d(region, rv3d, screen_point)
+    ray_direction = region_2d_to_vector_3d(region, rv3d, screen_point)
+    world_point = ray_plane_intersection(
+        ray_origin, ray_direction, quad_origin, plane_normal
+    )
+    if world_point is None:
+        return None
+    return _world_to_quad_uv(world_point, quad_origin, axis_u, axis_v)
+
+
+def _repetition_grid_uv_near_horizon(
+        region, rv3d, hit_screen, miss_screen, hit_uv, quad_origin,
+        axis_u, axis_v, plane_normal):
+    """Find a far valid UV point immediately before a view ray misses."""
+    valid_screen = Vector(hit_screen)
+    invalid_screen = Vector(miss_screen)
+    horizon_uv = hit_uv
+    for _step in range(16):
+        midpoint = (valid_screen + invalid_screen) * 0.5
+        midpoint_uv = _repetition_grid_uv_from_screen(
+            region, rv3d, midpoint, quad_origin, axis_u, axis_v,
+            plane_normal
         )
-        center_screen = _project_to_screen(region, rv3d, center_world)
-        if center_screen is None:
+        if midpoint_uv is None:
+            invalid_screen = midpoint
+        else:
+            valid_screen = midpoint
+            horizon_uv = midpoint_uv
+    return horizon_uv
+
+
+def compute_visible_repetition_grid(region, rv3d, active_quad):
+    """Return softly clipped world-space UV grid lines and their opacities."""
+    if len(active_quad) != 4:
+        return [], []
+
+    quad_origin = active_quad[0]
+    axis_u = active_quad[1] - quad_origin
+    axis_v = active_quad[3] - quad_origin
+    if axis_u.length_squared < 1e-12 or axis_v.length_squared < 1e-12:
+        return [], []
+
+    plane_normal = axis_u.cross(axis_v)
+    focus_uv = Vector((0.5, 0.5))
+
+    screen_columns = (0.0, region.width * 0.5, float(region.width))
+    screen_rows = (0.0, region.height * 0.5, float(region.height))
+    sample_uvs = []
+    viewport_uvs = []
+    for screen_y in screen_rows:
+        sample_row = []
+        for screen_x in screen_columns:
+            screen_point = (screen_x, screen_y)
+            uv_point = _repetition_grid_uv_from_screen(
+                region, rv3d, screen_point, quad_origin, axis_u, axis_v,
+                plane_normal
+            )
+            sample_row.append(uv_point)
+            if uv_point is not None:
+                viewport_uvs.append(uv_point)
+        sample_uvs.append(sample_row)
+
+    # When the plane's horizon crosses the viewport, adjacent samples can sit
+    # on opposite sides of it. Search toward that transition from the valid
+    # side so the bounds reach infinity and are correctly safety-clipped and
+    # faded instead of ending at the last arbitrary sample point.
+    sample_pairs = []
+    for row_index in range(len(screen_rows)):
+        for column_index in range(len(screen_columns) - 1):
+            sample_pairs.append((
+                (column_index, row_index),
+                (column_index + 1, row_index),
+            ))
+    for column_index in range(len(screen_columns)):
+        for row_index in range(len(screen_rows) - 1):
+            sample_pairs.append((
+                (column_index, row_index),
+                (column_index, row_index + 1),
+            ))
+
+    for first_index, second_index in sample_pairs:
+        first_uv = sample_uvs[first_index[1]][first_index[0]]
+        second_uv = sample_uvs[second_index[1]][second_index[0]]
+        if (first_uv is None) == (second_uv is None):
             continue
-        if not (
-                viewport_margin <= center_screen.x
-                <= region.width - viewport_margin
-                and viewport_margin <= center_screen.y
-                <= region.height - viewport_margin):
-            continue
 
-        delta = center_screen - viewport_center
-        layouts.append({
-            'repeat_u': repeat_u,
-            'repeat_v': repeat_v,
-            'center': center_screen,
-            'distance_squared': delta.length_squared,
-        })
+        if first_uv is not None:
+            hit_index = first_index
+            miss_index = second_index
+            hit_uv = first_uv
+        else:
+            hit_index = second_index
+            miss_index = first_index
+            hit_uv = second_uv
 
-    layouts.sort(key=lambda layout: layout['distance_squared'])
-    return layouts[:maximum]
+        hit_screen = (
+            screen_columns[hit_index[0]], screen_rows[hit_index[1]]
+        )
+        miss_screen = (
+            screen_columns[miss_index[0]], screen_rows[miss_index[1]]
+        )
+        viewport_uvs.append(_repetition_grid_uv_near_horizon(
+            region, rv3d, hit_screen, miss_screen, hit_uv,
+            quad_origin, axis_u, axis_v, plane_normal
+        ))
+
+    viewport_uvs.append(focus_uv)
+
+    visible_minimum_u = min(point.x for point in viewport_uvs)
+    visible_maximum_u = max(point.x for point in viewport_uvs)
+    visible_minimum_v = min(point.y for point in viewport_uvs)
+    visible_maximum_v = max(point.y for point in viewport_uvs)
+
+    minimum_u = max(
+        visible_minimum_u, focus_uv.x - REPETITION_GRID_MAX_TILE_RADIUS
+    )
+    maximum_u = min(
+        visible_maximum_u, focus_uv.x + REPETITION_GRID_MAX_TILE_RADIUS
+    )
+    minimum_v = max(
+        visible_minimum_v, focus_uv.y - REPETITION_GRID_MAX_TILE_RADIUS
+    )
+    maximum_v = min(
+        visible_maximum_v, focus_uv.y + REPETITION_GRID_MAX_TILE_RADIUS
+    )
+    if minimum_u >= maximum_u or minimum_v >= maximum_v:
+        return [], []
+
+    fade_minimum_u = minimum_u > visible_minimum_u
+    fade_maximum_u = maximum_u < visible_maximum_u
+    fade_minimum_v = minimum_v > visible_minimum_v
+    fade_maximum_v = maximum_v < visible_maximum_v
+    u_fade_width = min(
+        REPETITION_GRID_EDGE_FADE_WIDTH, (maximum_u - minimum_u) * 0.25
+    )
+    v_fade_width = min(
+        REPETITION_GRID_EDGE_FADE_WIDTH, (maximum_v - minimum_v) * 0.25
+    )
+
+    first_u_edge = math.floor(minimum_u)
+    last_u_edge = math.ceil(maximum_u)
+    first_v_edge = math.floor(minimum_v)
+    last_v_edge = math.ceil(maximum_v)
+
+    positions = []
+    opacities = []
+
+    def grid_point_and_opacity(point_u, point_v, spacing_axis):
+        point = quad_origin + axis_u * point_u + axis_v * point_v
+        opacity = (
+            _grid_boundary_opacity(
+                point_u, minimum_u, maximum_u,
+                fade_minimum_u, fade_maximum_u, u_fade_width
+            )
+            * _grid_boundary_opacity(
+                point_v, minimum_v, maximum_v,
+                fade_minimum_v, fade_maximum_v, v_fade_width
+            )
+            * _grid_density_opacity(region, rv3d, point, spacing_axis)
+        )
+        return point, opacity
+
+    def append_line(start_u, start_v, end_u, end_v, spacing_axis):
+        samples = []
+        for sample_index in range(REPETITION_GRID_LINE_SUBDIVISIONS + 1):
+            factor = sample_index / REPETITION_GRID_LINE_SUBDIVISIONS
+            samples.append(grid_point_and_opacity(
+                start_u + (end_u - start_u) * factor,
+                start_v + (end_v - start_v) * factor,
+                spacing_axis,
+            ))
+
+        for segment_index in range(REPETITION_GRID_LINE_SUBDIVISIONS):
+            start, start_opacity = samples[segment_index]
+            end, end_opacity = samples[segment_index + 1]
+            if start_opacity <= 0.0 and end_opacity <= 0.0:
+                continue
+            positions.extend((start, end))
+            opacities.extend((start_opacity, end_opacity))
+
+    for repeat_u in range(first_u_edge, last_u_edge + 1):
+        append_line(
+            repeat_u, minimum_v, repeat_u, maximum_v, axis_u
+        )
+
+    for repeat_v in range(first_v_edge, last_v_edge + 1):
+        append_line(
+            minimum_u, repeat_v, maximum_u, repeat_v, axis_v
+        )
+
+    return positions, opacities
 
 
-def hit_test_repetition_handles(mouse_pos, repetition_layouts, hit_radius):
-    """Return the nearest inactive repetition handle under the mouse."""
-    mouse = Vector(mouse_pos)
-    best_layout = None
-    best_distance = hit_radius
-    for layout in repetition_layouts:
-        distance = (layout['center'] - mouse).length
-        if distance < best_distance:
-            best_distance = distance
-            best_layout = layout
-    return best_layout
+def pick_repetition_from_mouse(
+        region, rv3d, mouse_pos, active_quad, ui_scale):
+    """Return the inactive repetition containing the mouse position."""
+    focus_uv = compute_repetition_focus_uv(
+        region, rv3d, active_quad, mouse_pos, ui_scale
+    )
+    if focus_uv is None:
+        return None
+
+    repeat_u = math.floor(focus_uv.x)
+    repeat_v = math.floor(focus_uv.y)
+    if repeat_u == 0 and repeat_v == 0:
+        return None
+    return {'repeat_u': repeat_u, 'repeat_v': repeat_v}
 
 
 def hit_test_handles(mouse_pos, handle_layout, hit_radius):

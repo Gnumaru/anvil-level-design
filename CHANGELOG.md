@@ -1,6 +1,7 @@
 # Anvil Level Design Changelog
 
 # 1.8.3
+- UV Transform now shows gizmos on an infinite grid (gizmos available outside of face bounds)
 - Holding CTRL in UV transform mode turns on pixel snapping
 - UV transform mode can snap 2 corners of the UV at the same time
 - Fix UV transform mode missed snapping cases

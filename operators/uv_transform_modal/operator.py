@@ -34,9 +34,9 @@ from . import drawing
 from .interaction import (
     compute_texture_quad_3d,
     compute_handle_screen_layout,
-    compute_visible_repetition_layouts,
+    compute_visible_repetition_grid,
     hit_test_handles,
-    hit_test_repetition_handles,
+    pick_repetition_from_mouse,
     compute_scale_offset_from_corner_drag,
     compute_scale_offset_from_edge_drag,
     recompute_offset_for_fixed_corner,
@@ -59,10 +59,13 @@ from .interaction import (
     snap_scale_to_furthest_vertex_pixel_seam,
     ray_plane_intersection,
     HANDLE_HIT_RADIUS,
-    MAX_VISIBLE_REPETITIONS,
     SNAP_DISTANCE_PIXELS,
 )
 from .hotkeys import pixel_snap_shortcut_label, pixel_snap_state_for_event
+
+
+REPETITION_RETARGET_CELL_MARGIN_FACTOR = 0.25
+REPETITION_RETARGET_MIN_MARGIN_PIXELS = 1.0
 
 
 def _pick_primary_face_from_cursor(selected_faces, event, context, world_matrix):
@@ -361,18 +364,34 @@ class MESH_OT_uv_transform_modal(Operator):
         self._drag_index = None
         self._drag_start_mouse = None
         self._drag_start_3d = None
+        self._view_navigating = False
 
         # Hover state
         self._hover_type = None
         self._hover_index = None
-        self._hover_repetition = None
-        self._repetition_layout_cache_key = None
-        self._repetition_layouts = []
+        self._repetition_grid_cache_key = None
+        self._repetition_grid_positions = []
+        self._repetition_grid_opacities = []
 
         # Ctrl-held pixel snapping state. The reference is captured once when
         # the hotkey is pressed and remains stable until the key is released.
         self._pixel_snap_active = False
         self._pixel_snap_reference_vertex = None
+
+        # Start on the repetition under the invocation cursor so the user
+        # never has to select a tile before reaching its controls.
+        initial_quad = self._compute_quad()
+        initial_repetition = pick_repetition_from_mouse(
+            context.region, context.region_data,
+            (event.mouse_region_x, event.mouse_region_y),
+            initial_quad, context.preferences.system.ui_scale
+        )
+        if initial_repetition is not None:
+            self._activate_repetition(
+                context,
+                initial_repetition['repeat_u'],
+                initial_repetition['repeat_v']
+            )
 
         # Register world-space preview and screen-space handle draw handlers.
         self._draw_handler_3d = bpy.types.SpaceView3D.draw_handler_add(
@@ -422,6 +441,16 @@ class MESH_OT_uv_transform_modal(Operator):
 
         mouse_pos = (event.mouse_region_x, event.mouse_region_y)
 
+        # Walk navigation takes over after RIGHTMOUSE and can consume its
+        # matching release. Tracking that button here can therefore leave
+        # repetition retargeting permanently suspended after free camera use.
+        # MIDDLEMOUSE navigation remains local to this modal.
+        if event.type == 'MIDDLEMOUSE':
+            if event.value == 'PRESS':
+                self._view_navigating = True
+            elif event.value == 'RELEASE':
+                self._view_navigating = False
+
         pixel_snap_state = pixel_snap_state_for_event(
             context.window_manager, event
         )
@@ -443,10 +472,32 @@ class MESH_OT_uv_transform_modal(Operator):
         handle_layout = compute_handle_screen_layout(
             region, rv3d, quad, ui_scale
         )
-        repetition_layouts = self._get_visible_repetition_layouts(
-            region, rv3d, quad, ui_scale
-        )
         hit_radius = HANDLE_HIT_RADIUS * ui_scale
+
+        # The grid is passive. When the mouse leaves the active gizmo's
+        # footprint, silently rebase the full gizmo to the repetition beneath
+        # it. Whole-tile rebasing leaves the rendered texture unchanged.
+        if (
+                event.type == 'MOUSEMOVE'
+                and not self._dragging
+                and not self._view_navigating
+                and not self._mouse_in_active_gizmo_zone(
+                    mouse_pos, handle_layout, hit_radius * 1.5
+                )):
+            repetition = pick_repetition_from_mouse(
+                region, rv3d, mouse_pos, quad, ui_scale
+            )
+            if repetition is not None:
+                self._activate_repetition(
+                    context,
+                    repetition['repeat_u'], repetition['repeat_v']
+                )
+                quad = self._compute_quad()
+                handle_layout = compute_handle_screen_layout(
+                    region, rv3d, quad, ui_scale
+                )
+                self._hover_type = None
+                self._hover_index = None
 
         # ---- Cancel ----
         if event.type == 'ESC' and event.value == 'PRESS':
@@ -486,18 +537,6 @@ class MESH_OT_uv_transform_modal(Operator):
 
                 return {'RUNNING_MODAL'}
             else:
-                repetition = hit_test_repetition_handles(
-                    mouse_pos, repetition_layouts, hit_radius
-                )
-                if repetition is not None:
-                    self._activate_repetition(
-                        context,
-                        repetition['repeat_u'], repetition['repeat_v']
-                    )
-                    self._hover_repetition = None
-                    tag_redraw_all_3d_views()
-                    return {'RUNNING_MODAL'}
-
                 # Click on empty space = confirm
                 result = self._finish_from_modal(context)
                 self._cleanup(context)
@@ -520,25 +559,13 @@ class MESH_OT_uv_transform_modal(Operator):
                 hit_type, hit_index = hit_test_handles(
                     mouse_pos, handle_layout, hit_radius
                 )
-                repetition = None
-                if hit_type is None:
-                    repetition_layout = hit_test_repetition_handles(
-                        mouse_pos, repetition_layouts, hit_radius
-                    )
-                    if repetition_layout is not None:
-                        repetition = (
-                            repetition_layout['repeat_u'],
-                            repetition_layout['repeat_v'],
-                        )
                 if (
                         hit_type != self._hover_type
-                        or hit_index != self._hover_index
-                        or repetition != self._hover_repetition):
+                        or hit_index != self._hover_index):
                     self._hover_type = hit_type
                     self._hover_index = hit_index
-                    self._hover_repetition = repetition
                     # Update cursor
-                    if hit_type is not None or repetition is not None:
+                    if hit_type is not None:
                         context.window.cursor_modal_set('HAND')
                     else:
                         context.window.cursor_modal_restore()
@@ -974,13 +1001,11 @@ class MESH_OT_uv_transform_modal(Operator):
             self._offset_x, self._offset_y
         )
 
-    def _get_visible_repetition_layouts(
-            self, region, rv3d, quad, ui_scale):
-        """Return a cached repetition layout for the current view and tile."""
+    def _get_visible_repetition_grid(self, region, rv3d, quad):
+        """Return cached world-space lines for the current visible UV grid."""
         cache_key = (
             region.width,
             region.height,
-            ui_scale,
             rv3d.view_distance,
             rv3d.view_perspective,
             tuple(
@@ -990,12 +1015,49 @@ class MESH_OT_uv_transform_modal(Operator):
             ),
             tuple(value for point in quad for value in point),
         )
-        if cache_key != self._repetition_layout_cache_key:
-            self._repetition_layouts = compute_visible_repetition_layouts(
-                region, rv3d, quad, ui_scale, MAX_VISIBLE_REPETITIONS
+        if cache_key != self._repetition_grid_cache_key:
+            (
+                self._repetition_grid_positions,
+                self._repetition_grid_opacities,
+            ) = (
+                compute_visible_repetition_grid(region, rv3d, quad)
             )
-            self._repetition_layout_cache_key = cache_key
-        return self._repetition_layouts
+            self._repetition_grid_cache_key = cache_key
+        return (
+            self._repetition_grid_positions,
+            self._repetition_grid_opacities,
+        )
+
+    def _mouse_in_active_gizmo_zone(
+            self, mouse_pos, handle_layout, maximum_margin):
+        """Keep the active tile stable while its controls are approachable."""
+        if handle_layout is None:
+            return False
+
+        corners = handle_layout['corners']
+        shortest_cell_edge = min(
+            (corners[(index + 1) % len(corners)] - corners[index]).length
+            for index in range(len(corners))
+        )
+        margin = min(
+            maximum_margin,
+            max(
+                REPETITION_RETARGET_MIN_MARGIN_PIXELS,
+                shortest_cell_edge * REPETITION_RETARGET_CELL_MARGIN_FACTOR,
+            ),
+        )
+
+        positions = list(corners)
+        if handle_layout['show_rotation']:
+            positions.append(handle_layout['rotation'])
+        minimum_x = min(point.x for point in positions) - margin
+        maximum_x = max(point.x for point in positions) + margin
+        minimum_y = min(point.y for point in positions) - margin
+        maximum_y = max(point.y for point in positions) + margin
+        return (
+            minimum_x <= mouse_pos[0] <= maximum_x
+            and minimum_y <= mouse_pos[1] <= maximum_y
+        )
 
     def _mouse_to_face_plane(self, region, rv3d, mouse_pos):
         """Project mouse position onto the face plane in world space."""
@@ -1034,7 +1096,7 @@ class MESH_OT_uv_transform_modal(Operator):
         pixel_shortcut = pixel_snap_shortcut_label(context.window_manager)
         pixel_indicator = " [Pixel Snap]" if self._pixel_snap_active else ""
         context.workspace.status_text_set(
-            f"LMB: Drag/activate tile    {pixel_shortcut}: Pixel Snap    "
+            f"LMB: Drag handles    {pixel_shortcut}: Pixel Snap    "
             f"Shift: Disable Snap    LMB (empty)/Enter: Confirm    "
             f"Esc: Cancel{pixel_indicator}"
         )
@@ -1048,8 +1110,17 @@ class MESH_OT_uv_transform_modal(Operator):
         if not is_level_design_workspace():
             return
 
+        draw_context = bpy.context
+        region = draw_context.region
+        rv3d = draw_context.region_data
+        if region is None or rv3d is None:
+            return
+
         try:
             quad = self._compute_quad()
+            repetition_grid = self._get_visible_repetition_grid(
+                region, rv3d, quad
+            )
         except Exception:
             return
 
@@ -1067,6 +1138,9 @@ class MESH_OT_uv_transform_modal(Operator):
 
             # Outlines and the pixel reference are drawn through geometry.
             gpu.state.depth_test_set('NONE')
+            drawing.draw_repetition_grid_3d(
+                repetition_grid[0], repetition_grid[1], None
+            )
             drawing.draw_quad_outline(quad)
             # Outline every selected face so the user can see all the
             # available snap targets.
@@ -1098,19 +1172,12 @@ class MESH_OT_uv_transform_modal(Operator):
             handle_layout = compute_handle_screen_layout(
                 region, rv3d, quad, ui_scale
             )
-            repetition_layouts = self._get_visible_repetition_layouts(
-                region, rv3d, quad, ui_scale
-            )
         except Exception:
             return
 
         gpu.state.blend_set('ALPHA')
         gpu.state.depth_test_set('NONE')
         try:
-            if not self._dragging:
-                drawing.draw_repetition_handles_2d(
-                    repetition_layouts, self._hover_repetition, ui_scale
-                )
             drawing.draw_handles_2d(
                 handle_layout, self._hover_type, self._hover_index,
                 self._drag_type, self._drag_index, ui_scale
