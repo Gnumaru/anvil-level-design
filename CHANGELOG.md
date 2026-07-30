@@ -4,6 +4,7 @@
 - Swap path / search elements in the Texture Browser
 - Add forward / backward buttons to the Texture Browser
 - Adjust hotspot file button label
+- Fix UVs failing on solidify
 
 # 1.8.4
 - Split meshes during gltf now cannot affect rigged meshes

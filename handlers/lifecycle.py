@@ -100,6 +100,7 @@ def _restore_texture_browser_settings():
 # the undo-in-progress flag, or the depsgraph handler will skip UV reprojection
 # and produce 0-area UVs.
 _UNDO_ABUSING_OPERATORS = {
+    "MESH_OT_solidify",
     "MESH_OT_spin",
 }
 
