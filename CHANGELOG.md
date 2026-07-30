@@ -1,5 +1,9 @@
 # Anvil Level Design Changelog
 
+# 1.8.5
+- Swap path / search elements in the Texture Browser
+- Add forward / backward buttons to the Texture Browser
+
 # 1.8.4
 - Split meshes during gltf now cannot affect rigged meshes
 - Fix naming issue for rigged meshes during gltf export

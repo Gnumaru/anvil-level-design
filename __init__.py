@@ -414,6 +414,8 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
             "leveldesign.walk_navigation_hold": "Navigation",
             "leveldesign.ortho_view": "Navigation",
             "leveldesign.ortho_pan": "Navigation",
+            "leveldesign.texture_browser_back": "Navigation",
+            "leveldesign.texture_browser_forward": "Navigation",
             "leveldesign.context_menu": REMAPPED_CATEGORY,
             "leveldesign.visible_select": "Selection",
             "leveldesign.visible_shortest_path_pick": "Selection",

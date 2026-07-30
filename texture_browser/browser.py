@@ -81,6 +81,12 @@ _folder_scan_generation = 0
 _popup_source_workspace_name = ""
 _mapping_selection_material_name = ""
 _mapping_selection_open_pending = False
+_texture_browser_navigation_back = []
+_texture_browser_navigation_forward = []
+_texture_browser_navigation_current = None
+_texture_browser_navigation_suspended = False
+
+_TEXTURE_BROWSER_NAVIGATION_HISTORY_LIMIT = 100
 
 _TEXTURE_BROWSER_LOCATE_HIGHLIGHT_SECONDS = 0.6
 _TEXTURE_BROWSER_LOCATE_HIGHLIGHT_ALPHA = 1.0
@@ -306,6 +312,160 @@ def _ensure_window_manager_folder(window_manager):
         return
     window_manager.anvil_texture_browser_folder_path = _preferred_texture_browser_folder(
         _addon_preferences()
+    )
+
+
+def _texture_browser_navigation_entry(window_manager):
+    collection_index = window_manager.anvil_texture_browser_collection_index
+    if collection_index != _TEXTURE_BROWSER_FOLDER_VIEW:
+        prefs = _addon_preferences()
+        if prefs is not None and 0 <= collection_index < len(prefs.texture_browser_collections):
+            collection = prefs.texture_browser_collections[collection_index]
+            return ('COLLECTION', collection.as_pointer())
+        return ('COLLECTION', 0)
+    return ('FOLDER', _display_path(window_manager.anvil_texture_browser_folder_path))
+
+
+def _texture_browser_collection_index_for_pointer(collection_pointer):
+    prefs = _addon_preferences()
+    if prefs is None:
+        return None
+    for index, collection in enumerate(prefs.texture_browser_collections):
+        if collection.as_pointer() == collection_pointer:
+            return index
+    return None
+
+
+def _texture_browser_navigation_entry_is_available(entry):
+    entry_kind, entry_value = entry
+    if entry_kind == 'FOLDER':
+        return _folder_exists(entry_value)
+    return _texture_browser_collection_index_for_pointer(entry_value) is not None
+
+
+def _trim_texture_browser_navigation_history(history):
+    overflow = len(history) - _TEXTURE_BROWSER_NAVIGATION_HISTORY_LIMIT
+    if overflow > 0:
+        del history[:overflow]
+
+
+def _record_texture_browser_navigation_change(window_manager):
+    global _texture_browser_navigation_current
+
+    new_entry = _texture_browser_navigation_entry(window_manager)
+    if _texture_browser_navigation_current is None:
+        _texture_browser_navigation_current = new_entry
+        return
+    if new_entry == _texture_browser_navigation_current:
+        return
+    _texture_browser_navigation_back.append(_texture_browser_navigation_current)
+    _trim_texture_browser_navigation_history(_texture_browser_navigation_back)
+    _texture_browser_navigation_forward.clear()
+    _texture_browser_navigation_current = new_entry
+
+
+def _apply_texture_browser_navigation_entry(window_manager, entry):
+    global _texture_browser_navigation_current
+    global _texture_browser_navigation_suspended
+
+    entry_kind, entry_value = entry
+    collection_index = None
+    if entry_kind == 'COLLECTION':
+        collection_index = _texture_browser_collection_index_for_pointer(entry_value)
+        if collection_index is None:
+            return
+
+    _texture_browser_navigation_suspended = True
+    try:
+        if entry_kind == 'FOLDER':
+            window_manager.anvil_texture_browser_folder_path = entry_value
+            window_manager.anvil_texture_browser_collection_index = _TEXTURE_BROWSER_FOLDER_VIEW
+            _remember_texture_browser_folder(entry_value)
+        else:
+            prefs = _addon_preferences()
+            if prefs is not None:
+                prefs.texture_browser_active_collection_index = collection_index
+            window_manager.anvil_texture_browser_collection_index = collection_index
+    finally:
+        _texture_browser_navigation_suspended = False
+
+    _texture_browser_navigation_current = entry
+    texture_browser_modal.settings_update(
+        window_manager,
+        window_manager.windows,
+        True,
+    )
+
+
+def _set_texture_browser_navigation_entry(window_manager, entry):
+    global _texture_browser_navigation_current
+
+    current_entry = _texture_browser_navigation_entry(window_manager)
+    _texture_browser_navigation_current = current_entry
+    if entry == current_entry:
+        return
+
+    _texture_browser_navigation_back.append(current_entry)
+    _trim_texture_browser_navigation_history(_texture_browser_navigation_back)
+    _texture_browser_navigation_forward.clear()
+    _apply_texture_browser_navigation_entry(window_manager, entry)
+
+
+def _next_available_texture_browser_navigation_entry(history, current_entry):
+    while history:
+        entry = history.pop()
+        if entry == current_entry:
+            continue
+        if _texture_browser_navigation_entry_is_available(entry):
+            return entry
+    return None
+
+
+def _texture_browser_navigation_history_available(window_manager, history):
+    current_entry = _texture_browser_navigation_entry(window_manager)
+    return any(
+        entry != current_entry
+        and _texture_browser_navigation_entry_is_available(entry)
+        for entry in history
+    )
+
+
+def _navigate_texture_browser_history(window_manager, backwards):
+    global _texture_browser_navigation_current
+
+    current_entry = _texture_browser_navigation_entry(window_manager)
+    _texture_browser_navigation_current = current_entry
+    if backwards:
+        source_history = _texture_browser_navigation_back
+        destination_history = _texture_browser_navigation_forward
+    else:
+        source_history = _texture_browser_navigation_forward
+        destination_history = _texture_browser_navigation_back
+
+    destination_entry = _next_available_texture_browser_navigation_entry(
+        source_history,
+        current_entry,
+    )
+    if destination_entry is None:
+        return False
+
+    destination_history.append(current_entry)
+    _trim_texture_browser_navigation_history(destination_history)
+    _apply_texture_browser_navigation_entry(window_manager, destination_entry)
+    return True
+
+
+def _texture_browser_can_go_back(window_manager):
+    return _texture_browser_navigation_history_available(
+        window_manager,
+        _texture_browser_navigation_back,
+    )
+
+
+def _texture_browser_can_go_forward(window_manager):
+    return _texture_browser_navigation_history_available(
+        window_manager,
+        _texture_browser_navigation_forward,
     )
 
 
@@ -681,32 +841,74 @@ def _draw_texture_browser_header(
     title_row.scale_x = 0.85
     title_row.label(text="Texture Browser", icon='IMAGE_DATA')
     row.separator(factor=2.0)
-    search_row = row.row(align=True)
-    search_row.scale_x = 2.0
-    search_row.prop(window_manager, "anvil_texture_browser_search", text="", icon='VIEWZOOM')
-    row.separator(factor=0.35)
 
-    path_controls = row.row(align=True)
-    path_controls.enabled = (window_manager.anvil_texture_browser_collection_index
-                             == _TEXTURE_BROWSER_FOLDER_VIEW)
-    path_controls.operator("leveldesign.texture_browser_parent_folder", text="", icon='TRIA_UP')
-    folder_path_row = path_controls.row(align=True)
-    folder_path_row.scale_x = 2.2
-    folder_path_row.prop(window_manager, "anvil_texture_browser_folder_path", text="")
-    path_controls.operator(
-        "leveldesign.texture_browser_choose_folder",
+    navigation_row = row.row(align=True)
+    back_row = navigation_row.row(align=True)
+    back_row.enabled = _texture_browser_can_go_back(window_manager)
+    back_row.operator(
+        "leveldesign.texture_browser_back",
         text="",
-        icon='FILE_FOLDER',
+        icon='TRIA_LEFT',
+    )
+    forward_row = navigation_row.row(align=True)
+    forward_row.enabled = _texture_browser_can_go_forward(window_manager)
+    forward_row.operator(
+        "leveldesign.texture_browser_forward",
+        text="",
+        icon='TRIA_RIGHT',
     )
 
-    if collection is not None:
+    if collection is None:
+        path_controls = row.row(align=True)
+        path_controls.operator(
+            "leveldesign.texture_browser_parent_folder",
+            text="",
+            icon='TRIA_UP',
+        )
+        folder_path_row = path_controls.row(align=True)
+        folder_path_row.scale_x = 2.2
+        folder_path_row.prop(
+            window_manager,
+            "anvil_texture_browser_folder_path",
+            text="",
+            icon='FILE_FOLDER',
+        )
+        path_controls.operator(
+            "leveldesign.texture_browser_choose_folder",
+            text="",
+            icon='FILEBROWSER',
+        )
+    else:
         collection_row = row.row(align=True)
-        collection_row.scale_x = 1.2
-        collection_row.prop(collection, "name", text="", icon='OUTLINER_COLLECTION')
-    elif favorite is not None:
+        collection_row.label(text="Collection:")
+        collection_field = collection_row.row(align=True)
+        collection_field.scale_x = 2.2
+        collection_field.prop(
+            collection,
+            "name",
+            text="",
+            icon='OUTLINER_COLLECTION',
+        )
+
+    if favorite is not None:
+        row.separator(factor=1.5)
         favorite_row = row.row(align=True)
-        favorite_row.scale_x = 1.2
-        favorite_row.prop(favorite, "name", text="", icon='FILE_FOLDER')
+        favorite_row.label(text="Favourite:")
+        favorite_field = favorite_row.row(align=True)
+        favorite_field.scale_x = 1.2
+        favorite_field.prop(favorite, "name", text="")
+
+    row.separator(factor=2.5)
+    search_row = row.row(align=True)
+    search_row.label(text="Search:")
+    search_field = search_row.row(align=True)
+    search_field.scale_x = 2.0
+    search_field.prop(
+        window_manager,
+        "anvil_texture_browser_search",
+        text="",
+        icon='VIEWZOOM',
+    )
 
     row.separator(factor=0.5)
     row.prop(window_manager, "anvil_texture_browser_preview_scale", text="", slider=True)
@@ -1723,6 +1925,9 @@ def texture_browser_search_update(window_manager, context):
 
 
 def texture_browser_collection_filter_update(window_manager, context):
+    if _texture_browser_navigation_suspended:
+        return
+    _record_texture_browser_navigation_change(window_manager)
     texture_browser_modal.settings_update(window_manager, context.window_manager.windows, True)
 
 
@@ -1734,9 +1939,18 @@ def texture_browser_preview_scale_update(window_manager, context):
 
 
 def texture_browser_folder_path_update(window_manager, context):
+    global _texture_browser_navigation_suspended
+
+    if _texture_browser_navigation_suspended:
+        return
     if window_manager.anvil_texture_browser_collection_index != _TEXTURE_BROWSER_FOLDER_VIEW:
-        window_manager.anvil_texture_browser_collection_index = _TEXTURE_BROWSER_FOLDER_VIEW
+        _texture_browser_navigation_suspended = True
+        try:
+            window_manager.anvil_texture_browser_collection_index = _TEXTURE_BROWSER_FOLDER_VIEW
+        finally:
+            _texture_browser_navigation_suspended = False
     _remember_texture_browser_folder(window_manager.anvil_texture_browser_folder_path)
+    _record_texture_browser_navigation_change(window_manager)
     texture_browser_modal.settings_update(window_manager, context.window_manager.windows, True)
 
 
@@ -1744,9 +1958,7 @@ def _set_folder(window_manager, folder_path):
     if not _folder_exists(folder_path):
         return False
     folder_path = os.path.abspath(bpy.path.abspath(folder_path))
-    window_manager.anvil_texture_browser_collection_index = _TEXTURE_BROWSER_FOLDER_VIEW
-    window_manager.anvil_texture_browser_folder_path = folder_path
-    _remember_texture_browser_folder(folder_path)
+    _set_texture_browser_navigation_entry(window_manager, ('FOLDER', folder_path))
     return True
 
 
@@ -2146,6 +2358,64 @@ class LEVELDESIGN_OT_texture_browser_fix_layout(Operator):
     def execute(self, context):
         texture_browser_modal.set_active_section(context.preferences, 'ADDONS')
         texture_browser_modal.tag_preferences_areas(context.window_manager.windows)
+        return {'FINISHED'}
+
+
+def _texture_browser_navigation_area_is_allowed(window, area, workspace_allowed):
+    if texture_browser_modal.is_popup_window(window):
+        return _popup_source_workspace_name in _TEXTURE_BROWSER_WORKSPACE_NAMES
+    if not workspace_allowed:
+        return False
+    screen = getattr(window, "screen", None)
+    return (
+        area_is_preferences(area)
+        and browser_role_for_area(screen, area) == BROWSER_ROLE_TEXTURE
+    )
+
+
+class LEVELDESIGN_OT_texture_browser_back(Operator):
+    """Return to the previous texture folder or collection"""
+    bl_idname = "leveldesign.texture_browser_back"
+    bl_label = "Texture Browser Back"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            _texture_browser_navigation_area_is_allowed(
+                context.window,
+                context.area,
+                _texture_browser_workspace_is_allowed(),
+            )
+            and _texture_browser_can_go_back(context.window_manager)
+        )
+
+    def execute(self, context):
+        if not _navigate_texture_browser_history(context.window_manager, True):
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
+class LEVELDESIGN_OT_texture_browser_forward(Operator):
+    """Advance to the next texture folder or collection"""
+    bl_idname = "leveldesign.texture_browser_forward"
+    bl_label = "Texture Browser Forward"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            _texture_browser_navigation_area_is_allowed(
+                context.window,
+                context.area,
+                _texture_browser_workspace_is_allowed(),
+            )
+            and _texture_browser_can_go_forward(context.window_manager)
+        )
+
+    def execute(self, context):
+        if not _navigate_texture_browser_history(context.window_manager, False):
+            return {'CANCELLED'}
         return {'FINISHED'}
 
 
@@ -2643,6 +2913,8 @@ classes = (
     LEVELDESIGN_OT_texture_browser_interaction,
     LEVELDESIGN_OT_texture_browser_close,
     LEVELDESIGN_OT_texture_browser_fix_layout,
+    LEVELDESIGN_OT_texture_browser_back,
+    LEVELDESIGN_OT_texture_browser_forward,
     LEVELDESIGN_OT_texture_browser_choose_folder,
     LEVELDESIGN_OT_texture_browser_parent_folder,
     LEVELDESIGN_OT_texture_browser_home,
@@ -2683,7 +2955,29 @@ def _register_texture_browser_keymap(kc, km_name, space_type):
     _addon_keymaps.append((km, kmi))
 
 
+def _register_texture_browser_navigation_keymaps(kc):
+    km = kc.keymaps.new(name="Preferences", space_type='PREFERENCES')
+    for operator_idname, event_type in (
+            ("leveldesign.texture_browser_back", 'BUTTON4MOUSE'),
+            ("leveldesign.texture_browser_forward", 'BUTTON5MOUSE')):
+        kmi = km.keymap_items.new(
+            operator_idname,
+            event_type,
+            'PRESS',
+            head=True,
+        )
+        _addon_keymaps.append((km, kmi))
+
+
 def register():
+    global _texture_browser_navigation_current
+    global _texture_browser_navigation_suspended
+
+    _texture_browser_navigation_back.clear()
+    _texture_browser_navigation_forward.clear()
+    _texture_browser_navigation_current = None
+    _texture_browser_navigation_suspended = False
+
     for cls in classes:
         bpy.utils.register_class(cls)
 
@@ -2725,6 +3019,7 @@ def register():
     wm = bpy.context.window_manager
     persistence.load_texture_browser_data()
     _load_texture_browser_persistent_settings(wm)
+    _texture_browser_navigation_current = _texture_browser_navigation_entry(wm)
     texture_browser_modal.persistent_draw_overrides = True
     texture_browser_modal.persistent_draw_handler = True
     texture_browser_modal.install_draw_overrides(wm.windows)
@@ -2740,9 +3035,13 @@ def register():
     if kc:
         for km_name, space_type in KEYMAPS_TO_REGISTER:
             _register_texture_browser_keymap(kc, km_name, space_type)
+        _register_texture_browser_navigation_keymaps(kc)
 
 
 def unregister():
+    global _texture_browser_navigation_current
+    global _texture_browser_navigation_suspended
+
     _reset_mapping_selection()
     reset_browser_roles()
     persistence.save_texture_browser_data()
@@ -2762,6 +3061,10 @@ def unregister():
         except ReferenceError:
             pass
     _addon_keymaps.clear()
+    _texture_browser_navigation_back.clear()
+    _texture_browser_navigation_forward.clear()
+    _texture_browser_navigation_current = None
+    _texture_browser_navigation_suspended = False
 
     if hasattr(bpy.types.WindowManager, "anvil_texture_browser_scroll_offset"):
         del bpy.types.WindowManager.anvil_texture_browser_scroll_offset
