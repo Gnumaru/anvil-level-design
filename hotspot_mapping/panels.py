@@ -38,7 +38,7 @@ class HOTSPOT_PT_main_panel(Panel):
             row.operator("hotspot.clear_file_path", text="", icon='X')
         else:
             row.label(text="None (data in .blend only)")
-        box.operator("hotspot.browse_file_path", text="Browse...",
+        box.operator("hotspot.browse_file_path", text="Create or Choose",
                      icon='FILEBROWSER')
 
         layout.separator()
