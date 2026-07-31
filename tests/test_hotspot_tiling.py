@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import bmesh
 
 from .base_test import AnvilTestCase
@@ -13,6 +15,7 @@ from ..hotspot_mapping.json_storage import (
 from ..operators.hotspot_apply import (
     apply_hotspot_uvs,
     calculate_tiling_repeat_count,
+    compute_tiling_hotspot_rotation,
     find_best_hotspot,
 )
 
@@ -239,28 +242,52 @@ class HotspotTilingUvTest(AnvilTestCase):
 
 class HotspotTilingSelectionTest(AnvilTestCase):
 
-    def test_hotspot_tiling_non_tiling_axis_chooses_rotation_by_size_not_aspect(self):
+    def test_hotspot_tiling_axis_maps_to_longer_face_dimension_for_horizontal_and_vertical_regions(self):
         cases = (
             (
                 TILING_VERTICAL,
                 _hotspot("vertical", 25, 100, "Any", TILING_VERTICAL),
-                0.25, 0.20,
+                0.25, 0.20, (90, 270),
+            ),
+            (
+                TILING_VERTICAL,
+                _hotspot("vertical", 25, 100, "Any", TILING_VERTICAL),
+                0.20, 0.25, (0, 180),
             ),
             (
                 TILING_HORIZONTAL,
                 _hotspot("horizontal", 100, 25, "Any", TILING_HORIZONTAL),
-                0.20, 0.25,
+                0.25, 0.20, (0, 180),
+            ),
+            (
+                TILING_HORIZONTAL,
+                _hotspot("horizontal", 100, 25, "Any", TILING_HORIZONTAL),
+                0.20, 0.25, (90, 270),
             ),
         )
-        for tiling_type, hotspot, width, height in cases:
-            with self.subTest(tiling_type=tiling_type):
+        for tiling_type, hotspot, width, height, expected_rotations in cases:
+            with self.subTest(
+                    tiling_type=tiling_type, width=width, height=height):
                 selected, rotation = _find_for_wall(
-                    width, height, [hotspot], "wall", 0.0
+                    width, height, [hotspot], "wall", 1.0
                 )
                 self.assertIs(selected, hotspot)
-                self.assertIn(rotation, (0, 180))
+                self.assertIn(rotation, expected_rotations)
 
-    def test_hotspot_tiling_upwards_orientation_takes_priority_over_closest_size_axis(self):
+    def test_hotspot_tiling_near_square_face_allows_quarter_turn_ambiguity(self):
+        hotspot = _hotspot(
+            "near_square", 100, 25, "Any", TILING_HORIZONTAL
+        )
+        with patch(
+            "anvil_level_design.operators.hotspot_apply.random.choice",
+            side_effect=lambda values: values[-1],
+        ):
+            rotation = compute_tiling_hotspot_rotation(
+                None, None, hotspot, 100.0, 95.0
+            )
+        self.assertEqual(rotation, 270)
+
+    def test_hotspot_tiling_upwards_orientation_takes_priority_over_longer_face_dimension(self):
         cases = (
             (
                 TILING_VERTICAL,

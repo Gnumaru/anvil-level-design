@@ -111,44 +111,32 @@ def calculate_tiling_repeat_count(island_aspect, hotspot, image_width,
 def compute_tiling_hotspot_rotation(island, uv_layer, hotspot,
                                     target_width_pixels,
                                     target_height_pixels):
-    """Choose a tiling hotspot rotation from fixed-axis size alone.
+    """Map the hotspot's tiling axis to the island's longer fitted axis.
 
-    Upwards orientation remains authoritative. Other orientations choose which
-    island axis maps to the hotspot's non-tiling dimension by closest physical
-    pixel size, without consulting aspect ratio.
+    Upwards orientation remains authoritative. Near-square islands have no
+    meaningful longer axis, so every quarter-turn remains eligible.
     """
     orientation = hotspot.get('orientation_type', 'Any')
     if orientation == 'Upwards':
         return compute_upward_rotation(island, uv_layer)
 
     tiling_type = hotspot.get('tiling', TILING_NONE)
-    if tiling_type == TILING_VERTICAL:
-        fixed_size = hotspot.get('width', 0)
-        normal_target = target_width_pixels
-        rotated_target = target_height_pixels
-    elif tiling_type == TILING_HORIZONTAL:
-        fixed_size = hotspot.get('height', 0)
-        normal_target = target_height_pixels
-        rotated_target = target_width_pixels
-    else:
+    if tiling_type not in (TILING_VERTICAL, TILING_HORIZONTAL):
         return 0
 
-    if fixed_size <= 0:
+    if target_width_pixels <= 0 or target_height_pixels <= 0:
         return 0
 
-    if normal_target > 0:
-        normal_score = abs(math.log(normal_target / fixed_size))
-    else:
-        normal_score = float('inf')
-    if rotated_target > 0:
-        rotated_score = abs(math.log(rotated_target / fixed_size))
-    else:
-        rotated_score = float('inf')
-
-    if math.isclose(normal_score, rotated_score, rel_tol=1e-9,
-                    abs_tol=1e-9):
+    target_aspect = target_width_pixels / target_height_pixels
+    if is_roughly_square(target_aspect):
         return random.choice([0, 90, 180, 270])
-    if rotated_score < normal_score:
+
+    width_is_longer = target_width_pixels > target_height_pixels
+    normal_maps_tiling_to_longer = (
+        width_is_longer if tiling_type == TILING_HORIZONTAL
+        else not width_is_longer
+    )
+    if not normal_maps_tiling_to_longer:
         return random.choice([90, 270])
     return random.choice([0, 180])
 
@@ -307,10 +295,11 @@ def find_best_hotspot(island_aspect, hotspots, image_width, image_height, face_t
                       island_world_area, pixels_per_meter, size_weight):
     """Find the best hotspot using weighted aspect and effective-size scores.
 
-    Tiling hotspots first choose their fixed axis from physical size alone.
-    Their continuous repeat count defines the effective sampled area. A repeat
-    count above one receives an exact aspect score; partial tiles keep their
-    one-tile aspect mismatch while still applying without stretching.
+    Tiling hotspots first map their tiling axis to the longer fitted island
+    axis, unless an explicit directional orientation applies. Their continuous
+    repeat count defines the effective sampled area. A repeat count above one
+    receives an exact aspect score; partial tiles keep their one-tile aspect
+    mismatch while still applying without stretching.
     """
     if not hotspots:
         return None, 0
