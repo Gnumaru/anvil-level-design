@@ -8,10 +8,13 @@ from .base_test import AnvilTestCase
 from .helpers import _get_context_override
 from ..core.materials import find_material_with_image, create_material_with_image
 from ..hotspot_mapping.json_storage import (
+    TILING_HORIZONTAL,
+    TILING_NONE,
     add_texture_as_hotspottable,
     add_line,
     load_hotspots,
     get_texture_hotspots,
+    toggle_cell_tiling,
 )
 
 HOTSPOT_TEXTURE_PATH = os.path.join(os.path.dirname(__file__), "dev_hotspot.png")
@@ -20,18 +23,19 @@ HOTSPOT_TEXTURE_PATH = os.path.join(os.path.dirname(__file__), "dev_hotspot.png"
 def _setup_hotspot_map():
     """Register dev_hotspot.png as hotspottable and add bisecting lines.
 
-    Layout on the 1024x1024 image:
-    - Horizontal lines at y=128, 384, 704 (from top), full width
-    - Vertical line at x=512 spanning y=384..1024 (splits the bottom
+    Layout on the 1024x1088 image:
+    - Horizontal lines at y=64, 192, 448, 768 (from top), full width
+    - Vertical line at x=512 spanning y=448..1088 (splits the bottom
       two strips into left/right halves)
     """
     image = bpy.data.images.load(HOTSPOT_TEXTURE_PATH, check_existing=True)
     w, h = image.size[0], image.size[1]
     add_texture_as_hotspottable(image.name, w, h)
-    add_line(image.name, "h", 128, 0, w)
-    add_line(image.name, "h", 384, 0, w)
-    add_line(image.name, "h", 704, 0, w)
-    add_line(image.name, "v", w // 2, 384, h)
+    add_line(image.name, "h", 64, 0, w)
+    add_line(image.name, "h", 192, 0, w)
+    add_line(image.name, "h", 448, 0, w)
+    add_line(image.name, "h", 768, 0, w)
+    add_line(image.name, "v", w // 2, 448, h)
 
 
 def _apply_hotspot_material(obj):
@@ -125,6 +129,53 @@ def _create_hotspot_cube(name):
     return obj
 
 
+def _create_mitered_l_corner(name):
+    """Create a 3x3 L beam with a 0.25-square cross-section and mitered join.
+
+    The top and bottom of each beam remain separate quads across the diagonal
+    join. Together with the six boundary faces, this gives the requested ten
+    exterior faces.
+    """
+    half_width = 0.125
+    far_edge = -3.0 + half_width
+
+    profile = (
+        (far_edge, -half_width),
+        (far_edge, half_width),
+        (half_width, half_width),
+        (half_width, far_edge),
+        (-half_width, far_edge),
+        (-half_width, -half_width),
+    )
+    vertices = [
+        (x, y, z)
+        for z in (-half_width, half_width)
+        for x, y in profile
+    ]
+    faces = (
+        (0, 1, 2, 5),
+        (5, 2, 3, 4),
+        (6, 11, 8, 7),
+        (11, 10, 9, 8),
+        (0, 6, 7, 1),
+        (1, 7, 8, 2),
+        (2, 8, 9, 3),
+        (3, 9, 10, 4),
+        (4, 10, 11, 5),
+        (5, 11, 6, 0),
+    )
+
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(vertices, (), faces)
+    mesh.update()
+
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    return obj
+
+
 class HotspotApplyTest(AnvilTestCase):
 
     @classmethod
@@ -136,12 +187,12 @@ class HotspotApplyTest(AnvilTestCase):
         """Apply hotspots to a cube and verify UVs are remapped into hotspot cells."""
         obj = _create_hotspot_cube("hotspot_cube")
 
-        # Verify hotspot map is set up correctly: 2 full-width strips on top
-        # plus 2 half-width cells in each of the bottom two strips = 6 cells
+        # Verify hotspot map is set up correctly: 3 full-width strips on top
+        # plus 2 half-width cells in each of the bottom two strips = 7 cells
         image = bpy.data.images.get("dev_hotspot.png")
         self.assertIsNotNone(image, "dev_hotspot.png should be loaded")
         hotspots = get_texture_hotspots(image.name)
-        self.assertEqual(len(hotspots), 6, "Should have 6 hotspot cells")
+        self.assertEqual(len(hotspots), 7, "Should have 7 hotspot cells")
 
         # Apply hotspots in object mode
         ctx = _get_context_override()
@@ -391,3 +442,51 @@ class HotspotApplyTest(AnvilTestCase):
             )
 
         bm.free()
+
+    def test_randomise_hotspot_tiling_around_90_degree_mitered_corner(self):
+        """Randomise a tiling hotspot over a ten-face 90-degree mitered L."""
+        obj = _create_mitered_l_corner(
+            "hotspot_tiling_90_degree_mitered_corner"
+        )
+
+        self.assertEqual(len(obj.data.polygons), 10)
+        self.assertTrue(all(
+            len(face.vertices) == 4 for face in obj.data.polygons
+        ))
+        self.assertAlmostEqual(obj.dimensions.x, 3.0)
+        self.assertAlmostEqual(obj.dimensions.y, 3.0)
+        self.assertAlmostEqual(obj.dimensions.z, 0.25)
+
+        _apply_hotspot_material(obj)
+
+        image = bpy.data.images.get("dev_hotspot.png")
+        self.assertIsNotNone(image, "dev_hotspot.png should be loaded")
+        top_cell_key = "0_0_1024_64"
+        top_hotspot = next(
+            hotspot for hotspot in get_texture_hotspots(image.name)
+            if (
+                hotspot['x'], hotspot['y'],
+                hotspot['width'], hotspot['height'],
+            ) == (0, 0, 1024, 64)
+        )
+        if top_hotspot['tiling'] != TILING_HORIZONTAL:
+            tiling_result = toggle_cell_tiling(
+                image.name, top_cell_key, TILING_HORIZONTAL
+            )
+            self.assertEqual(tiling_result, TILING_HORIZONTAL)
+
+        next_top_hotspot = next(
+            hotspot for hotspot in get_texture_hotspots(image.name)
+            if (
+                hotspot['x'], hotspot['y'],
+                hotspot['width'], hotspot['height'],
+            ) == (0, 64, 1024, 128)
+        )
+        self.assertEqual(next_top_hotspot['tiling'], TILING_NONE)
+
+        ctx = _get_context_override()
+        with bpy.context.temp_override(**ctx):
+            bpy.context.view_layer.objects.active = obj
+            obj.select_set(True)
+            result = bpy.ops.leveldesign.apply_hotspot()
+        self.assertEqual(result, {'FINISHED'})
