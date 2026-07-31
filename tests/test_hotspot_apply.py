@@ -1,5 +1,6 @@
 import math
 import os
+from unittest.mock import patch
 
 import bmesh
 import bpy
@@ -36,6 +37,18 @@ def _setup_hotspot_map():
     add_line(image.name, "h", 448, 0, w)
     add_line(image.name, "h", 768, 0, w)
     add_line(image.name, "v", w // 2, 448, h)
+    top_cell_key = f"0_0_{w}_64"
+    top_hotspot = next(
+        hotspot for hotspot in get_texture_hotspots(image.name)
+        if (
+            hotspot['x'], hotspot['y'],
+            hotspot['width'], hotspot['height'],
+        ) == (0, 0, w, 64)
+    )
+    if top_hotspot['tiling'] != TILING_HORIZONTAL:
+        toggle_cell_tiling(
+            image.name, top_cell_key, TILING_HORIZONTAL
+        )
 
 
 def _apply_hotspot_material(obj):
@@ -130,14 +143,14 @@ def _create_hotspot_cube(name):
 
 
 def _create_mitered_l_corner(name):
-    """Create a 3x3 L beam with a 0.25-square cross-section and mitered join.
+    """Create a 4x4 L beam with a 0.25-square cross-section and mitered join.
 
     The top and bottom of each beam remain separate quads across the diagonal
     join. Together with the six boundary faces, this gives the requested ten
     exterior faces.
     """
     half_width = 0.125
-    far_edge = -3.0 + half_width
+    far_edge = -4.0 + half_width
 
     profile = (
         (far_edge, -half_width),
@@ -176,12 +189,67 @@ def _create_mitered_l_corner(name):
     return obj
 
 
+def _create_bent_tiling_grid(name):
+    """Create a two-row quad grid that bends 90 degrees along its tile axis."""
+    path = (
+        (-3.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 3.0),
+    )
+    heights = (0.0, 0.125, 0.25)
+    vertices = [
+        (x, y, z)
+        for x, y in path
+        for z in heights
+    ]
+    faces = []
+    for segment in range(2):
+        for row in range(2):
+            first = segment * 3 + row
+            second = (segment + 1) * 3 + row
+            faces.append((first, second, second + 1, first + 1))
+
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(vertices, (), faces)
+    mesh.update()
+
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    return obj
+
+
 class HotspotApplyTest(AnvilTestCase):
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         _setup_hotspot_map()
+
+    def _assert_uv_continuity(self, obj, edge_matches, expected_edge_count):
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        uv_layer = bm.loops.layers.uv.verify()
+        matching_edges = [
+            edge for edge in bm.edges
+            if len(edge.link_faces) == 2 and edge_matches(edge)
+        ]
+        self.assertEqual(len(matching_edges), expected_edge_count)
+
+        for edge in matching_edges:
+            for vert in edge.verts:
+                uvs = []
+                for face in edge.link_faces:
+                    loop = next(
+                        loop for loop in face.loops
+                        if loop.vert == vert
+                    )
+                    uvs.append(loop[uv_layer].uv.copy())
+                self.assertAlmostEqual(uvs[0].x, uvs[1].x)
+                self.assertAlmostEqual(uvs[0].y, uvs[1].y)
+
+        bm.free()
 
     def test_apply_hotspot_to_cube_remaps_uvs(self):
         """Apply hotspots to a cube and verify UVs are remapped into hotspot cells."""
@@ -453,15 +521,14 @@ class HotspotApplyTest(AnvilTestCase):
         self.assertTrue(all(
             len(face.vertices) == 4 for face in obj.data.polygons
         ))
-        self.assertAlmostEqual(obj.dimensions.x, 3.0)
-        self.assertAlmostEqual(obj.dimensions.y, 3.0)
+        self.assertAlmostEqual(obj.dimensions.x, 4.0)
+        self.assertAlmostEqual(obj.dimensions.y, 4.0)
         self.assertAlmostEqual(obj.dimensions.z, 0.25)
 
         _apply_hotspot_material(obj)
 
         image = bpy.data.images.get("dev_hotspot.png")
         self.assertIsNotNone(image, "dev_hotspot.png should be loaded")
-        top_cell_key = "0_0_1024_64"
         top_hotspot = next(
             hotspot for hotspot in get_texture_hotspots(image.name)
             if (
@@ -469,11 +536,7 @@ class HotspotApplyTest(AnvilTestCase):
                 hotspot['width'], hotspot['height'],
             ) == (0, 0, 1024, 64)
         )
-        if top_hotspot['tiling'] != TILING_HORIZONTAL:
-            tiling_result = toggle_cell_tiling(
-                image.name, top_cell_key, TILING_HORIZONTAL
-            )
-            self.assertEqual(tiling_result, TILING_HORIZONTAL)
+        self.assertEqual(top_hotspot['tiling'], TILING_HORIZONTAL)
 
         next_top_hotspot = next(
             hotspot for hotspot in get_texture_hotspots(image.name)
@@ -485,8 +548,62 @@ class HotspotApplyTest(AnvilTestCase):
         self.assertEqual(next_top_hotspot['tiling'], TILING_NONE)
 
         ctx = _get_context_override()
-        with bpy.context.temp_override(**ctx):
-            bpy.context.view_layer.objects.active = obj
-            obj.select_set(True)
-            result = bpy.ops.leveldesign.apply_hotspot()
+        with patch(
+            "anvil_level_design.operators.hotspot_apply.random.choice",
+            side_effect=lambda values: values[-1],
+        ):
+            with bpy.context.temp_override(**ctx):
+                bpy.context.view_layer.objects.active = obj
+                obj.select_set(True)
+                result = bpy.ops.leveldesign.apply_hotspot()
         self.assertEqual(result, {'FINISHED'})
+        self._assert_uv_continuity(
+            obj,
+            lambda edge: all(
+                abs(vert.co.x - 0.125) < 0.0001
+                and abs(vert.co.y - 0.125) < 0.0001
+                for vert in edge.verts
+            ),
+            1,
+        )
+
+    def test_tiling_hotspot_bent_grid_all_grouping_settings_preserves_seamless_uvs(self):
+        """Keep both rows continuous through a 90-degree tiling-axis bend."""
+        settings = (
+            (False, 0.0),
+            (False, math.pi),
+            (True, 0.0),
+            (True, math.pi),
+        )
+        ctx = _get_context_override()
+
+        for index, (combine_faces, seam_angle) in enumerate(settings):
+            with self.subTest(
+                    combine_faces=combine_faces, seam_angle=seam_angle):
+                for selected in bpy.context.selected_objects:
+                    selected.select_set(False)
+                obj = _create_bent_tiling_grid(
+                    f"bent_tiling_grid_{index}"
+                )
+                obj.anvil_allow_combined_faces = combine_faces
+                obj.anvil_hotspot_seam_angle = seam_angle
+                _apply_hotspot_material(obj)
+
+                with patch(
+                    "anvil_level_design.operators.hotspot_apply.random.choice",
+                    side_effect=lambda values: values[-1],
+                ):
+                    with bpy.context.temp_override(**ctx):
+                        bpy.context.view_layer.objects.active = obj
+                        obj.select_set(True)
+                        result = bpy.ops.leveldesign.apply_hotspot()
+                self.assertEqual(result, {'FINISHED'})
+                self._assert_uv_continuity(
+                    obj,
+                    lambda edge: all(
+                        abs(vert.co.x) < 0.0001
+                        and abs(vert.co.y) < 0.0001
+                        for vert in edge.verts
+                    ),
+                    2,
+                )

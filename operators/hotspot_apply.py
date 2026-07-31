@@ -556,6 +556,191 @@ def apply_hotspot_uvs(island, uv_layer, hotspot, image_width, image_height, rota
                 uv.y = hs_v_min + norm_v * hs_height
 
 
+def _get_face_edge_uvs(face, edge, uv_layer):
+    """Return UVs for an edge's vertices in the edge's stable vertex order."""
+    uv_by_vert = {
+        loop.vert: loop[uv_layer].uv.copy()
+        for loop in face.loops
+        if loop.vert in edge.verts
+    }
+    if len(uv_by_vert) != 2:
+        return None
+    return [uv_by_vert[vert] for vert in edge.verts]
+
+
+def _is_tiling_axis_connection(face, edge, uv_layer, tiling_type):
+    """Return whether crossing this edge continues along the tiling axis."""
+    edge_uvs = _get_face_edge_uvs(face, edge, uv_layer)
+    if edge_uvs is None:
+        return False
+    tiling_axis = 0 if tiling_type == TILING_HORIZONTAL else 1
+    return math.isclose(
+        edge_uvs[0][tiling_axis], edge_uvs[1][tiling_axis],
+        rel_tol=1e-9, abs_tol=1e-9
+    )
+
+
+def _transform_tiling_record_axis(record, uv_layer, axis, scale, offset):
+    """Apply a one-dimensional affine UV transform to a tiling record."""
+    for face in record['faces']:
+        for loop in face.loops:
+            uv = loop[uv_layer].uv
+            uv[axis] = uv[axis] * scale + offset
+
+
+def _tiling_record_axis_center(record, uv_layer, axis):
+    values = [
+        loop[uv_layer].uv[axis]
+        for face in record['faces']
+        for loop in face.loops
+    ]
+    return sum(values) / len(values)
+
+
+def _align_tiling_records(current_record, current_face, neighbor_record,
+                          neighbor_face, edge, uv_layer):
+    """Align one tiling island to an already-positioned adjacent island."""
+    tiling_type = current_record['tiling_type']
+    tiling_axis = 0 if tiling_type == TILING_HORIZONTAL else 1
+    fixed_axis = 1 - tiling_axis
+
+    current_uvs = _get_face_edge_uvs(current_face, edge, uv_layer)
+    neighbor_uvs = _get_face_edge_uvs(neighbor_face, edge, uv_layer)
+    if current_uvs is None or neighbor_uvs is None:
+        return
+
+    hotspot = neighbor_record['hotspot']
+    if fixed_axis == 0:
+        fixed_min = hotspot['x'] / neighbor_record['image_width']
+        fixed_max = (
+            hotspot['x'] + hotspot['width']
+        ) / neighbor_record['image_width']
+    else:
+        fixed_min = 1.0 - (
+            hotspot['y'] + hotspot['height']
+        ) / neighbor_record['image_height']
+        fixed_max = 1.0 - hotspot['y'] / neighbor_record['image_height']
+
+    direct_error = sum(
+        abs(neighbor_uvs[i][fixed_axis] - current_uvs[i][fixed_axis])
+        for i in range(2)
+    )
+    reflected_error = sum(
+        abs(
+            fixed_min + fixed_max - neighbor_uvs[i][fixed_axis]
+            - current_uvs[i][fixed_axis]
+        )
+        for i in range(2)
+    )
+    if reflected_error < direct_error:
+        _transform_tiling_record_axis(
+            neighbor_record, uv_layer, fixed_axis,
+            -1.0, fixed_min + fixed_max
+        )
+        neighbor_uvs = _get_face_edge_uvs(
+            neighbor_face, edge, uv_layer
+        )
+
+    current_edge_value = sum(
+        uv[tiling_axis] for uv in current_uvs
+    ) / 2.0
+    neighbor_edge_value = sum(
+        uv[tiling_axis] for uv in neighbor_uvs
+    ) / 2.0
+    current_interior = (
+        _tiling_record_axis_center(
+            current_record, uv_layer, tiling_axis
+        ) - current_edge_value
+    )
+    neighbor_interior = (
+        _tiling_record_axis_center(
+            neighbor_record, uv_layer, tiling_axis
+        ) - neighbor_edge_value
+    )
+
+    if current_interior * neighbor_interior > 0.0:
+        _transform_tiling_record_axis(
+            neighbor_record, uv_layer, tiling_axis,
+            -1.0, 2.0 * neighbor_edge_value
+        )
+
+    _transform_tiling_record_axis(
+        neighbor_record, uv_layer, tiling_axis,
+        1.0, current_edge_value - neighbor_edge_value
+    )
+
+
+def _stitch_connected_tiling_islands(bm, records, uv_layer):
+    """Remove UV seams where matching tiling islands meet on their tile axis."""
+    if len(records) < 2:
+        return
+
+    face_records = {}
+    for record_index, record in enumerate(records):
+        for face in record['faces']:
+            face_records[face] = record_index
+
+    adjacency = {index: [] for index in range(len(records))}
+    for edge in bm.edges:
+        linked = [
+            (face_records[face], face)
+            for face in edge.link_faces
+            if face in face_records
+        ]
+        if len(linked) != 2:
+            continue
+
+        (first_index, first_face), (second_index, second_face) = linked
+        if first_index == second_index:
+            continue
+
+        first_record = records[first_index]
+        second_record = records[second_index]
+        if first_record['key'] != second_record['key']:
+            continue
+
+        tiling_type = first_record['tiling_type']
+        if not _is_tiling_axis_connection(
+                first_face, edge, uv_layer, tiling_type):
+            continue
+        if not _is_tiling_axis_connection(
+                second_face, edge, uv_layer, tiling_type):
+            continue
+
+        adjacency[first_index].append(
+            (second_index, first_face, second_face, edge)
+        )
+        adjacency[second_index].append(
+            (first_index, second_face, first_face, edge)
+        )
+
+    visited = set()
+    for start_index in range(len(records)):
+        if start_index in visited:
+            continue
+        visited.add(start_index)
+        queue = [start_index]
+        while queue:
+            current_index = queue.pop(0)
+            connections = sorted(
+                adjacency[current_index],
+                key=lambda connection: (
+                    connection[0], connection[3].index
+                )
+            )
+            for (neighbor_index, current_face,
+                 neighbor_face, edge) in connections:
+                if neighbor_index in visited:
+                    continue
+                _align_tiling_records(
+                    records[current_index], current_face,
+                    records[neighbor_index], neighbor_face,
+                    edge, uv_layer
+                )
+                visited.add(neighbor_index)
+                queue.append(neighbor_index)
+
+
 def set_island_uvs_to_origin(island, uv_layer):
     """Set all UV coordinates in an island to (0, 0).
 
@@ -1159,6 +1344,26 @@ def apply_hotspots_to_mesh(bm, me, faces, allow_combined_faces, world_matrix, pi
 
     # Pre-load hotspot data once (avoids JSON parsing per-island)
     hotspot_data = load_hotspots()
+    tiling_records = []
+
+    def record_tiling_application(island, hotspot, texture_name,
+                                  image_width, image_height):
+        tiling_type = hotspot.get('tiling', TILING_NONE)
+        if tiling_type not in (TILING_VERTICAL, TILING_HORIZONTAL):
+            return
+        tiling_records.append({
+            'faces': tuple(island),
+            'hotspot': hotspot,
+            'tiling_type': tiling_type,
+            'image_width': image_width,
+            'image_height': image_height,
+            'key': (
+                texture_name,
+                hotspot['x'], hotspot['y'],
+                hotspot['width'], hotspot['height'],
+                tiling_type,
+            ),
+        })
 
     # Helper to apply hotspot to an island
     def apply_hotspot_to_island(island, aspect_ratio):
@@ -1217,6 +1422,10 @@ def apply_hotspots_to_mesh(bm, me, faces, allow_combined_faces, world_matrix, pi
                 island, uv_layer, override_hotspot,
                 image_width, image_height, rotation_degrees
             )
+            record_tiling_application(
+                island, override_hotspot, texture_name,
+                image_width, image_height
+            )
             applied_count += 1
             return True
 
@@ -1239,6 +1448,10 @@ def apply_hotspots_to_mesh(bm, me, faces, allow_combined_faces, world_matrix, pi
 
         # Apply the hotspot UVs
         apply_hotspot_uvs(island, uv_layer, best_hotspot, image_width, image_height, rotation_degrees)
+        record_tiling_application(
+            island, best_hotspot, texture_name,
+            image_width, image_height
+        )
         applied_count += 1
 
         debug_log(f"[Hotspot] Applied hotspot {best_hotspot.get('id')} (rotation={rotation_degrees})")
@@ -1285,6 +1498,16 @@ def apply_hotspots_to_mesh(bm, me, faces, allow_combined_faces, world_matrix, pi
 
     debug_log(f"[Hotspot Perf] Phase 6 - Hotspot matching & UV apply (ngons): {time.perf_counter() - t0:.4f}s ({applied_count - ngon_applied_before} applied)")
     debug_log(f"[Hotspot] Applied hotspots to {applied_count} islands, {no_match_count} had no valid match")
+
+    # Tiling continuity is independent of ordinary face grouping. Adjacent
+    # tiling islands are aligned after application so angle seams and the
+    # Combine Faces toggle cannot introduce a phase break along the tile axis.
+    t0 = time.perf_counter()
+    _stitch_connected_tiling_islands(bm, tiling_records, uv_layer)
+    debug_log(
+        f"[Hotspot Perf] Tiling island stitching: "
+        f"{time.perf_counter() - t0:.4f}s ({len(tiling_records)} islands)"
+    )
 
     # Restore original user seams (clear scaffolding seams added during hotspotting)
     t0 = time.perf_counter()
