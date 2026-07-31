@@ -22,6 +22,7 @@ class AnvilTextureBrowserFavoriteFolder(bpy.types.PropertyGroup):
         name="Folder",
         description="Absolute folder path",
         subtype='DIR_PATH',
+        update=texture_browser_user_data_update,
     )
 
 
@@ -29,6 +30,8 @@ def texture_browser_suffix_update(self, context):
     suffix = self.suffix.strip().lower()
     if suffix != self.suffix:
         self.suffix = suffix
+        return
+    texture_browser_user_data_update(self, context)
 
 
 class AnvilTextureBrowserSuffixFilter(bpy.types.PropertyGroup):
@@ -48,6 +51,7 @@ class AnvilTextureBrowserCollectionItem(bpy.types.PropertyGroup):
         name="File",
         description="Absolute file path",
         subtype='FILE_PATH',
+        update=texture_browser_user_data_update,
     )
 
 
@@ -63,6 +67,7 @@ class AnvilTextureBrowserCollection(bpy.types.PropertyGroup):
     active_file_index: IntProperty(
         name="Active File Index",
         default=0,
+        update=texture_browser_user_data_update,
     )
 
 

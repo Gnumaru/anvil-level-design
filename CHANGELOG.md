@@ -2,6 +2,7 @@
 
 # 1.8.6
 - Add tiling hotspot textures
+- Automatically migrate Texture Browser settings from older Blender versions
 
 # 1.8.5
 - Swap path / search elements in the Texture Browser

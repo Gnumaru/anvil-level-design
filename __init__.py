@@ -320,12 +320,14 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
         min=0.0,
         max=100.0,
         subtype='PERCENTAGE',
+        update=texture_browser_properties.texture_browser_user_data_update,
     )
 
     texture_browser_filters_initialized: bpy.props.BoolProperty(
         name="Texture Browser Filters Initialized",
         default=False,
         options={'HIDDEN'},
+        update=texture_browser_properties.texture_browser_user_data_update,
     )
 
     texture_browser_last_folder_path: bpy.props.StringProperty(
@@ -333,6 +335,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
         description="Last folder browsed in the texture browser",
         subtype='DIR_PATH',
         options={'HIDDEN'},
+        update=texture_browser_properties.texture_browser_user_data_update,
     )
 
     texture_browser_favorites: bpy.props.CollectionProperty(
@@ -342,6 +345,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
     texture_browser_active_favorite_index: bpy.props.IntProperty(
         name="Active Favorite Folder",
         default=0,
+        update=texture_browser_properties.texture_browser_user_data_update,
     )
 
     texture_browser_collections: bpy.props.CollectionProperty(
@@ -351,6 +355,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
     texture_browser_active_collection_index: bpy.props.IntProperty(
         name="Active Texture Collection",
         default=0,
+        update=texture_browser_properties.texture_browser_user_data_update,
     )
 
     texture_browser_include_suffixes: bpy.props.CollectionProperty(
@@ -360,6 +365,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
     texture_browser_active_include_index: bpy.props.IntProperty(
         name="Active Include Suffix",
         default=0,
+        update=texture_browser_properties.texture_browser_user_data_update,
     )
 
     texture_browser_exclude_suffixes: bpy.props.CollectionProperty(
@@ -369,6 +375,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
     texture_browser_active_exclude_index: bpy.props.IntProperty(
         name="Active Exclude Suffix",
         default=0,
+        update=texture_browser_properties.texture_browser_user_data_update,
     )
 
     def draw(self, context):
