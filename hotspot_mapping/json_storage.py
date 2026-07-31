@@ -27,6 +27,12 @@ HOTSPOTS_VERSION = "1.0"
 # Orientation types for hotspots
 ORIENTATION_TYPES = ('Any', 'Upwards', 'Floor', 'Ceiling')
 
+# Tiling types for hotspots. Tiling is stored independently from orientation.
+TILING_NONE = 'None'
+TILING_VERTICAL = 'Vertical'
+TILING_HORIZONTAL = 'Horizontal'
+TILING_TYPES = (TILING_NONE, TILING_VERTICAL, TILING_HORIZONTAL)
+
 
 # ---------------------------------------------------------------------------
 # File path helpers
@@ -319,6 +325,7 @@ def add_texture_as_hotspottable(texture_name, width, height):
         "cell_orientations": {
             _cell_key(0, 0, width, height): "Any",
         },
+        "cell_tiling": {},
     }
 
     return save_hotspots(data)
@@ -355,6 +362,25 @@ def _parse_cell_key(key):
     """Parse a cell key back into (x, y, w, h)."""
     parts = key.split("_")
     return int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+
+
+def _is_tiling_eligible(x, y, w, h, img_width, img_height, tiling_type):
+    """Return whether a cell spans the complete axis needed for tiling."""
+    if tiling_type == TILING_VERTICAL:
+        return y == 0 and h == img_height
+    if tiling_type == TILING_HORIZONTAL:
+        return x == 0 and w == img_width
+    return tiling_type == TILING_NONE
+
+
+def _validated_tiling(x, y, w, h, img_width, img_height, tiling_type):
+    """Return a valid tiling type for the cell, falling back to off."""
+    if tiling_type not in TILING_TYPES:
+        return TILING_NONE
+    if not _is_tiling_eligible(
+            x, y, w, h, img_width, img_height, tiling_type):
+        return TILING_NONE
+    return tiling_type
 
 
 # ---------------------------------------------------------------------------
@@ -526,13 +552,19 @@ def get_texture_hotspots(texture_name, data=None):
             return []
         cells = derive_cells(lines, img_w, img_h)
         orientations = tex_data.get("cell_orientations", {})
+        cell_tiling = tex_data.get("cell_tiling", {})
         result = []
         for x, y, w, h in cells:
             key = _cell_key(x, y, w, h)
             orientation = orientations.get(key, "Any")
+            tiling_type = _validated_tiling(
+                x, y, w, h, img_w, img_h,
+                cell_tiling.get(key, TILING_NONE)
+            )
             result.append({
                 "x": x, "y": y, "width": w, "height": h,
                 "orientation_type": orientation,
+                "tiling": tiling_type,
             })
         return result
 
@@ -591,6 +623,50 @@ def get_cells_with_orientations(texture_name, data=None):
         key = _cell_key(x, y, w, h)
         orientation = orientations.get(key, "Any")
         result.append((x, y, w, h, orientation, key))
+    return result
+
+
+def get_cells_with_settings(texture_name):
+    """Get derived cells with orientation, tiling, eligibility, and keys.
+
+    Returns:
+        List of tuples containing x, y, width, height, orientation type,
+        tiling type, can_tile_vertical, can_tile_horizontal, and cell key.
+    """
+    data = load_hotspots()
+    tex_data = data.get("textures", {}).get(texture_name, {})
+
+    lines = tex_data.get("lines")
+    if lines is None:
+        return []
+
+    img_w = tex_data.get("image_width", 0)
+    img_h = tex_data.get("image_height", 0)
+    if img_w <= 0 or img_h <= 0:
+        return []
+
+    cells = derive_cells(lines, img_w, img_h)
+    orientations = tex_data.get("cell_orientations", {})
+    cell_tiling = tex_data.get("cell_tiling", {})
+
+    result = []
+    for x, y, w, h in cells:
+        key = _cell_key(x, y, w, h)
+        orientation = orientations.get(key, "Any")
+        tiling_type = _validated_tiling(
+            x, y, w, h, img_w, img_h,
+            cell_tiling.get(key, TILING_NONE)
+        )
+        can_tile_vertical = _is_tiling_eligible(
+            x, y, w, h, img_w, img_h, TILING_VERTICAL
+        )
+        can_tile_horizontal = _is_tiling_eligible(
+            x, y, w, h, img_w, img_h, TILING_HORIZONTAL
+        )
+        result.append((
+            x, y, w, h, orientation, tiling_type,
+            can_tile_vertical, can_tile_horizontal, key,
+        ))
     return result
 
 
@@ -731,6 +807,28 @@ def _rebuild_orientations(old_cells, old_orientations, new_cells):
     return new_orientations
 
 
+def _rebuild_tiling(old_cells, old_tiling, new_cells, img_width,
+                    img_height):
+    """Rebuild valid cell tiling settings after a line change."""
+    new_tiling = {}
+    for nx, ny, nw, nh in new_cells:
+        cx = nx + nw / 2
+        cy = ny + nh / 2
+        inherited = TILING_NONE
+        for ox, oy, ow, oh in old_cells:
+            if ox <= cx < ox + ow and oy <= cy < oy + oh:
+                old_key = _cell_key(ox, oy, ow, oh)
+                inherited = old_tiling.get(old_key, TILING_NONE)
+                break
+
+        inherited = _validated_tiling(
+            nx, ny, nw, nh, img_width, img_height, inherited
+        )
+        if inherited != TILING_NONE:
+            new_tiling[_cell_key(nx, ny, nw, nh)] = inherited
+    return new_tiling
+
+
 def cycle_cell_orientation(texture_name, cell_key):
     """Cycle to the next orientation type for a cell.
 
@@ -757,6 +855,55 @@ def cycle_cell_orientation(texture_name, cell_key):
     tex_data["cell_orientations"] = orientations
     save_hotspots(data)
     return next_type
+
+
+def toggle_cell_tiling(texture_name, cell_key, tiling_type):
+    """Toggle one tiling direction for a cell.
+
+    Enabling a direction replaces the other direction, so a cell can never
+    tile horizontally and vertically at the same time.
+
+    Returns:
+        The resulting tiling type, or None when the request is invalid.
+    """
+    if tiling_type not in (TILING_VERTICAL, TILING_HORIZONTAL):
+        return None
+
+    data = load_hotspots()
+    tex_data = data.get("textures", {}).get(texture_name)
+    if tex_data is None:
+        return None
+
+    try:
+        x, y, w, h = _parse_cell_key(cell_key)
+    except (ValueError, IndexError):
+        return None
+
+    img_w = tex_data.get("image_width", 0)
+    img_h = tex_data.get("image_height", 0)
+    cells = derive_cells(tex_data.get("lines", []), img_w, img_h)
+    if (x, y, w, h) not in cells:
+        return None
+    if not _is_tiling_eligible(
+            x, y, w, h, img_w, img_h, tiling_type):
+        return None
+
+    cell_tiling = tex_data.get("cell_tiling", {})
+    current = _validated_tiling(
+        x, y, w, h, img_w, img_h,
+        cell_tiling.get(cell_key, TILING_NONE)
+    )
+    if current == tiling_type:
+        cell_tiling.pop(cell_key, None)
+        result = TILING_NONE
+    else:
+        cell_tiling[cell_key] = tiling_type
+        result = tiling_type
+
+    tex_data["cell_tiling"] = cell_tiling
+    if not save_hotspots(data):
+        return None
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -788,6 +935,7 @@ def add_line(texture_name, axis, pos, start, end):
     img_w = tex_data.get("image_width", 0)
     img_h = tex_data.get("image_height", 0)
     old_orientations = tex_data.get("cell_orientations", {})
+    old_tiling = tex_data.get("cell_tiling", {})
 
     old_cells = derive_cells(lines, img_w, img_h)
 
@@ -797,6 +945,9 @@ def add_line(texture_name, axis, pos, start, end):
     new_cells = derive_cells(lines, img_w, img_h)
     tex_data["cell_orientations"] = _rebuild_orientations(
         old_cells, old_orientations, new_cells
+    )
+    tex_data["cell_tiling"] = _rebuild_tiling(
+        old_cells, old_tiling, new_cells, img_w, img_h
     )
 
     return save_hotspots(data)
@@ -826,6 +977,7 @@ def remove_line(texture_name, line_index):
     img_w = tex_data.get("image_width", 0)
     img_h = tex_data.get("image_height", 0)
     old_orientations = tex_data.get("cell_orientations", {})
+    old_tiling = tex_data.get("cell_tiling", {})
 
     old_cells = derive_cells(lines, img_w, img_h)
 
@@ -835,6 +987,9 @@ def remove_line(texture_name, line_index):
     new_cells = derive_cells(lines, img_w, img_h)
     tex_data["cell_orientations"] = _rebuild_orientations(
         old_cells, old_orientations, new_cells
+    )
+    tex_data["cell_tiling"] = _rebuild_tiling(
+        old_cells, old_tiling, new_cells, img_w, img_h
     )
 
     return save_hotspots(data)
@@ -865,6 +1020,7 @@ def move_line(texture_name, line_index, new_pos):
     img_w = tex_data.get("image_width", 0)
     img_h = tex_data.get("image_height", 0)
     old_orientations = tex_data.get("cell_orientations", {})
+    old_tiling = tex_data.get("cell_tiling", {})
 
     old_cells = derive_cells(lines, img_w, img_h)
 
@@ -891,6 +1047,9 @@ def move_line(texture_name, line_index, new_pos):
     new_cells = derive_cells(lines, img_w, img_h)
     tex_data["cell_orientations"] = _rebuild_orientations(
         old_cells, old_orientations, new_cells
+    )
+    tex_data["cell_tiling"] = _rebuild_tiling(
+        old_cells, old_tiling, new_cells, img_w, img_h
     )
 
     return save_hotspots(data)

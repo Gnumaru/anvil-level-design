@@ -24,6 +24,9 @@ from ..hotspot_mapping.json_storage import (
     get_texture_hotspots,
     get_texture_dimensions,
     load_hotspots,
+    TILING_NONE,
+    TILING_VERTICAL,
+    TILING_HORIZONTAL,
 )
 
 
@@ -60,6 +63,94 @@ def classify_face_type(face):
 def is_roughly_square(aspect_ratio):
     """Check if an aspect ratio is roughly square (within tolerance)."""
     return (1.0 - SQUARE_ASPECT_TOLERANCE) <= aspect_ratio <= (1.0 + SQUARE_ASPECT_TOLERANCE)
+
+
+def _target_pixel_dimensions(island_aspect, target_pixel_area):
+    """Recover target pixel width and height from aspect and area."""
+    if island_aspect <= 0 or target_pixel_area <= 0:
+        return 0.0, 0.0
+    width = math.sqrt(target_pixel_area * island_aspect)
+    height = math.sqrt(target_pixel_area / island_aspect)
+    return width, height
+
+
+def _rotation_flips_aspect(rotation_degrees):
+    """Return whether a quarter-turn swaps the island axes."""
+    return rotation_degrees in (90, 270)
+
+
+def calculate_tiling_repeat_count(island_aspect, hotspot, image_width,
+                                  image_height, rotation_degrees):
+    """Calculate the continuous texture repeat count for a tiling hotspot.
+
+    The hotspot is scaled to fill its non-tiling axis. The repeat count is the
+    amount of the full texture axis needed to cover the other island axis at
+    that same scale. Counts below one deliberately use only part of a tile.
+    """
+    if island_aspect <= 0 or image_width <= 0 or image_height <= 0:
+        return 0.0
+
+    if _rotation_flips_aspect(rotation_degrees):
+        final_aspect = 1.0 / island_aspect
+    else:
+        final_aspect = island_aspect
+
+    if final_aspect <= 0:
+        return 0.0
+
+    tiling_type = hotspot.get('tiling', TILING_NONE)
+    if tiling_type == TILING_VERTICAL:
+        hotspot_width = hotspot.get('width', 0)
+        return hotspot_width / (image_height * final_aspect)
+    if tiling_type == TILING_HORIZONTAL:
+        hotspot_height = hotspot.get('height', 0)
+        return final_aspect * hotspot_height / image_width
+    return 1.0
+
+
+def compute_tiling_hotspot_rotation(island, uv_layer, hotspot,
+                                    target_width_pixels,
+                                    target_height_pixels):
+    """Choose a tiling hotspot rotation from fixed-axis size alone.
+
+    Upwards orientation remains authoritative. Other orientations choose which
+    island axis maps to the hotspot's non-tiling dimension by closest physical
+    pixel size, without consulting aspect ratio.
+    """
+    orientation = hotspot.get('orientation_type', 'Any')
+    if orientation == 'Upwards':
+        return compute_upward_rotation(island, uv_layer)
+
+    tiling_type = hotspot.get('tiling', TILING_NONE)
+    if tiling_type == TILING_VERTICAL:
+        fixed_size = hotspot.get('width', 0)
+        normal_target = target_width_pixels
+        rotated_target = target_height_pixels
+    elif tiling_type == TILING_HORIZONTAL:
+        fixed_size = hotspot.get('height', 0)
+        normal_target = target_height_pixels
+        rotated_target = target_width_pixels
+    else:
+        return 0
+
+    if fixed_size <= 0:
+        return 0
+
+    if normal_target > 0:
+        normal_score = abs(math.log(normal_target / fixed_size))
+    else:
+        normal_score = float('inf')
+    if rotated_target > 0:
+        rotated_score = abs(math.log(rotated_target / fixed_size))
+    else:
+        rotated_score = float('inf')
+
+    if math.isclose(normal_score, rotated_score, rel_tol=1e-9,
+                    abs_tol=1e-9):
+        return random.choice([0, 90, 180, 270])
+    if rotated_score < normal_score:
+        return random.choice([90, 270])
+    return random.choice([0, 180])
 
 
 def compute_hotspot_rotation(island, uv_layer, island_aspect, hotspot):
@@ -214,40 +305,19 @@ def compute_upward_rotation(island, uv_layer):
 
 def find_best_hotspot(island_aspect, hotspots, image_width, image_height, face_type, island, uv_layer,
                       island_world_area, pixels_per_meter, size_weight):
-    """Find the best matching hotspot using weighted aspect ratio and size scoring.
+    """Find the best hotspot using weighted aspect and effective-size scores.
 
-    Filters hotspots by orientation type based on face type (floor/ceiling/wall).
-    For Any/Floor/Ceiling, allows aspect flip and random rotation.
-    For Upwards (walls only), no aspect flip and texture top must point up.
-
-    Uses a weighted combination of aspect ratio match and size match:
-    - aspect_score: log-ratio difference between island and hotspot aspect ratios
-    - size_score: log-ratio difference between target pixel area and hotspot area
-    - combined_score = (1 - size_weight) * aspect_score + size_weight * size_score
-
-    Args:
-        island_aspect: Aspect ratio (width/height) of the island's UVs
-        hotspots: List of hotspot dicts from json_storage
-        image_width: Texture width in pixels
-        image_height: Texture height in pixels
-        face_type: 'floor', 'ceiling', or 'wall'
-        island: List of faces in the island (for upward rotation calculation)
-        uv_layer: UV layer (for upward rotation calculation)
-        island_world_area: World-space area of the island in Blender units squared
-        pixels_per_meter: Target pixels per meter (used to calculate ideal hotspot size)
-        size_weight: Balance between aspect ratio (0) and size (1) matching
-
-    Returns:
-        Tuple of (hotspot_dict, rotation_degrees) or (None, 0) if no valid hotspots
+    Tiling hotspots first choose their fixed axis from physical size alone.
+    Their continuous repeat count defines the effective sampled area. A repeat
+    count above one receives an exact aspect score; partial tiles keep their
+    one-tile aspect mismatch while still applying without stretching.
     """
     if not hotspots:
         return None, 0
 
-    # Filter hotspots by orientation and face type
     valid_hotspots = []
     for hotspot in hotspots:
         orientation = hotspot.get('orientation_type', 'Any')
-
         if orientation == 'Any':
             valid_hotspots.append(hotspot)
         elif orientation == 'Floor' and face_type == 'floor':
@@ -258,84 +328,139 @@ def find_best_hotspot(island_aspect, hotspots, image_width, image_height, face_t
             valid_hotspots.append(hotspot)
 
     if not valid_hotspots:
-        debug_log(f"[find_best_hotspot] No valid hotspots for face_type={face_type}")
+        debug_log(
+            f"[find_best_hotspot] No valid hotspots for face_type={face_type}"
+        )
         return None, 0
 
-    # Calculate target pixel area based on world area and pixels per meter
-    # target_area = world_area * (pixels_per_meter)^2
     target_pixel_area = island_world_area * (pixels_per_meter ** 2)
+    target_width_pixels, target_height_pixels = _target_pixel_dimensions(
+        island_aspect, target_pixel_area
+    )
+    rotated_island_aspect = (
+        1.0 / island_aspect if island_aspect > 0.0001 else 1.0
+    )
 
-    # Pre-compute the upward rotation for 'Upwards' hotspots
-    # This determines whether the aspect ratio will be flipped (90°/270°) or not (0°/180°)
     upward_rotation = compute_upward_rotation(island, uv_layer)
-    upward_flips_aspect = upward_rotation in (90, 270)
+    upward_flips_aspect = _rotation_flips_aspect(upward_rotation)
 
-    # Score all candidates: list of (score, hotspot, needs_90_rotation)
+    # Candidate: (combined score, hotspot, applied rotation, repeat count)
     candidates = []
-
-    # Pre-compute rotated aspect ratio
-    rotated_island_aspect = 1.0 / island_aspect if island_aspect > 0.0001 else 1.0
 
     for hotspot in valid_hotspots:
         hs_width = hotspot.get('width', 1)
         hs_height = hotspot.get('height', 1)
-
         if hs_width <= 0 or hs_height <= 0:
             continue
 
         hs_aspect = hs_width / hs_height
         hs_area = hs_width * hs_height
         orientation = hotspot.get('orientation_type', 'Any')
+        tiling_type = hotspot.get('tiling', TILING_NONE)
 
-        # Calculate size score (same for both orientations)
+        if tiling_type in (TILING_VERTICAL, TILING_HORIZONTAL):
+            rotation = compute_tiling_hotspot_rotation(
+                island, uv_layer, hotspot,
+                target_width_pixels, target_height_pixels
+            )
+            repeat_count = calculate_tiling_repeat_count(
+                island_aspect, hotspot, image_width, image_height,
+                rotation
+            )
+            if repeat_count <= 0:
+                continue
+
+            effective_area = hs_area * repeat_count
+            if target_pixel_area > 0 and effective_area > 0:
+                size_score = abs(
+                    math.log(target_pixel_area / effective_area)
+                )
+            else:
+                size_score = 0.0
+
+            if _rotation_flips_aspect(rotation):
+                applied_island_aspect = rotated_island_aspect
+            else:
+                applied_island_aspect = island_aspect
+
+            if repeat_count > 1.0:
+                aspect_score = 0.0
+            elif applied_island_aspect > 0 and hs_aspect > 0:
+                aspect_score = abs(
+                    math.log(applied_island_aspect / hs_aspect)
+                )
+            else:
+                aspect_score = float('inf')
+
+            combined = ((1.0 - size_weight) * aspect_score
+                        + size_weight * size_score)
+            candidates.append(
+                (combined, hotspot, rotation, repeat_count)
+            )
+            continue
+
         if target_pixel_area > 0 and hs_area > 0:
             size_score = abs(math.log(target_pixel_area / hs_area))
         else:
             size_score = 0.0
 
-        # Calculate aspect scores for both orientations
         if island_aspect > 0 and hs_aspect > 0:
-            aspect_score_normal = abs(math.log(island_aspect / hs_aspect))
+            aspect_score_normal = abs(
+                math.log(island_aspect / hs_aspect)
+            )
         else:
             aspect_score_normal = float('inf')
-
         if rotated_island_aspect > 0 and hs_aspect > 0:
-            aspect_score_rotated = abs(math.log(rotated_island_aspect / hs_aspect))
+            aspect_score_rotated = abs(
+                math.log(rotated_island_aspect / hs_aspect)
+            )
         else:
             aspect_score_rotated = float('inf')
 
         if orientation == 'Upwards':
-            # For 'Upwards', only score the orientation that will actually be applied
-            # based on the pre-computed upward rotation
-            if upward_flips_aspect:
-                combined = (1.0 - size_weight) * aspect_score_rotated + size_weight * size_score
-                candidates.append((combined, hotspot, True))
-            else:
-                combined = (1.0 - size_weight) * aspect_score_normal + size_weight * size_score
-                candidates.append((combined, hotspot, False))
+            aspect_score = (aspect_score_rotated if upward_flips_aspect
+                            else aspect_score_normal)
+            combined = ((1.0 - size_weight) * aspect_score
+                        + size_weight * size_score)
+            candidates.append(
+                (combined, hotspot, upward_rotation, 1.0)
+            )
         else:
-            # For non-Upwards, check both orientations and add both as candidates
-            combined_normal = (1.0 - size_weight) * aspect_score_normal + size_weight * size_score
-            candidates.append((combined_normal, hotspot, False))
-
-            combined_rotated = (1.0 - size_weight) * aspect_score_rotated + size_weight * size_score
-            candidates.append((combined_rotated, hotspot, True))
+            combined_normal = (
+                (1.0 - size_weight) * aspect_score_normal
+                + size_weight * size_score
+            )
+            candidates.append((
+                combined_normal, hotspot, random.choice([0, 180]), 1.0
+            ))
+            combined_rotated = (
+                (1.0 - size_weight) * aspect_score_rotated
+                + size_weight * size_score
+            )
+            candidates.append((
+                combined_rotated, hotspot, random.choice([90, 270]), 1.0
+            ))
 
     if not candidates:
         return None, 0
 
-    # Find best score and collect all candidates with that score
-    best_score = min(c[0] for c in candidates)
-    best_candidates = [(h, r) for (s, h, r) in candidates if s == best_score]
+    best_score = min(candidate[0] for candidate in candidates)
+    best_candidates = [
+        candidate for candidate in candidates
+        if math.isclose(candidate[0], best_score, rel_tol=1e-12,
+                        abs_tol=1e-12)
+    ]
+    _, best_hotspot, rotation, repeat_count = random.choice(best_candidates)
 
-    # Randomly choose among tied candidates
-    best_hotspot, best_needs_90_rotation = random.choice(best_candidates)
-
-    rotation = compute_hotspot_rotation(island, uv_layer, island_aspect, best_hotspot)
-
-    debug_log(f"[find_best_hotspot] island_aspect={island_aspect:.3f}, face_type={face_type}, "
-              f"orientation={best_hotspot.get('orientation_type', 'Any')}, rotation={rotation}, "
-              f"score={best_score:.3f}, size_weight={size_weight:.2f}")
+    debug_log(
+        f"[find_best_hotspot] island_aspect={island_aspect:.3f}, "
+        f"face_type={face_type}, "
+        f"orientation={best_hotspot.get('orientation_type', 'Any')}, "
+        f"rotation={rotation}, "
+        f"tiling={best_hotspot.get('tiling', TILING_NONE)}, "
+        f"repeats={repeat_count:.3f}, score={best_score:.3f}, "
+        f"size_weight={size_weight:.2f}"
+    )
     return best_hotspot, rotation
 
 
@@ -379,6 +504,16 @@ def apply_hotspot_uvs(island, uv_layer, hotspot, image_width, image_height, rota
     if island_width < 0.0001 or island_height < 0.0001:
         return
 
+    island_aspect = island_width / island_height
+    tiling_type = hotspot.get('tiling', TILING_NONE)
+    repeat_count = calculate_tiling_repeat_count(
+        island_aspect, hotspot, image_width, image_height,
+        rotation_degrees
+    )
+    if repeat_count <= 0:
+        tiling_type = TILING_NONE
+        repeat_count = 1.0
+
     # Apply transformation to each UV
     for face in island:
         for loop in face.loops:
@@ -407,9 +542,18 @@ def apply_hotspot_uvs(island, uv_layer, hotspot, image_width, image_height, rota
                 norm_v = new_norm_v
             # rotation_degrees == 0: no change
 
-            # Scale to hotspot size and offset to hotspot position
-            uv.x = hs_u_min + norm_u * hs_width
-            uv.y = hs_v_min + norm_v * hs_height
+            # A tiling region spans its complete texture axis. Extend that UV
+            # axis by the continuous repeat count while the other axis remains
+            # fitted to the hotspot bounds. Counts below one use a partial tile.
+            if tiling_type == TILING_VERTICAL:
+                uv.x = hs_u_min + norm_u * hs_width
+                uv.y = norm_v * repeat_count
+            elif tiling_type == TILING_HORIZONTAL:
+                uv.x = norm_u * repeat_count
+                uv.y = hs_v_min + norm_v * hs_height
+            else:
+                uv.x = hs_u_min + norm_u * hs_width
+                uv.y = hs_v_min + norm_v * hs_height
 
 
 def set_island_uvs_to_origin(island, uv_layer):
@@ -1046,18 +1190,35 @@ def apply_hotspots_to_mesh(bm, me, faces, allow_combined_faces, world_matrix, pi
             debug_log(f"[Hotspot] Invalid image dimensions for: {texture_name}")
             return False
 
-        if override_hotspot is not None:
-            # Use the caller-specified hotspot instead of finding best match
-            rotation_degrees = compute_hotspot_rotation(
-                island, uv_layer, aspect_ratio, override_hotspot
-            )
-            apply_hotspot_uvs(island, uv_layer, override_hotspot, image_width, image_height, rotation_degrees)
-            applied_count += 1
-            return True
-
         # Calculate island world-space area
         local_area = sum(f.calc_area() for f in island)
         island_world_area = local_area * area_scale_factor
+
+        if override_hotspot is not None:
+            # A manually chosen tiling hotspot uses the same fixed-axis and
+            # continuous-repeat behavior as automatic assignment.
+            tiling_type = override_hotspot.get('tiling', TILING_NONE)
+            if tiling_type in (TILING_VERTICAL, TILING_HORIZONTAL):
+                target_pixel_area = (
+                    island_world_area * (pixels_per_meter ** 2)
+                )
+                target_width, target_height = _target_pixel_dimensions(
+                    aspect_ratio, target_pixel_area
+                )
+                rotation_degrees = compute_tiling_hotspot_rotation(
+                    island, uv_layer, override_hotspot,
+                    target_width, target_height
+                )
+            else:
+                rotation_degrees = compute_hotspot_rotation(
+                    island, uv_layer, aspect_ratio, override_hotspot
+                )
+            apply_hotspot_uvs(
+                island, uv_layer, override_hotspot,
+                image_width, image_height, rotation_degrees
+            )
+            applied_count += 1
+            return True
 
         # Classify the face type based on the first face's normal
         face_type = classify_face_type(first_face)
@@ -1187,6 +1348,7 @@ class LEVELDESIGN_OT_apply_specific_hotspot(Operator):
         # Build the override hotspot dict with orientation from hotspot data
         hotspot_data = load_hotspots()
         orientation = 'Any'
+        tiling_type = TILING_NONE
         texture_name = None
         for face in selected_faces:
             mat = me.materials[face.material_index] if face.material_index < len(me.materials) else None
@@ -1202,12 +1364,14 @@ class LEVELDESIGN_OT_apply_specific_hotspot(Operator):
         for hs in get_texture_hotspots(texture_name, hotspot_data):
             if hs['x'] == cell_x and hs['y'] == cell_y and hs['width'] == cell_w and hs['height'] == cell_h:
                 orientation = hs.get('orientation_type', 'Any')
+                tiling_type = hs.get('tiling', TILING_NONE)
                 break
 
         override = {
             'x': cell_x, 'y': cell_y,
             'width': cell_w, 'height': cell_h,
             'orientation_type': orientation,
+            'tiling': tiling_type,
         }
 
         # Save and restore selection since apply_hotspots_to_mesh modifies it

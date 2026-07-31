@@ -113,6 +113,48 @@ class HOTSPOT_OT_cycle_orientation(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class HOTSPOT_OT_toggle_tiling(bpy.types.Operator):
+    """Toggle vertical or horizontal tiling for a hotspot cell"""
+    bl_idname = "hotspot.toggle_tiling"
+    bl_label = "Toggle Hotspot Tiling"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    cell_key: bpy.props.StringProperty(
+        name="Cell Key",
+        description="Key of the cell to update",
+        options={'SKIP_SAVE', 'HIDDEN'},
+    )
+
+    tiling_type: bpy.props.StringProperty(
+        name="Tiling Direction",
+        description="Texture axis to tile",
+        options={'SKIP_SAVE', 'HIDDEN'},
+    )
+
+    @classmethod
+    def poll(cls, context):
+        if not is_hotspot_mapping_workspace():
+            return False
+        if context.area is None or context.area.type != 'IMAGE_EDITOR':
+            return False
+        return context.space_data.image is not None
+
+    def execute(self, context):
+        image = context.space_data.image
+        result = json_storage.toggle_cell_tiling(
+            image.name, self.cell_key, self.tiling_type
+        )
+        if result is None:
+            self.report({'ERROR'}, "Tiling is not available for this hotspot")
+            return {'CANCELLED'}
+
+        self.report({'INFO'}, f"Tiling: {result}")
+        for area in context.screen.areas:
+            if area.type == 'IMAGE_EDITOR':
+                area.tag_redraw()
+        return {'FINISHED'}
+
+
 # ---------------------------------------------------------------------------
 # Tool definition
 # ---------------------------------------------------------------------------
@@ -153,6 +195,8 @@ COLOR_LINE_HOVER = (1.0, 0.8, 0.0, 0.9)          # Yellow - hovered line
 COLOR_LINE_ACTIVE = (0.0, 1.0, 0.5, 0.9)         # Green - selected line
 COLOR_PREVIEW = (0.4, 0.7, 1.0, 0.7)             # Blue - preview line
 COLOR_ICON = (1.0, 1.0, 1.0, 0.9)                # White - orientation icons
+COLOR_TILING_ACTIVE = (0.0, 1.0, 0.5, 0.95)      # Green - enabled tiling
+COLOR_TILING_INACTIVE = (1.0, 1.0, 1.0, 0.45)    # Faint white - available tiling
 LINE_WIDTH = 2.0
 SPLIT_LINE_WIDTH = 2.0
 PREVIEW_LINE_WIDTH = 2.0
@@ -228,6 +272,29 @@ def _region_to_pixel(mx, my, img_w, img_h, view2d):
     return (vx * img_w, img_h - (vy * img_h))
 
 
+def _cell_icon_layout(cx, cy, cw, ch, can_tile_vertical,
+                      can_tile_horizontal, img_w, img_h, view2d, icon_size):
+    """Return action and screen center for each icon shown on a cell."""
+    icon_actions = ['Orientation']
+    if can_tile_vertical:
+        icon_actions.append(json_storage.TILING_VERTICAL)
+    if can_tile_horizontal:
+        icon_actions.append(json_storage.TILING_HORIZONTAL)
+
+    icon_px = cx + cw / 2
+    icon_py = cy + ch / 2
+    region_x, region_y = _pixel_to_region(
+        icon_px, icon_py, img_w, img_h, view2d
+    )
+    spacing = icon_size * 1.15
+    start_x = region_x - spacing * (len(icon_actions) - 1) / 2
+
+    return [
+        (action, start_x + index * spacing, region_y)
+        for index, action in enumerate(icon_actions)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Hit detection
 # ---------------------------------------------------------------------------
@@ -279,12 +346,12 @@ def _find_hit_line(context, event, image):
 
 
 def _find_hit_icon(context, event, image):
-    """Find the cell whose orientation icon is under the cursor.
+    """Find the cell icon under the cursor.
 
     Returns:
-        The cell's key string, or None.
+        Tuple of action and cell key, or None.
     """
-    cells = json_storage.get_cells_with_orientations(image.name)
+    cells = json_storage.get_cells_with_settings(image.name)
     if not cells:
         return None
 
@@ -317,12 +384,16 @@ def _find_hit_icon(context, event, image):
     mx, my = event.mouse_region_x, event.mouse_region_y
     hs = icon_size / 2 + 2
 
-    for cx, cy, cw, ch, _orient, key in cells:
-        icon_px = cx + cw / 2
-        icon_py = cy + ch / 2
-        rcx, rcy = _pixel_to_region(icon_px, icon_py, img_w, img_h, view2d)
-        if abs(mx - rcx) <= hs and abs(my - rcy) <= hs:
-            return key
+    for cell in cells:
+        (cx, cy, cw, ch, _orientation, _tiling_type,
+         can_tile_vertical, can_tile_horizontal, key) = cell
+        layout = _cell_icon_layout(
+            cx, cy, cw, ch, can_tile_vertical, can_tile_horizontal,
+            img_w, img_h, view2d, icon_size
+        )
+        for action, rcx, rcy in layout:
+            if abs(mx - rcx) <= hs and abs(my - rcy) <= hs:
+                return action, key
 
     return None
 
@@ -517,8 +588,16 @@ class HOTSPOT_OT_click_select(bpy.types.Operator):
         # Priority 1: Click on orientation icon
         hit_icon = _find_hit_icon(context, event, image)
         if hit_icon is not None:
-            debug_log(f"[Hotspots Click] ICON click on cell {hit_icon}")
-            bpy.ops.hotspot.cycle_orientation(cell_key=hit_icon)
+            action, cell_key = hit_icon
+            debug_log(
+                f"[Hotspots Click] {action} icon click on cell {cell_key}"
+            )
+            if action == 'Orientation':
+                bpy.ops.hotspot.cycle_orientation(cell_key=cell_key)
+            else:
+                bpy.ops.hotspot.toggle_tiling(
+                    cell_key=cell_key, tiling_type=action
+                )
             return {'FINISHED'}
 
         # Priority 2: Click on line → select and start drag
@@ -759,12 +838,17 @@ def draw_hotspots():
 
     try:
         # Pass 1: Draw cell outlines
-        cells = json_storage.get_cells_with_orientations(texture_name)
+        cells = json_storage.get_cells_with_settings(texture_name)
         cell_regions = []
-        for cx, cy, cw, ch, orientation, _key in cells:
+        for cell in cells:
+            (cx, cy, cw, ch, orientation, tiling_type,
+             can_tile_vertical, can_tile_horizontal, _key) = cell
             rx1, ry1 = _pixel_to_region(cx, cy + ch, img_w, img_h, view2d)
             rx2, ry2 = _pixel_to_region(cx + cw, cy, img_w, img_h, view2d)
-            cell_regions.append((rx1, ry1, rx2, ry2, orientation))
+            cell_regions.append((
+                cx, cy, cw, ch, orientation, tiling_type,
+                can_tile_vertical, can_tile_horizontal,
+            ))
             _draw_rectangle(rx1, ry1, rx2, ry2, COLOR_CELL)
 
         # Pass 2: Draw bisecting lines with highlighting
@@ -807,13 +891,30 @@ def draw_hotspots():
                                       view2d)
             _draw_line(p1, p2, COLOR_PREVIEW, PREVIEW_LINE_WIDTH)
 
-        # Pass 4: Orientation icons
+        # Pass 4: Independent orientation and tiling icons
         if pixels_per_uv >= zoom_hide:
-            for rx1, ry1, rx2, ry2, orientation in cell_regions:
-                icon_cx = (rx1 + rx2) / 2
-                icon_cy = (ry1 + ry2) / 2
-                _draw_orientation_icon(icon_cx, icon_cy, orientation,
-                                       COLOR_ICON, zoom_icon_size)
+            for cell_region in cell_regions:
+                (cx, cy, cw, ch, orientation, tiling_type,
+                 can_tile_vertical, can_tile_horizontal) = cell_region
+                layout = _cell_icon_layout(
+                    cx, cy, cw, ch, can_tile_vertical,
+                    can_tile_horizontal, img_w, img_h, view2d,
+                    zoom_icon_size
+                )
+                for action, icon_cx, icon_cy in layout:
+                    if action == 'Orientation':
+                        _draw_orientation_icon(
+                            icon_cx, icon_cy, orientation,
+                            COLOR_ICON, zoom_icon_size
+                        )
+                    else:
+                        active = tiling_type == action
+                        color = (COLOR_TILING_ACTIVE if active
+                                 else COLOR_TILING_INACTIVE)
+                        _draw_tiling_icon(
+                            icon_cx, icon_cy, action, color,
+                            zoom_icon_size
+                        )
 
     finally:
         gpu.state.blend_set('NONE')
@@ -897,6 +998,25 @@ def _draw_orientation_icon(cx, cy, orientation_type, color, icon_size):
     blf.draw(font_id, symbol)
 
 
+def _draw_tiling_icon(cx, cy, tiling_type, color, icon_size):
+    """Draw an available vertical or horizontal tiling toggle."""
+    symbols = {
+        json_storage.TILING_VERTICAL: '↕',
+        json_storage.TILING_HORIZONTAL: '↔',
+    }
+    symbol = symbols.get(tiling_type, '?')
+
+    font_id = 0
+    font_size = int(icon_size + 4)
+    blf.size(font_id, font_size)
+    blf.color(font_id, color[0], color[1], color[2], color[3])
+    text_width, text_height = blf.dimensions(font_id, symbol)
+    blf.position(
+        font_id, cx - text_width / 2, cy - text_height / 2, 0
+    )
+    blf.draw(font_id, symbol)
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -910,6 +1030,7 @@ def register():
     bpy.utils.register_class(HOTSPOT_OT_snap_size_up)
     bpy.utils.register_class(HOTSPOT_OT_snap_size_down)
     bpy.utils.register_class(HOTSPOT_OT_cycle_orientation)
+    bpy.utils.register_class(HOTSPOT_OT_toggle_tiling)
     bpy.utils.register_class(HOTSPOT_OT_update_cursor)
     bpy.utils.register_class(HOTSPOT_OT_drag_line)
     bpy.utils.register_class(HOTSPOT_OT_click_select)
@@ -972,6 +1093,7 @@ def unregister():
     bpy.utils.unregister_class(HOTSPOT_OT_click_select)
     bpy.utils.unregister_class(HOTSPOT_OT_drag_line)
     bpy.utils.unregister_class(HOTSPOT_OT_update_cursor)
+    bpy.utils.unregister_class(HOTSPOT_OT_toggle_tiling)
     bpy.utils.unregister_class(HOTSPOT_OT_cycle_orientation)
     bpy.utils.unregister_class(HOTSPOT_OT_snap_size_down)
     bpy.utils.unregister_class(HOTSPOT_OT_snap_size_up)

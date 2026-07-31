@@ -75,18 +75,26 @@ class HOTSPOT_PT_main_panel(Panel):
         layout.separator()
 
         # Show cells
-        cells = json_storage.get_cells_with_orientations(texture_name)
+        cells = json_storage.get_cells_with_settings(texture_name)
 
         if cells:
             box = layout.box()
             box.label(text=f"Hotspots ({len(cells)})", icon='MESH_GRID')
-            for i, (cx, cy, cw, ch, orientation, key) in enumerate(cells):
+            for i, cell in enumerate(cells):
+                (cx, cy, cw, ch, orientation, tiling_type,
+                 can_tile_vertical, can_tile_horizontal, key) = cell
                 row = box.row(align=True)
 
-                # Label
-                sub = row.row()
-                sub.scale_x = 0.5
-                sub.label(text=f"#{i + 1}")
+                # Compact UI-unit columns stay the same width as the sidebar
+                # grows. The dimension column alone receives spare space.
+                index_col = row.row(align=True)
+                index_col.ui_units_x = 1.6
+                index_col.label(text=f"#{i + 1}")
+
+                orientation_col = row.row(align=True)
+                # Wide enough for the longest label so Blender never expands
+                # individual rows based on their orientation text.
+                orientation_col.ui_units_x = 4.75
 
                 # Orientation type button
                 orientation_symbols = {
@@ -96,18 +104,49 @@ class HOTSPOT_PT_main_panel(Panel):
                     'Ceiling': '⌈',
                 }
                 symbol = orientation_symbols.get(orientation, '*')
-                sub = row.row()
-                sub.scale_x = 1.0
-                op = sub.operator(
+                op = orientation_col.operator(
                     "hotspot.cycle_orientation",
                     text=f"{symbol} {orientation}",
                 )
                 op.cell_key = key
 
+                # Tiling is independent from orientation. Only show directions
+                # supported by a cell spanning the complete texture axis. Both
+                # compact slots are reserved so dimensions never shift.
+                tiling_row = row.row(align=True)
+                tiling_row.ui_units_x = 3.0
+
+                vertical_slot = tiling_row.row(align=True)
+                if can_tile_vertical:
+                    op = vertical_slot.operator(
+                        "hotspot.toggle_tiling",
+                        text="↕",
+                        depress=tiling_type == json_storage.TILING_VERTICAL,
+                    )
+                    op.cell_key = key
+                    op.tiling_type = json_storage.TILING_VERTICAL
+                else:
+                    vertical_slot.label(text="")
+
+                horizontal_slot = tiling_row.row(align=True)
+                if can_tile_horizontal:
+                    op = horizontal_slot.operator(
+                        "hotspot.toggle_tiling",
+                        text="↔",
+                        depress=tiling_type == json_storage.TILING_HORIZONTAL,
+                    )
+                    op.cell_key = key
+                    op.tiling_type = json_storage.TILING_HORIZONTAL
+                else:
+                    horizontal_slot.label(text="")
+
                 # Show dimensions
-                sub = row.row()
-                sub.scale_x = 0.8
-                sub.label(text=f"{cw}x{ch}")
+                dimensions_col = row.row(align=True)
+                # Prevent wider values such as 1024x1024 from compressing the
+                # orientation control on only those rows.
+                dimensions_col.ui_units_x = 4.0
+                dimensions_col.alignment = 'RIGHT'
+                dimensions_col.label(text=f"{cw}x{ch}")
 
         layout.separator()
 
