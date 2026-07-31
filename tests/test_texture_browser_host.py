@@ -5,6 +5,7 @@ import bpy
 from .base_test import AnvilTestCase
 from .helpers import TEXTURE_PATH, create_vertical_plane
 from ..core.materials import get_image_from_material
+from ..core.modal_image_grid import PreferencesImageGridModal
 from ..handlers import get_active_image
 from ..texture_browser import browser as texture_browser
 from ..texture_browser import persistence as texture_browser_persistence
@@ -14,6 +15,27 @@ HOST_TEXTURE_BROWSER_OUTPUT_DIR = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "test_outputs", "texture_browser_host")
 )
 HOTSPOT_TEXTURE_PATH = os.path.join(os.path.dirname(TEXTURE_PATH), "dev_hotspot.png")
+
+
+class _LateExtensionPreferencesPanel:
+    draw_calls = []
+
+    def draw(self, context):
+        self.draw_calls.append("native")
+
+    @classmethod
+    def _dyn_ui_initialize(cls):
+        draw_funcs = getattr(cls.draw, "_draw_funcs", None)
+        if draw_funcs is not None:
+            return draw_funcs
+
+        def draw_list(panel, context):
+            for draw_func in draw_list._draw_funcs:
+                draw_func(panel, context)
+
+        draw_funcs = draw_list._draw_funcs = [cls.draw]
+        cls.draw = draw_list
+        return draw_funcs
 
 
 def _normal_path(path):
@@ -185,6 +207,57 @@ class TextureBrowserHostTest(AnvilTestCase):
             _normal_path(window_manager.anvil_texture_browser_folder_path),
             _normal_path(texture_browser._blend_home_folder()),
         )
+
+    def test_texture_browser_draw_override_survives_blender_extension_callback_registered_after_addon_startup(self):
+        original_draw = _LateExtensionPreferencesPanel.draw
+        original_draw_calls = _LateExtensionPreferencesPanel.draw_calls
+        modal = object.__new__(PreferencesImageGridModal)
+        modal.userpref_draws = {}
+        modal.content_panel = "USERPREF_PT_late_extension_test"
+
+        def replacement_draw(panel, context):
+            panel.draw_calls.append("anvil")
+
+        modal.navigation_draw_override = replacement_draw
+        modal.header_draw_override = replacement_draw
+        modal.content_draw_override = replacement_draw
+        modal.empty_draw_override = replacement_draw
+        modal.userpref_draw_types = lambda: [
+            (modal.content_panel, _LateExtensionPreferencesPanel),
+        ]
+        modal.tag_preferences_areas = lambda windows: None
+
+        try:
+            _LateExtensionPreferencesPanel.draw_calls = []
+            modal.install_draw_overrides([])
+
+            installed_draw = _LateExtensionPreferencesPanel.draw
+
+            def late_extension_draw(panel, context):
+                panel.draw_calls.append("extension")
+
+            _LateExtensionPreferencesPanel._dyn_ui_initialize().append(
+                late_extension_draw
+            )
+
+            self.assertIs(_LateExtensionPreferencesPanel.draw, installed_draw)
+            _LateExtensionPreferencesPanel.draw(
+                _LateExtensionPreferencesPanel(),
+                None,
+            )
+            self.assertEqual(_LateExtensionPreferencesPanel.draw_calls, ["anvil"])
+
+            modal.userpref_draws[modal.content_panel](
+                _LateExtensionPreferencesPanel(),
+                None,
+            )
+            self.assertEqual(
+                _LateExtensionPreferencesPanel.draw_calls,
+                ["anvil", "native", "extension"],
+            )
+        finally:
+            _LateExtensionPreferencesPanel.draw = original_draw
+            _LateExtensionPreferencesPanel.draw_calls = original_draw_calls
 
     def test_texture_browser_folder_and_collection_search_are_scoped_to_active_view(self):
         prefs = texture_browser._addon_preferences()

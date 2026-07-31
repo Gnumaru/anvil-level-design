@@ -400,8 +400,6 @@ class PreferencesImageGridModal:
         for userpref_type_name, userpref_type in self.userpref_draw_types():
             if userpref_type_name in self.userpref_draws:
                 continue
-            original_draw = userpref_type.draw
-            draw_funcs = getattr(original_draw, "_draw_funcs", None)
             if userpref_type == header_type:
                 replacement_draw = self.header_draw_override
             elif userpref_type == nav_type:
@@ -412,10 +410,11 @@ class PreferencesImageGridModal:
                 replacement_draw = self.empty_draw_override
             else:
                 continue
+            draw_funcs = userpref_type._dyn_ui_initialize()
+            original_draw = userpref_type.draw
             self.userpref_draws[userpref_type_name] = original_draw
             userpref_type.draw = replacement_draw
-            if draw_funcs is not None:
-                userpref_type.draw._draw_funcs = draw_funcs
+            userpref_type.draw._draw_funcs = draw_funcs
         self.tag_preferences_areas(windows)
 
     def install_preferences(self, preferences, windows):

@@ -1,6 +1,7 @@
 # Anvil Level Design Changelog
 
 # 1.8.6
+- Fix texture browser overlay in Blender 5.2
 - Add tiling hotspot textures
 - Automatically migrate Texture Browser settings from older Blender versions
 

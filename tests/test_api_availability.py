@@ -286,6 +286,10 @@ class APIAvailabilityTest(AnvilTestCase):
         for userpref_type_name in ("USERPREF_HT_header", "USERPREF_PT_navigation_bar", "USERPREF_PT_addons"):
             if not hasattr(bpy.types, userpref_type_name):
                 missing.append(f"bpy.types.{userpref_type_name}")
+                continue
+            userpref_type = getattr(bpy.types, userpref_type_name)
+            if not hasattr(userpref_type, "_dyn_ui_initialize"):
+                missing.append(f"bpy.types.{userpref_type_name}._dyn_ui_initialize")
         if not hasattr(bpy.types, "SpacePreferences"):
             missing.append("bpy.types.SpacePreferences")
         else:
