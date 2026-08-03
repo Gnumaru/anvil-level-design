@@ -1,5 +1,13 @@
 # Anvil Level Design Changelog
 
+# 1.8.7
+- Add CYLINDER CUT
+- Hold ALT to view cut intersections for cylinder and cube cut
+- Added creation and cut buttons to the Anvil panel
+- Post action dialogue follows cursor to screen area
+- Fix cube cut edge case
+- More general auto uving (let me know if you see any issues)
+
 # 1.8.6
 - Fix texture browser overlay in Blender 5.2
 - Add tiling hotspot textures

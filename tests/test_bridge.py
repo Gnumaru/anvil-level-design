@@ -133,11 +133,11 @@ class BridgeEdgeLoopsTest(AnvilTestCase):
             },
             (0.0, 0.0, -1.0, 0.5, 0.5, 1.0): {
                 'scale_u': 1.0, 'scale_v': 1.0,
-                'rotation': 0.0, 'offset_x': 0.0, 'offset_y': 0.0,
+                'rotation': 180.0, 'offset_x': 1.0, 'offset_y': 0.0,
             },
             (0.0, -0.0, 1.0, 0.5, 0.5, 0.0): {
                 'scale_u': 1.0, 'scale_v': 1.0,
-                'rotation': 180.0, 'offset_x': 0.0, 'offset_y': 0.0,
+                'rotation': 0.0, 'offset_x': 1.0, 'offset_y': 0.0,
             },
         }
 

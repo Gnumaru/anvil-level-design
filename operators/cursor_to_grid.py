@@ -62,6 +62,7 @@ class LEVELDESIGN_OT_cursor_to_grid(bpy.types.Operator):
 
             context.window.cursor_modal_set('CROSSHAIR')
             context.window_manager.modal_handler_add(self)
+            self._modal_handler_view_target = view_target
             self._last_mouse_window_pos = (event.mouse_x, event.mouse_y)
             self._update_snap(context, view_event)
             self._update_header(context)
@@ -78,6 +79,32 @@ class LEVELDESIGN_OT_cursor_to_grid(bpy.types.Operator):
         )
         if view_target is None:
             self._cleanup(context)
+            return {'CANCELLED'}
+
+        if (
+            event.type == 'MOUSEMOVE'
+            and view_changed
+            and self._modal_handler_target_changed(view_target)
+        ):
+            properties = self.as_keywords()
+            self._cleanup(context)
+            try:
+                with context.temp_override(**view_target.override_kwargs()):
+                    result = bpy.ops.leveldesign.cursor_to_grid(
+                        'INVOKE_DEFAULT', **properties
+                    )
+            except RuntimeError as error:
+                self.report(
+                    {'ERROR'},
+                    f"Could not continue 3D Cursor to Grid in this view: {error}",
+                )
+                return {'CANCELLED'}
+
+            if 'RUNNING_MODAL' not in result:
+                self.report(
+                    {'ERROR'},
+                    "Could not continue 3D Cursor to Grid in this view",
+                )
             return {'CANCELLED'}
 
         with context.temp_override(**view_target.override_kwargs()):
@@ -239,6 +266,12 @@ class LEVELDESIGN_OT_cursor_to_grid(bpy.types.Operator):
             self._clear_header_for_target(previous)
         self._active_view_target = target
         return changed
+
+    def _modal_handler_target_changed(self, target):
+        handler_target = getattr(self, "_modal_handler_view_target", None)
+        if handler_target is None:
+            return False
+        return not target.matches(handler_target)
 
     def _resolve_view_event(self, context, event):
         target = view_context.view_target_under_mouse(

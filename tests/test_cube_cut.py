@@ -541,3 +541,214 @@ class CubeCutTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.object.mode_set(mode='OBJECT')
         obj.data.update()
+
+    def test_cube_cut_flush_with_mesh_corner(self):
+        """Create a visual result for a cube cut flush with a mesh corner."""
+        mesh = bpy.data.meshes.new("cube_cut_flush_with_mesh_corner")
+        bm_new = bmesh.new()
+        bmesh.ops.create_cube(bm_new, size=3.0)
+        for vertex in bm_new.verts:
+            vertex.co += Vector((1.5, 1.5, 1.5))
+        bm_new.to_mesh(mesh)
+        bm_new.free()
+
+        obj = bpy.data.objects.new("cube_cut_flush_with_mesh_corner", mesh)
+        bpy.context.collection.objects.link(obj)
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+
+        _apply_material_face_aligned(obj, 1.0)
+
+        ctx = _get_context_override()
+        with bpy.context.temp_override(**ctx):
+            bpy.ops.object.mode_set(mode='EDIT')
+
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.select_mode = {'FACE'}
+        for face in bm.faces:
+            face.select = True
+        bmesh.update_edit_mesh(mesh)
+
+        # Remove a 1x1x1 volume at the host cube's lower-front-right corner.
+        # The cut is flush with x=3, y=0, and z=0.
+        with bpy.context.temp_override(**ctx):
+            success, message = execute_cube_cut(
+                bpy.context,
+                Vector((2.0, 0.0, 0.0)),
+                Vector((3.0, 0.0, 1.0)),
+                1.0,
+                Vector((1.0, 0.0, 0.0)),
+                Vector((0.0, 0.0, 1.0)),
+                Vector((0.0, 1.0, 0.0)),
+            )
+
+        self.assertTrue(success, message)
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        self.assertEqual(len(bm.faces), 9)
+        self.assertEqual(len(bm.verts), 13)
+        selected_edges = [edge for edge in bm.edges if edge.select]
+        self.assertEqual(len(selected_edges), 6)
+        for edge in selected_edges:
+            self.assertEqual(len(edge.link_faces), 1)
+        for face in bm.faces:
+            self.assertGreaterEqual(len(face.verts), 3)
+            self.assertGreater(face.calc_area(), 1e-8)
+        minimum = Vector((
+            min(vertex.co.x for vertex in bm.verts),
+            min(vertex.co.y for vertex in bm.verts),
+            min(vertex.co.z for vertex in bm.verts),
+        ))
+        maximum = Vector((
+            max(vertex.co.x for vertex in bm.verts),
+            max(vertex.co.y for vertex in bm.verts),
+            max(vertex.co.z for vertex in bm.verts),
+        ))
+        self.assertEqual(tuple(minimum), (0.0, 0.0, 0.0))
+        self.assertEqual(tuple(maximum), (3.0, 3.0, 3.0))
+
+        bmesh.update_edit_mesh(obj.data)
+        with bpy.context.temp_override(**ctx):
+            bpy.ops.object.mode_set(mode='OBJECT')
+        obj.data.update()
+
+    def test_cube_cut_spanning_single_face_creates_two_disconnected_faces(self):
+        """A cut spanning a single quad should leave separate left and right faces."""
+        mesh = bpy.data.meshes.new("cube_cut_spanning_single_face")
+        bm_new = bmesh.new()
+        vertices = [
+            bm_new.verts.new(position)
+            for position in (
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 0.0, 1.0),
+                (0.0, 0.0, 1.0),
+            )
+        ]
+        bm_new.faces.new(vertices)
+        bm_new.to_mesh(mesh)
+        bm_new.free()
+
+        obj = bpy.data.objects.new("cube_cut_spanning_single_face", mesh)
+        bpy.context.collection.objects.link(obj)
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        _apply_material_face_aligned(obj, 1.0)
+
+        ctx = _get_context_override()
+        with bpy.context.temp_override(**ctx):
+            bpy.ops.object.mode_set(mode='EDIT')
+
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.select_mode = {'FACE'}
+        for face in bm.faces:
+            face.select = True
+        bmesh.update_edit_mesh(mesh)
+
+        # The cutter extends beyond both the bottom and top of the host face,
+        # removing x=[0.4, 0.6] and separating the remainder into two islands.
+        with bpy.context.temp_override(**ctx):
+            success, message = execute_cube_cut(
+                bpy.context,
+                Vector((0.4, -0.5, -0.5)),
+                Vector((0.6, -0.5, 1.5)),
+                1.0,
+                Vector((1.0, 0.0, 0.0)),
+                Vector((0.0, 0.0, 1.0)),
+                Vector((0.0, 1.0, 0.0)),
+            )
+
+        self.assertTrue(success, message)
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+
+        self.assertEqual(len(bm.faces), 2)
+        self.assertEqual(len(bm.verts), 8)
+        self.assertEqual(len(bm.edges), 8)
+        self.assertEqual(
+            list(bpy.context.tool_settings.mesh_select_mode),
+            [False, True, False],
+            "Cube Cut should finish in edge select mode",
+        )
+        self.assertEqual(len([face for face in bm.faces if face.select]), 0)
+
+        remaining = {
+            vertex for vertex in bm.verts if vertex.is_valid and vertex.link_faces
+        }
+        components = []
+        while remaining:
+            start = remaining.pop()
+            component = {start}
+            stack = [start]
+            while stack:
+                current = stack.pop()
+                for edge in current.link_edges:
+                    other = edge.other_vert(current)
+                    if other not in remaining:
+                        continue
+                    remaining.remove(other)
+                    component.add(other)
+                    stack.append(other)
+            components.append(component)
+        self.assertEqual(len(components), 2)
+        self.assertEqual(sorted(len(component) for component in components), [4, 4])
+
+        expected_face_vertices = {
+            frozenset({
+                (0.0, 0.0, 0.0),
+                (0.4, 0.0, 0.0),
+                (0.4, 0.0, 1.0),
+                (0.0, 0.0, 1.0),
+            }),
+            frozenset({
+                (0.6, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 0.0, 1.0),
+                (0.6, 0.0, 1.0),
+            }),
+        }
+        actual_face_vertices = {
+            frozenset(
+                (
+                    round(vertex.co.x, 4),
+                    round(vertex.co.y, 4),
+                    round(vertex.co.z, 4),
+                )
+                for vertex in face.verts
+            )
+            for face in bm.faces
+        }
+        self.assertEqual(actual_face_vertices, expected_face_vertices)
+        for face in bm.faces:
+            self.assertEqual(len(face.verts), 4)
+            self.assertAlmostEqual(face.calc_area(), 0.4, places=4)
+
+        selected_edges = [edge for edge in bm.edges if edge.select]
+        self.assertEqual(len(selected_edges), 2)
+        actual_selected_edges = {
+            frozenset(
+                (
+                    round(vertex.co.x, 4),
+                    round(vertex.co.y, 4),
+                    round(vertex.co.z, 4),
+                )
+                for vertex in edge.verts
+            )
+            for edge in selected_edges
+        }
+        self.assertEqual(
+            actual_selected_edges,
+            {
+                frozenset({(0.4, 0.0, 0.0), (0.4, 0.0, 1.0)}),
+                frozenset({(0.6, 0.0, 0.0), (0.6, 0.0, 1.0)}),
+            },
+        )
+        for edge in selected_edges:
+            self.assertEqual(len(edge.link_faces), 1)
+
+        bmesh.update_edit_mesh(mesh)
+        with bpy.context.temp_override(**ctx):
+            bpy.ops.object.mode_set(mode='OBJECT')
+        obj.data.update()

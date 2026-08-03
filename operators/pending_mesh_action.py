@@ -6,6 +6,7 @@ changes dismiss the action. History handlers re-arm restored payloads.
 """
 
 from dataclasses import dataclass
+import math
 
 import bmesh
 import bpy
@@ -28,6 +29,14 @@ _CUBOID_LAYERS = (
     "_aw_lyx", "_aw_lyy", "_aw_lyz",
     "_aw_cdx", "_aw_cdy",
 )
+_CYLINDER_LAYERS = (
+    "_aw_ccx", "_aw_ccy", "_aw_ccz",
+    "_aw_crxx", "_aw_crxy", "_aw_crxz",
+    "_aw_cryx", "_aw_cryy", "_aw_cryz",
+    "_aw_czx", "_aw_czy", "_aw_czz",
+)
+_CYLINDER_SIDE_COUNT_LAYER = "_aw_csc"
+_CYLINDER_RADIUS_MODE_LAYER = "_aw_crm"
 _COPLANAR_LAYER = "_aw_copl"
 _OBJECT_MODE_PROP = "_aw_mode"
 _MODE_TO_INT = {
@@ -38,6 +47,8 @@ _MODE_TO_INT = {
     'FOLDED_PLANE': 4,
 }
 _INT_TO_MODE = {value: key for key, value in _MODE_TO_INT.items()}
+_RADIUS_MODE_TO_INT = {'EDGES': 1, 'FACES': 2}
+_INT_TO_RADIUS_MODE = {value: key for key, value in _RADIUS_MODE_TO_INT.items()}
 _FOLDED_EPSILON = 1e-4
 
 
@@ -49,6 +60,7 @@ class PendingMeshAction:
     back_plane_offset: float
     face_indices: tuple
     cuboid_params: object
+    cylinder_params: object
     coplanar_blocked: int
     object_mode: bool
 
@@ -143,6 +155,7 @@ def _set_on_bmesh(
         back_plane_offset,
         box_faces,
         cuboid_params,
+        cylinder_params,
         coplanar_blocked):
     box_indices = {face.index for face in box_faces} if box_faces is not None else None
     mode_layer = bm.verts.layers.int.get(_MODE_LAYER) or bm.verts.layers.int.new(_MODE_LAYER)
@@ -159,6 +172,22 @@ def _set_on_bmesh(
         cuboid_layers = tuple(
             bm.verts.layers.float.get(name) or bm.verts.layers.float.new(name)
             for name in _CUBOID_LAYERS
+        )
+    cylinder_layers = ()
+    cylinder_side_count_layer = None
+    cylinder_radius_mode_layer = None
+    if cylinder_params is not None:
+        cylinder_layers = tuple(
+            bm.verts.layers.float.get(name) or bm.verts.layers.float.new(name)
+            for name in _CYLINDER_LAYERS
+        )
+        cylinder_side_count_layer = (
+            bm.verts.layers.int.get(_CYLINDER_SIDE_COUNT_LAYER)
+            or bm.verts.layers.int.new(_CYLINDER_SIDE_COUNT_LAYER)
+        )
+        cylinder_radius_mode_layer = (
+            bm.verts.layers.int.get(_CYLINDER_RADIUS_MODE_LAYER)
+            or bm.verts.layers.int.new(_CYLINDER_RADIUS_MODE_LAYER)
         )
     coplanar_layer = None
     if coplanar_blocked is not None:
@@ -193,6 +222,14 @@ def _set_on_bmesh(
         for layer, value in zip(cuboid_layers, values):
             first_vert[layer] = value
 
+    if cylinder_params is not None:
+        center, radius_x, radius_y, local_z, side_count, radius_mode = cylinder_params
+        values = tuple(center) + tuple(radius_x) + tuple(radius_y) + tuple(local_z)
+        for layer, value in zip(cylinder_layers, values):
+            first_vert[layer] = value
+        first_vert[cylinder_side_count_layer] = side_count
+        first_vert[cylinder_radius_mode_layer] = _RADIUS_MODE_TO_INT[radius_mode]
+
     if coplanar_blocked is not None:
         first_vert[coplanar_layer] = coplanar_blocked
 
@@ -221,6 +258,31 @@ def _read_from_bmesh(bm):
             values[9],
             values[10],
         )
+    cylinder_params = None
+    cylinder_side_count_layer = bm.verts.layers.int.get(
+        _CYLINDER_SIDE_COUNT_LAYER
+    )
+    cylinder_radius_mode_layer = bm.verts.layers.int.get(
+        _CYLINDER_RADIUS_MODE_LAYER
+    )
+    if (
+            kind == 'FOLDED_PLANE'
+            and cylinder_side_count_layer is not None
+            and first_vert[cylinder_side_count_layer] > 0
+            and cylinder_radius_mode_layer is not None):
+        values = tuple(float_value(name) for name in _CYLINDER_LAYERS)
+        radius_mode = _INT_TO_RADIUS_MODE.get(
+            first_vert[cylinder_radius_mode_layer]
+        )
+        if radius_mode is not None:
+            cylinder_params = (
+                Vector(values[0:3]),
+                Vector(values[3:6]),
+                Vector(values[6:9]),
+                Vector(values[9:12]),
+                first_vert[cylinder_side_count_layer],
+                radius_mode,
+            )
     coplanar_layer = bm.verts.layers.int.get(_COPLANAR_LAYER)
     coplanar_blocked = first_vert[coplanar_layer] if coplanar_layer is not None else 0
     face_layer = bm.faces.layers.int.get(_FACE_LAYER)
@@ -235,6 +297,7 @@ def _read_from_bmesh(bm):
         float_value(_BPO_LAYER),
         face_indices,
         cuboid_params,
+        cylinder_params,
         coplanar_blocked,
         False,
     )
@@ -254,6 +317,16 @@ def clear_on_bmesh(bm):
             layer = bm.verts.layers.float.get(name)
             if layer is not None:
                 first_vert[layer] = 0.0
+        for name in _CYLINDER_LAYERS:
+            layer = bm.verts.layers.float.get(name)
+            if layer is not None:
+                first_vert[layer] = 0.0
+        for name in (
+                _CYLINDER_SIDE_COUNT_LAYER,
+                _CYLINDER_RADIUS_MODE_LAYER):
+            layer = bm.verts.layers.int.get(name)
+            if layer is not None:
+                first_vert[layer] = 0
     face_layer = bm.faces.layers.int.get(_FACE_LAYER)
     if face_layer is not None:
         for face in bm.faces:
@@ -270,7 +343,9 @@ def _read_object_mode(obj):
     kind = obj.data.get(_OBJECT_MODE_PROP, 'NONE')
     if kind not in _MODE_TO_INT or kind == 'NONE':
         return None
-    return PendingMeshAction(kind, 0.0, (0.0, 0.0, 0.0), 0.0, (), None, 0, True)
+    return PendingMeshAction(
+        kind, 0.0, (0.0, 0.0, 0.0), 0.0, (), None, None, 0, True,
+    )
 
 
 def _clear_object_mode(obj):
@@ -431,7 +506,65 @@ def _check_folded_plane(selected_verts, cuboid_params):
     return False
 
 
-def _derive_kind(bm, depth, cuboid_params):
+def build_cylinder_weld_params(
+        obj,
+        center,
+        radius_x,
+        radius_y,
+        local_x,
+        local_y,
+        local_z,
+        side_count,
+        radius_mode):
+    """Capture a cylinder profile in mesh-local coordinates for a pending weld."""
+    world_to_local = obj.matrix_world.inverted()
+    rotation = world_to_local.to_3x3()
+    axis_x = Vector(local_x).normalized()
+    axis_y = Vector(local_y).normalized()
+    axis_z = Vector(local_z).normalized()
+    local_depth_axis = rotation @ axis_z
+    return (
+        world_to_local @ Vector(center),
+        rotation @ (axis_x * radius_x),
+        rotation @ (axis_y * radius_y),
+        local_depth_axis.normalized(),
+        side_count,
+        radius_mode,
+    )
+
+
+def build_cylinder_weld_profile(cylinder_params):
+    """Rebuild the captured cylinder cap profile in mesh-local coordinates."""
+    center, radius_x, radius_y, _local_z, side_count, radius_mode = cylinder_params
+    angle_step = math.tau / side_count
+    angle_offset = 0.0
+    radius_scale = 1.0
+    if radius_mode == 'FACES':
+        angle_offset = angle_step * 0.5
+        radius_scale = 1.0 / math.cos(angle_step * 0.5)
+    return tuple(
+        center
+        + radius_x * (math.cos(angle_offset + index * angle_step) * radius_scale)
+        + radius_y * (math.sin(angle_offset + index * angle_step) * radius_scale)
+        for index in range(side_count)
+    )
+
+
+def _check_folded_cylinder(selected_verts, cylinder_params):
+    _center, _radius_x, _radius_y, local_z, _side_count, _radius_mode = cylinder_params
+    for first_index, first in enumerate(selected_verts):
+        for second in selected_verts[first_index + 1:]:
+            difference = second.co - first.co
+            depth_distance = difference.dot(local_z)
+            if abs(depth_distance) < _FOLDED_EPSILON:
+                continue
+            off_axis = difference - local_z * depth_distance
+            if off_axis.length < _FOLDED_EPSILON:
+                return True
+    return False
+
+
+def _derive_kind(bm, depth, cuboid_params, cylinder_params):
     groups = _count_edge_groups(bm)
     if groups == 2:
         return 'BRIDGE', 0.0
@@ -441,6 +574,10 @@ def _derive_kind(bm, depth, cuboid_params):
     if abs(depth) > 0 and are_verts_coplanar(selected_verts):
         return 'CORRIDOR', depth
     if cuboid_params is not None and _check_folded_plane(selected_verts, cuboid_params):
+        return 'FOLDED_PLANE', depth
+    if (
+            cylinder_params is not None
+            and _check_folded_cylinder(selected_verts, cylinder_params)):
         return 'FOLDED_PLANE', depth
     return 'NONE', 0.0
 
@@ -472,12 +609,12 @@ def store_from_edge_selection(
     if local_difference.dot(axis_y) < 0:
         axis_y = -axis_y
     cuboid_params = (origin, axis_x, axis_y, cdx, cdy)
-    kind, effective_depth = _derive_kind(bm, depth, cuboid_params)
+    kind, effective_depth = _derive_kind(bm, depth, cuboid_params, None)
     stored_cuboid = cuboid_params if kind == 'FOLDED_PLANE' else None
     stored_coplanar = coplanar_blocked if kind == 'FOLDED_PLANE' else None
     _set_on_bmesh(
         bm, kind, effective_depth, tuple(direction), back_plane_offset,
-        None, stored_cuboid, stored_coplanar,
+        None, stored_cuboid, None, stored_coplanar,
     )
     bmesh.update_edit_mesh(obj.data)
     if kind == 'NONE':
@@ -485,6 +622,39 @@ def store_from_edge_selection(
     else:
         _arm(obj, kind, False, bm)
     debug_log(f"[ContextAction] Stored {kind} on '{obj.name}'")
+
+
+def store_cylinder_from_edge_selection(
+        obj,
+        depth,
+        direction,
+        back_plane_offset,
+        cylinder_params):
+    """Capture a cylinder cut boundary as a durable context weld action."""
+    if obj is None or obj.type != 'MESH' or not obj.data.is_editmode:
+        return
+    bm = bmesh.from_edit_mesh(obj.data)
+    kind, effective_depth = _derive_kind(
+        bm, depth, None, cylinder_params,
+    )
+    stored_cylinder = cylinder_params if kind == 'FOLDED_PLANE' else None
+    _set_on_bmesh(
+        bm,
+        kind,
+        effective_depth,
+        tuple(direction),
+        back_plane_offset,
+        None,
+        None,
+        stored_cylinder,
+        None,
+    )
+    bmesh.update_edit_mesh(obj.data)
+    if kind == 'NONE':
+        reset_runtime_state()
+    else:
+        _arm(obj, kind, False, bm)
+    debug_log(f"[ContextAction] Stored cylinder {kind} on '{obj.name}'")
 
 
 def store_from_box_builder(obj, new_face_vert_positions):
@@ -502,7 +672,7 @@ def store_from_box_builder(obj, new_face_vert_positions):
         return
     _set_on_bmesh(
         bm, 'INVERT', 0.0, (0.0, 0.0, 0.0), 0.0,
-        box_faces, None, None,
+        box_faces, None, None, None,
     )
     bmesh.update_edit_mesh(obj.data)
     _arm(obj, 'INVERT', False, bm)

@@ -1,16 +1,29 @@
 """UV projection for newly created faces after topology changes."""
 
+import math
+
 import bmesh
 import bpy
 from mathutils import Matrix, Vector
 
 from ..core.logging import debug_log
 from ..core.face_id import get_face_id_layer
-from ..core.geometry import get_local_x_from_verts_3d
+from ..core.geometry import get_local_x_from_verts_3d, normalize_offset
 from ..core.uv_layers import get_unlocked_uv_layers
+from ..core.uv_projection import (
+    apply_uv_to_face,
+    derive_transform_from_uvs,
+    get_face_local_axes,
+)
+from ..core.materials import get_texture_dimensions_from_material
 from ..core.hotspot_queries import face_has_hotspot_material
 
 from .face_cache import face_data_cache, get_cached_layer_data
+
+
+_NORMAL_SIMILARITY_THRESHOLD = 0.0
+_AXIS_EPSILON = 1e-4
+_AXIS_PARALLEL_DOT = 0.99
 
 
 def _is_translated_from_cache(face, cached):
@@ -313,6 +326,447 @@ def _find_spin_rotated_faces(bm, id_layer):
     return result
 
 
+def _face_geometry_key(face):
+    """Return a deterministic geometry-first ordering key for a BMesh face."""
+    center = face.calc_center_median()
+    normal = face.normal
+    vertices = tuple(sorted(
+        (
+            round(vertex.co.x, 6),
+            round(vertex.co.y, 6),
+            round(vertex.co.z, 6),
+        )
+        for vertex in face.verts
+    ))
+    return (
+        round(center.length_squared, 8),
+        round(center.x, 8),
+        round(center.y, 8),
+        round(center.z, 8),
+        round(normal.x, 6),
+        round(normal.y, 6),
+        round(normal.z, 6),
+        vertices,
+        face.index,
+    )
+
+
+def _face_set_geometry_key(faces):
+    """Return a deterministic key for a non-empty face collection."""
+    return min(_face_geometry_key(face) for face in faces)
+
+
+def _face_has_valid_uvs(face, uv_layer):
+    """Return whether a face has a non-collapsed UV polygon on one layer."""
+    uvs = [loop[uv_layer].uv for loop in face.loops]
+    if len(uvs) < 3:
+        return False
+
+    uv_area = 0.0
+    for index in range(1, len(uvs) - 1):
+        edge_a = uvs[index] - uvs[0]
+        edge_b = uvs[index + 1] - uvs[0]
+        uv_area += abs(edge_a.x * edge_b.y - edge_a.y * edge_b.x)
+    return uv_area > 1e-8
+
+
+def _build_face_components(faces, require_similar_normals):
+    """Build deterministic adjacency components from a set of new faces."""
+    face_set = set(faces)
+    remaining = set(face_set)
+    components = []
+
+    while remaining:
+        start = min(remaining, key=_face_geometry_key)
+        component = set()
+        queue = [start]
+        remaining.remove(start)
+
+        while queue:
+            current = queue.pop(0)
+            component.add(current)
+            neighbors = sorted(
+                (
+                    linked_face
+                    for linked_face in _linked_faces(current)
+                    if linked_face in remaining
+                    and (
+                        not require_similar_normals
+                        or current.normal.dot(linked_face.normal)
+                        > _NORMAL_SIMILARITY_THRESHOLD
+                    )
+                ),
+                key=_face_geometry_key,
+            )
+            for neighbor in neighbors:
+                remaining.remove(neighbor)
+                queue.append(neighbor)
+
+        components.append(component)
+
+    return sorted(components, key=_face_set_geometry_key)
+
+
+def _build_similar_normal_groups(new_faces):
+    """Partition every disconnected new-face graph by positive normal links."""
+    groups = []
+    topology_components = _build_face_components(new_faces, False)
+    for topology_component in topology_components:
+        groups.extend(_build_face_components(topology_component, True))
+    return topology_components, sorted(groups, key=_face_set_geometry_key)
+
+
+def _canonicalize_direction(direction):
+    """Give an unoriented axis a stable sign based on its dominant component."""
+    values = (direction.x, direction.y, direction.z)
+    dominant_index = max(range(3), key=lambda index: abs(values[index]))
+    if values[dominant_index] < 0:
+        return -direction
+    return direction
+
+
+def _infer_group_depth_axis(group):
+    """Infer a shared cut-depth axis from connected, non-coplanar face normals."""
+    group_set = set(group)
+    pair_axes = []
+    ordered_faces = sorted(group, key=_face_geometry_key)
+
+    for face in ordered_faces:
+        for neighbor in sorted(_linked_faces(face), key=_face_geometry_key):
+            if neighbor not in group_set:
+                continue
+            if _face_geometry_key(neighbor) <= _face_geometry_key(face):
+                continue
+            if face.normal.dot(neighbor.normal) <= _NORMAL_SIMILARITY_THRESHOLD:
+                continue
+
+            axis = face.normal.cross(neighbor.normal)
+            if axis.length < _AXIS_EPSILON:
+                continue
+            pair_axes.append(_canonicalize_direction(axis.normalized()))
+
+    if not pair_axes:
+        return None
+
+    reference = pair_axes[0]
+    for axis in pair_axes[1:]:
+        if abs(reference.dot(axis)) < _AXIS_PARALLEL_DOT:
+            return None
+
+    combined = Vector((0.0, 0.0, 0.0))
+    for axis in pair_axes:
+        if reference.dot(axis) < 0:
+            axis = -axis
+        combined += axis
+    if combined.length < _AXIS_EPSILON:
+        return None
+    combined.normalize()
+    combined = _canonicalize_direction(combined)
+
+    for face in group:
+        if abs(face.normal.normalized().dot(combined)) > 0.01:
+            return None
+    return combined
+
+
+def _root_candidate_score(target_face, source_face, all_graph_faces,
+                          id_layer):
+    """Rank one external UV donor using the established neighbor priorities."""
+    dot = target_face.normal.dot(source_face.normal)
+    similar_rank = 0 if dot > _NORMAL_SIMILARITY_THRESHOLD else 1
+    existing_rank = 0 if source_face not in all_graph_faces else 1
+    sideways_rank = -(1.0 - abs(source_face.normal.z))
+
+    coplanar_distance = float('inf')
+    if (target_face.normal - source_face.normal).length < 0.01:
+        cached = face_data_cache.get(source_face[id_layer])
+        if cached and cached.get('center'):
+            source_center = cached['center']
+        else:
+            source_center = source_face.calc_center_median()
+        coplanar_distance = (
+            source_center - target_face.calc_center_median()
+        ).length
+
+    return (
+        similar_rank,
+        existing_rank,
+        sideways_rank,
+        coplanar_distance,
+        _face_geometry_key(target_face),
+        _face_geometry_key(source_face),
+    )
+
+
+def _get_group_root_candidates(group, all_graph_faces,
+                               projected_graph_faces, excluded_sources,
+                               uv_layer, id_layer):
+    """Find deterministic root/donor candidates for one normal-connected group."""
+    candidates = []
+    for target_face in sorted(group, key=_face_geometry_key):
+        for source_face in sorted(_linked_faces(target_face),
+                                  key=_face_geometry_key):
+            if source_face in group or source_face in excluded_sources:
+                continue
+            if source_face in all_graph_faces and source_face not in projected_graph_faces:
+                continue
+            if not _face_has_valid_uvs(source_face, uv_layer):
+                continue
+            candidates.append((
+                _root_candidate_score(
+                    target_face, source_face, all_graph_faces, id_layer,
+                ),
+                target_face,
+                source_face,
+            ))
+    candidates.sort(key=lambda item: item[0])
+    return [(target, source) for _score, target, source in candidates]
+
+
+def _get_shared_anchor_vert(first_face, second_face):
+    """Choose a stable shared vertex for UV phase anchoring."""
+    shared_verts = set(first_face.verts) & set(second_face.verts)
+    if not shared_verts:
+        return None
+    return min(
+        shared_verts,
+        key=lambda vertex: (
+            round(vertex.co.x, 8),
+            round(vertex.co.y, 8),
+            round(vertex.co.z, 8),
+            vertex.index,
+        ),
+    )
+
+
+def _align_face_uv_to_depth_axis(face, source_face, uv_layer, depth_axis,
+                                 ppm, me):
+    """Rotate one projected root while preserving scale and shared-vertex phase."""
+    transform = derive_transform_from_uvs(face, uv_layer, ppm, me)
+    if not transform:
+        return False
+    scale_u = transform['scale_u']
+    scale_v = transform['scale_v']
+    if abs(scale_u) < 1e-8 or abs(scale_v) < 1e-8:
+        return False
+
+    face_axes = get_face_local_axes(face)
+    if not face_axes:
+        return False
+    face_local_x, face_local_y = face_axes
+
+    normal = face.normal.normalized()
+    aligned_v = depth_axis - normal * depth_axis.dot(normal)
+    if aligned_v.length < _AXIS_EPSILON:
+        return False
+    aligned_v.normalize()
+    rotation = math.degrees(math.atan2(
+        aligned_v.dot(face_local_x),
+        aligned_v.dot(face_local_y),
+    ))
+
+    anchor_vert = _get_shared_anchor_vert(face, source_face)
+    if anchor_vert is None:
+        anchor_loop = list(face.loops)[0]
+    else:
+        anchor_loop = next(
+            loop for loop in face.loops if loop.vert == anchor_vert
+        )
+    anchor_co = anchor_loop.vert.co.copy()
+    anchor_uv = anchor_loop[uv_layer].uv.copy()
+
+    first_vert = list(face.loops)[0].vert.co
+    rotation_rad = math.radians(rotation)
+    cos_rotation = math.cos(rotation_rad)
+    sin_rotation = math.sin(rotation_rad)
+    projection_x = (
+        face_local_x * cos_rotation - face_local_y * sin_rotation
+    )
+    projection_y = (
+        face_local_x * sin_rotation + face_local_y * cos_rotation
+    )
+    delta = anchor_co - first_vert
+
+    material = (
+        me.materials[face.material_index]
+        if face.material_index < len(me.materials)
+        else None
+    )
+    texture_meters_u, texture_meters_v = get_texture_dimensions_from_material(
+        material, ppm,
+    )
+    projected_u = delta.dot(projection_x) / (scale_u * texture_meters_u)
+    projected_v = delta.dot(projection_y) / (scale_v * texture_meters_v)
+    offset_x = normalize_offset(anchor_uv.x - projected_u)
+    offset_y = normalize_offset(anchor_uv.y - projected_v)
+
+    apply_uv_to_face(
+        face, uv_layer, scale_u, scale_v, rotation,
+        offset_x, offset_y, material, ppm, me,
+    )
+    return True
+
+
+def _project_face_from_source(source_face, target_face, unlocked_layers,
+                              ppm, me, obj_matrix, depth_axis,
+                              set_uv_from_other_face):
+    """Project one face from one chosen source, optionally aligning a root."""
+    if target_face.material_index != source_face.material_index:
+        debug_log(
+            f"[ProjectNewFaces] Propagated material: "
+            f"face {target_face.index} mat={source_face.material_index} "
+            f"(source=face {source_face.index})"
+        )
+        target_face.material_index = source_face.material_index
+
+    had_uvs = _face_has_valid_uvs(target_face, unlocked_layers[0])
+    projected_any_layer = False
+    for uv_layer in unlocked_layers:
+        projected = set_uv_from_other_face(
+            source_face, target_face, uv_layer, ppm, me, obj_matrix,
+        )
+        if not projected:
+            continue
+        projected_any_layer = True
+        if (
+                depth_axis is not None
+                and source_face.normal.dot(target_face.normal)
+                <= _NORMAL_SIMILARITY_THRESHOLD):
+            _align_face_uv_to_depth_axis(
+                target_face, source_face, uv_layer, depth_axis, ppm, me,
+            )
+
+    if had_uvs and projected_any_layer:
+        debug_log(
+            f"[ProjectNewFaces] Re-projected face {target_face.index} that "
+            f"already had UVs (source=face {source_face.index})"
+        )
+    return projected_any_layer
+
+
+def _propagate_similar_group(group, root_face, root_source, depth_axis,
+                             unlocked_layers, ppm, me, obj_matrix,
+                             set_uv_from_other_face):
+    """Project one positive-normal component from exactly one chosen root."""
+    projected = set()
+    if not _project_face_from_source(
+            root_source, root_face, unlocked_layers, ppm, me, obj_matrix,
+            depth_axis, set_uv_from_other_face):
+        return projected
+    projected.add(root_face)
+
+    remaining = set(group) - projected
+    while remaining:
+        frontier = []
+        for target_face in sorted(remaining, key=_face_geometry_key):
+            for source_face in sorted(
+                    _linked_faces(target_face) & projected,
+                    key=_face_geometry_key):
+                normal_dot = target_face.normal.dot(source_face.normal)
+                if normal_dot <= _NORMAL_SIMILARITY_THRESHOLD:
+                    continue
+                frontier.append((
+                    (
+                        -normal_dot,
+                        -(1.0 - abs(source_face.normal.z)),
+                        _face_geometry_key(target_face),
+                        _face_geometry_key(source_face),
+                    ),
+                    source_face,
+                    target_face,
+                ))
+
+        if not frontier:
+            break
+        frontier.sort(key=lambda item: item[0])
+
+        made_progress = False
+        for _score, source_face, target_face in frontier:
+            if target_face not in remaining:
+                continue
+            if not _project_face_from_source(
+                    source_face, target_face, unlocked_layers, ppm, me,
+                    obj_matrix, None, set_uv_from_other_face):
+                continue
+            remaining.remove(target_face)
+            projected.add(target_face)
+            made_progress = True
+            break
+        if not made_progress:
+            break
+
+    return projected
+
+
+def _project_normal_connected_groups(new_faces, excluded_sources,
+                                     unlocked_layers, ppm, me, obj_matrix,
+                                     id_layer, set_uv_from_other_face):
+    """Project one root per positive-normal group across all topology graphs."""
+    if not new_faces:
+        return set()
+
+    topology_components, groups = _build_similar_normal_groups(new_faces)
+    debug_log(
+        f"[ProjectNewFaces] Graphs={len(topology_components)} "
+        f"normal_groups={len(groups)} new_faces={len(new_faces)}"
+    )
+
+    all_graph_faces = set(new_faces)
+    projected_graph_faces = set()
+    pending_groups = list(groups)
+
+    made_progress = True
+    while pending_groups and made_progress:
+        made_progress = False
+        still_pending = []
+        for group in pending_groups:
+            candidates = _get_group_root_candidates(
+                group, all_graph_faces, projected_graph_faces,
+                excluded_sources, unlocked_layers[0], id_layer,
+            )
+            if not candidates:
+                still_pending.append(group)
+                continue
+
+            depth_axis = _infer_group_depth_axis(group)
+            projected_group = set()
+            for root_face, root_source in candidates:
+                projected_group = _propagate_similar_group(
+                    group, root_face, root_source, depth_axis,
+                    unlocked_layers, ppm, me, obj_matrix,
+                    set_uv_from_other_face,
+                )
+                if projected_group:
+                    debug_log(
+                        f"[ProjectNewFaces] Root face {root_face.index} from "
+                        f"face {root_source.index}; group={len(group)} "
+                        f"projected={len(projected_group)} "
+                        f"axis={tuple(depth_axis) if depth_axis else None}"
+                    )
+                    break
+
+            if not projected_group:
+                still_pending.append(group)
+                continue
+
+            projected_graph_faces.update(projected_group)
+            made_progress = True
+            if len(projected_group) != len(group):
+                debug_log(
+                    f"[ProjectNewFaces] Group incomplete: "
+                    f"projected={len(projected_group)} total={len(group)}"
+                )
+
+        pending_groups = still_pending
+
+    for group in pending_groups:
+        debug_log(
+            f"[ProjectNewFaces] No UV-connected root for normal group of "
+            f"{len(group)} face(s)"
+        )
+    return projected_graph_faces
+
+
 def get_best_neighbor_face(face, excluded_faces, id_layer, allow_fallback=True):
     """Find the best neighboring face to use as UV source.
 
@@ -326,10 +780,9 @@ def get_best_neighbor_face(face, excluded_faces, id_layer, allow_fallback=True):
     no similar-facing neighbor exists and allow_fallback is True.
     """
     best_similar = None
-    best_similar_score = -1
-    best_similar_dist = float('inf')
+    best_similar_key = None
     best_fallback = None
-    best_fallback_score = -1
+    best_fallback_key = None
 
     face_center = face.calc_center_median()
 
@@ -355,14 +808,21 @@ def get_best_neighbor_face(face, excluded_faces, id_layer, allow_fallback=True):
                 else:
                     dist = float('inf')
 
-                if (sideways_score > best_similar_score or
-                        (sideways_score == best_similar_score and dist < best_similar_dist)):
-                    best_similar_score = sideways_score
-                    best_similar_dist = dist
+                candidate_key = (
+                    -sideways_score,
+                    dist,
+                    _face_geometry_key(linked_face),
+                )
+                if best_similar_key is None or candidate_key < best_similar_key:
+                    best_similar_key = candidate_key
                     best_similar = linked_face
             else:
-                if sideways_score > best_fallback_score:
-                    best_fallback_score = sideways_score
+                candidate_key = (
+                    -sideways_score,
+                    _face_geometry_key(linked_face),
+                )
+                if best_fallback_key is None or candidate_key < best_fallback_key:
+                    best_fallback_key = candidate_key
                     best_fallback = linked_face
 
     if best_similar:
@@ -531,11 +991,34 @@ def project_new_faces(context, bm):
     affected -= coplanar_reproject
     affected -= translated
 
-    # Step 2: Wavefront projection of remaining affected faces.
-    excluded = (new_faces | dupe_extrusions | spin_rotated) - coplanar_reproject
-    projected_count = len(coplanar_reproject)
-    remaining = sorted(affected,
-                       key=lambda f: f.calc_center_median().length_squared)
+    # Step 2: Partition new faces by positive-normal adjacency. Each group gets
+    # exactly one UV-connected root, then propagates only across its similar
+    # internal edges. Orthogonal cube walls therefore remain separate roots,
+    # while a faceted cylinder becomes one group even when its graph is cyclic.
+    graph_faces = affected & new_faces
+    projected_graph_faces = _project_normal_connected_groups(
+        graph_faces,
+        dupe_extrusions | spin_rotated,
+        unlocked_layers,
+        ppm,
+        me,
+        obj.matrix_world,
+        id_layer,
+        set_uv_from_other_face,
+    )
+    affected -= graph_faces
+
+    # Step 3: Preserve the existing generic wavefront for cached faces whose
+    # geometry was affected by the topology operation. Successfully projected
+    # graph faces may now act as their sources; failed graph faces remain
+    # excluded so they cannot accidentally create extra roots.
+    excluded = (
+        (new_faces | dupe_extrusions | spin_rotated)
+        - coplanar_reproject
+        - projected_graph_faces
+    )
+    projected_count = len(coplanar_reproject) + len(projected_graph_faces)
+    remaining = sorted(affected, key=_face_geometry_key)
     allow_fallback = False
     made_progress = True
     while made_progress:
@@ -552,32 +1035,11 @@ def project_new_faces(context, bm):
                 still_remaining.append(face)
                 continue
 
-            if face.material_index != source_face.material_index:
-                debug_log(
-                    f"[ProjectNewFaces] Propagated material: "
-                    f"face {face.index} mat={source_face.material_index} "
-                    f"(source=face {source_face.index})"
-                )
-                face.material_index = source_face.material_index
-
-            # Check if this face already has non-zero UVs (e.g. set by box builder)
-            _had_uvs = False
-            if unlocked_layers:
-                _check_layer = unlocked_layers[0]
-                _check_uvs = [loop[_check_layer].uv.copy() for loop in face.loops]
-                _uv_area = 0.0
-                for _i in range(1, len(_check_uvs) - 1):
-                    _ea = _check_uvs[_i] - _check_uvs[0]
-                    _eb = _check_uvs[_i + 1] - _check_uvs[0]
-                    _uv_area += abs(_ea.x * _eb.y - _ea.y * _eb.x)
-                _had_uvs = _uv_area > 1e-8
-
-            for uv_layer in unlocked_layers:
-                set_uv_from_other_face(source_face, face, uv_layer, ppm, me, obj.matrix_world)
-
-            if _had_uvs:
-                debug_log(f"[ProjectNewFaces] Re-projected face {face.index} that already had UVs "
-                          f"(source=face {source_face.index})")
+            if not _project_face_from_source(
+                    source_face, face, unlocked_layers, ppm, me,
+                    obj.matrix_world, None, set_uv_from_other_face):
+                still_remaining.append(face)
+                continue
 
             excluded.discard(face)
             projected_count += 1

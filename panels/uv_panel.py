@@ -96,6 +96,34 @@ def _preview_material_for_image(image):
         return None
 
 
+def _draw_status_tool_button(layout, operator, icon, enabled):
+    button = layout.row(align=True)
+    button.enabled = enabled
+    button.operator(operator, text="", icon=icon)
+
+
+def _draw_status_tool_header(layout, text):
+    header = layout.row(align=True)
+    header.alignment = 'CENTER'
+    header.scale_y = 0.5
+    header.label(text=text)
+
+
+class LEVELDESIGN_OT_future_shape_tool(Operator):
+    """Placeholder for a planned Anvil shape tool"""
+
+    bl_idname = "leveldesign.future_shape_tool"
+    bl_label = "Future Shape Tool"
+
+    @classmethod
+    def poll(cls, context):
+        return is_level_design_workspace()
+
+    def execute(self, context):
+        self.report({'INFO'}, "This Anvil shape tool is coming in a future update")
+        return {'FINISHED'}
+
+
 class LEVELDESIGN_PT_status_panel(Panel):
     """Status Panel"""
 
@@ -103,7 +131,7 @@ class LEVELDESIGN_PT_status_panel(Panel):
     bl_idname = "LEVELDESIGN_PT_status_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Anvil Materials'
+    bl_category = 'Anvil Meshes'
 
     @classmethod
     def poll(cls, context):
@@ -120,8 +148,25 @@ class LEVELDESIGN_PT_status_panel(Panel):
         label = get_unit_label(unit_settings.system, unit_settings.length_unit)
 
         snap_icon = get_snap_mode_icon(context.tool_settings)
-        box = layout.box()
-        row = box.row()
+        preferences_system = context.preferences.system
+        widget_unit = (
+            int(18.0 * preferences_system.ui_scale + 0.5)
+            + (2 * int(preferences_system.pixel_size))
+        )
+        # Reserve a fixed-width area at the right so the status boxes absorb
+        # any extra sidebar width instead of the icon columns spreading out.
+        panel_content_width = max(
+            float(widget_unit),
+            context.region.width - (widget_unit * 1.3),
+        )
+        fixed_tool_area_width = widget_unit * 1.95
+        status_factor = max(
+            0.5,
+            1.0 - (fixed_tool_area_width / panel_content_width),
+        )
+        content = layout.split(factor=status_factor, align=True)
+        status = content.column()
+        box = status.box()
 
         # Compute pixel size for the current grid scale
         ppm = props.pixels_per_meter
@@ -129,14 +174,12 @@ class LEVELDESIGN_PT_status_panel(Panel):
         # Format as integer if whole number
         px_str = f"{int(grid_px)}px" if grid_px == int(grid_px) else f"{grid_px:.1f}px"
 
+        row = box.row(align=True)
+        grid_text = f"Grid Size: {anvil_scale}  ({px_str})"
         if label:
-            row.label(
-                text=f"Grid Size: {anvil_scale}  ({px_str})  ({label})  [ / ]", icon=snap_icon
-            )
-        else:
-            row.label(
-                text=f"Grid Size: {anvil_scale}  ({px_str})  [ / ]", icon=snap_icon
-            )
+            grid_text = f"{grid_text}  ({label})"
+        grid_text = f"{grid_text}  [ / ]"
+        row.label(text=grid_text, icon=snap_icon)
         overlay_icon = 'HIDE_OFF' if props.show_grid_overlay else 'HIDE_ON'
         row.operator(
             "leveldesign.toggle_grid_overlay",
@@ -156,7 +199,7 @@ class LEVELDESIGN_PT_status_panel(Panel):
         action = get_context_action_summary(
             context.active_object, context.mode,
         )
-        box = layout.box()
+        box = status.box()
         box.label(text="Context Action")
         if action.kind != 'NONE':
             box.operator(
@@ -168,6 +211,73 @@ class LEVELDESIGN_PT_status_panel(Panel):
             row = box.row()
             row.enabled = False
             row.label(text="No action available", icon='AUTOMERGE_ON')
+
+        tool_area = content.row(align=True)
+        tool_area.alignment = 'RIGHT'
+        tool_area.separator(factor=0.2)
+        tools = tool_area.column(align=True)
+        # Keep the icon strip fixed at two button-widths as the sidebar grows.
+        tools.ui_units_x = 1.95
+        tools.scale_y = 0.98
+        tools.operator_context = 'INVOKE_DEFAULT'
+        # Compensate for the aligned split's center pixel so both sides render
+        # at the same width.
+        tool_split_factor = 0.52
+
+        tool_columns = tools.split(factor=tool_split_factor, align=True)
+        builders = tool_columns.column(align=True)
+        cutters = tool_columns.column(align=True)
+
+        # Blender left-biases the first label in this asymmetric split. A
+        # leading glyph-space centers it over the make-button column.
+        _draw_status_tool_header(builders, " \u200a+")
+        _draw_status_tool_header(cutters, "-")
+
+        _draw_status_tool_button(
+            builders, "leveldesign.box_builder", 'MESH_CUBE', True
+        )
+        _draw_status_tool_button(
+            cutters, "leveldesign.cube_cut", 'MESH_CUBE', True
+        )
+
+        _draw_status_tool_button(
+            builders,
+            "leveldesign.future_shape_tool",
+            'MESH_CYLINDER',
+            False,
+        )
+        _draw_status_tool_button(
+            cutters,
+            "leveldesign.cylinder_cut",
+            'MESH_CYLINDER',
+            True,
+        )
+
+        _draw_status_tool_button(
+            builders,
+            "leveldesign.future_shape_tool",
+            'MESH_CIRCLE',
+            False,
+        )
+        _draw_status_tool_button(
+            cutters,
+            "leveldesign.future_shape_tool",
+            'MESH_CIRCLE',
+            False,
+        )
+
+        _draw_status_tool_button(
+            builders,
+            "leveldesign.future_shape_tool",
+            'IPO_CONSTANT',
+            False,
+        )
+        _draw_status_tool_button(
+            cutters,
+            "leveldesign.future_shape_tool",
+            'BLANK1',
+            False,
+        )
 
 
 class LEVELDESIGN_OT_set_active_render_uv(Operator):
@@ -296,7 +406,7 @@ class LEVELDESIGN_PT_uv_lock_panel(Panel):
     bl_idname = "LEVELDESIGN_PT_uv_lock_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Anvil Materials'
+    bl_category = 'Anvil Meshes'
 
 
     @classmethod
@@ -381,7 +491,7 @@ class LEVELDESIGN_PT_uv_settings_panel(Panel):
     bl_idname = "LEVELDESIGN_PT_uv_settings_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Anvil Materials'
+    bl_category = 'Anvil Meshes'
 
 
     @classmethod
@@ -483,7 +593,7 @@ class LEVELDESIGN_PT_hotspotting_panel(Panel):
     bl_idname = "LEVELDESIGN_PT_hotspotting_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Anvil Materials'
+    bl_category = 'Anvil Meshes'
 
     bl_options = {'DEFAULT_CLOSED'}
 
@@ -629,7 +739,7 @@ class LEVELDESIGN_PT_uv_shortcuts_panel(Panel):
     bl_idname = "LEVELDESIGN_PT_uv_shortcuts_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Anvil Materials'
+    bl_category = 'Anvil Meshes'
 
 
     @classmethod
@@ -679,7 +789,7 @@ class LEVELDESIGN_PT_texture_preview_panel(Panel):
     bl_idname = "LEVELDESIGN_PT_texture_preview_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Anvil Materials'
+    bl_category = 'Anvil Meshes'
 
 
     @classmethod
@@ -1164,6 +1274,7 @@ class LEVELDESIGN_PT_debug_panel(Panel):
 # order in Blender is locked in by the order each category is first
 # encountered during registration.
 materials_classes = (
+    LEVELDESIGN_OT_future_shape_tool,
     LEVELDESIGN_PT_status_panel,
     LEVELDESIGN_OT_set_active_render_uv,
     LEVELDESIGN_OT_toggle_uv_lock,

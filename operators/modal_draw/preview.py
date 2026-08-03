@@ -68,9 +68,17 @@ class ModalDrawPreview:
         self._line_end = None          # Current line end point
         self._candidate_valid = True   # Whether current candidate can be confirmed
 
-        # Predicted Cube Cut vertices. Each entry contains a world-space
+        # Predicted cut intersection vertices. Each entry contains a world-space
         # position and two tangents derived from its supporting face normal.
         self._cut_vertex_markers = []
+        self._info_visible = False
+
+        # Optional custom convex profile used by tools such as Cylinder Cut.
+        # When set, it replaces the rectangle/cuboid outline in the second
+        # vertex and depth phases. Guides show the user-derived construction
+        # dimensions independently from the final profile perimeter.
+        self._custom_profile_vertices = None
+        self._custom_profile_guides = []
 
         # Prefab placement ghost data
         self._prefab_ghost = None
@@ -142,6 +150,27 @@ class ModalDrawPreview:
         """Replace the cached world-space, face-oriented cut vertex markers."""
         self._cut_vertex_markers = markers
 
+    def set_info_visible(self, visible):
+        """Show or hide supplementary tool information overlays."""
+        changed = self._info_visible != visible
+        self._info_visible = visible
+        return changed
+
+    def is_info_visible(self):
+        """Return whether supplementary tool information should be shown."""
+        return self._info_visible
+
+    def update_custom_profile(self, vertices, guides):
+        """Set an optional custom front profile and construction guides."""
+        self._custom_profile_vertices = (
+            [Vector(vertex).copy() for vertex in vertices]
+            if vertices is not None else None
+        )
+        self._custom_profile_guides = [
+            (Vector(start).copy(), Vector(end).copy())
+            for start, end in guides
+        ]
+
     def set_prefab_ghost(self, prefab_ghost):
         """Set local-space albedo data for the prefab placement ghost."""
         self._prefab_ghost = prefab_ghost
@@ -191,6 +220,9 @@ class ModalDrawPreview:
         self._line_end = None
         self._candidate_valid = True
         self._cut_vertex_markers = []
+        self._info_visible = False
+        self._custom_profile_vertices = None
+        self._custom_profile_guides = []
         self._prefab_ghost = None
         self._ghost_matrix = None
 
@@ -217,10 +249,16 @@ class ModalDrawPreview:
                 self._draw_snap_point()
                 self._draw_line_preview()
             elif self._state == 'SECOND_VERTEX':
-                self._draw_rectangle_preview()
+                if self._custom_profile_vertices is not None:
+                    self._draw_custom_profile_preview()
+                else:
+                    self._draw_rectangle_preview()
                 self._draw_cut_vertex_markers()
             elif self._state == 'DEPTH':
-                self._draw_cuboid_preview()
+                if self._custom_profile_vertices is not None:
+                    self._draw_custom_prism_preview()
+                else:
+                    self._draw_cuboid_preview()
                 self._draw_cut_vertex_markers()
         finally:
             # Restore GPU state
@@ -274,7 +312,7 @@ class ModalDrawPreview:
 
     def _draw_cut_vertex_markers(self):
         """Draw all predicted vertices as one batched set of face-aligned Xs."""
-        if not self._cut_vertex_markers:
+        if not self._info_visible or not self._cut_vertex_markers:
             return
 
         line_points = []
@@ -593,6 +631,37 @@ class ModalDrawPreview:
         edges = utils.get_cuboid_edges()
         self._draw_edges(vertices, edges, self._get_candidate_color(COLOR_CUBOID))
 
+    def _draw_custom_profile_preview(self):
+        """Draw a custom convex profile and its construction guides."""
+        vertices = self._custom_profile_vertices
+        if vertices is None or len(vertices) < 2:
+            return
+
+        color = self._get_candidate_color(COLOR_RECTANGLE)
+        self._draw_line_loop(vertices, color)
+        self._draw_segments(self._custom_profile_guides, color)
+
+    def _draw_custom_prism_preview(self):
+        """Extrude the custom profile outline by the current preview depth."""
+        front_vertices = self._custom_profile_vertices
+        if front_vertices is None or len(front_vertices) < 2:
+            return
+
+        depth_offset = self._local_z * self._depth
+        back_vertices = [vertex + depth_offset for vertex in front_vertices]
+        vertices = front_vertices + back_vertices
+        vertex_count = len(front_vertices)
+        edges = []
+        for index in range(vertex_count):
+            next_index = (index + 1) % vertex_count
+            edges.append((index, next_index))
+            edges.append((index + vertex_count, next_index + vertex_count))
+            edges.append((index, index + vertex_count))
+
+        color = self._get_candidate_color(COLOR_CUBOID)
+        self._draw_edges(vertices, edges, color)
+        self._draw_segments(self._custom_profile_guides, color)
+
     def _get_measurement_segments(self):
         """Return world-space segments to label for the active preview shape."""
         if self._state == 'LINE_END':
@@ -602,6 +671,8 @@ class ModalDrawPreview:
             return [(self._first_vertex, self._line_end, None)]
 
         if self._state == 'SECOND_VERTEX':
+            if self._custom_profile_vertices is not None:
+                return list(self._custom_profile_guides)
             if self._first_vertex is None or self._second_vertex is None:
                 return []
             if self._local_x is None or self._local_y is None:
@@ -611,6 +682,12 @@ class ModalDrawPreview:
             return measurement_labels.segments_from_loop(corners)
 
         if self._state == 'DEPTH':
+            if self._custom_profile_vertices is not None:
+                segments = list(self._custom_profile_guides)
+                if self._custom_profile_vertices:
+                    front = self._custom_profile_vertices[0]
+                    segments.append((front, front + self._local_z * self._depth, None))
+                return segments
             if self._first_vertex is None or self._second_vertex is None:
                 return []
             if self._local_x is None or self._local_y is None or self._local_z is None:
@@ -685,6 +762,19 @@ class ModalDrawPreview:
                 batch.draw(shader)
             except Exception:
                 pass  # Silent fail if drawing is not possible
+
+    def _draw_segments(self, segments, color):
+        """Draw independent world-space line segments."""
+        if not segments:
+            return
+
+        vertices = []
+        edges = []
+        for start, end in segments:
+            start_index = len(vertices)
+            vertices.extend((start, end))
+            edges.append((start_index, start_index + 1))
+        self._draw_edges(vertices, edges, color)
 
     def _draw_prefab_ghost(self):
         """Draw an albedo ghost for prefab placement."""

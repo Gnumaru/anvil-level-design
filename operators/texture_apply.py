@@ -197,7 +197,15 @@ def set_uv_from_other_face(source_face, target_face, uv_layer, ppm, me, obj_matr
     shared_verts = source_verts & target_verts
 
     if len(shared_verts) >= 1:
-        shared_vert = list(shared_verts)[0]
+        shared_vert = min(
+            shared_verts,
+            key=lambda vert: (
+                round(vert.co.x, 8),
+                round(vert.co.y, 8),
+                round(vert.co.z, 8),
+                vert.index,
+            ),
+        )
         ref_point_co = shared_vert.co.copy()
         # Find UV of shared vert in source
         ref_point_uv = None

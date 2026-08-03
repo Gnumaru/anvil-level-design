@@ -10,7 +10,8 @@ from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty
 from mathutils import Vector
 
 from . import geometry
-from .analysis import analyze_cube_cut, build_cube_cut_cuboid
+from .analysis import analyze_convex_prism_cut
+from .prism import build_cube_cut_prism
 from ..modal_draw.base_operator import ModalDrawBase, MIN_RECTANGLE_SIZE
 from ..modal_draw import utils as modal_draw_utils
 from ...core.workspace_check import is_level_design_workspace
@@ -80,8 +81,19 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
         super()._update_depth_preview(context, event)
         self._update_cut_vertex_preview(context)
 
+    def _on_info_visibility_changed(self, context, visible):
+        self._cut_preview_dimensions = None
+        if visible:
+            self._update_cut_vertex_preview(context)
+        else:
+            self._preview.update_cut_vertex_markers([])
+
     def _update_cut_vertex_preview(self, context):
         """Refresh predicted vertex Xs only when snapped dimensions change."""
+        if not self._preview.is_info_visible():
+            self._cut_preview_dimensions = None
+            self._preview.update_cut_vertex_markers([])
+            return
         if self._first_vertex is None or self._second_vertex is None:
             return
         if self._local_x is None or self._local_y is None or self._local_z is None:
@@ -137,8 +149,8 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
             add_performance_detail(performance_report, "Mesh edges", len(bm.edges))
             add_performance_detail(performance_report, "Mesh faces", len(bm.faces))
 
-            with performance_stage(performance_report, "Build cut cuboid"):
-                cuboid = build_cube_cut_cuboid(
+            with performance_stage(performance_report, "Build cut prism"):
+                prism = build_cube_cut_prism(
                     obj.matrix_world,
                     preview_first,
                     preview_second,
@@ -151,7 +163,7 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
             # This deliberately uses the existing direct BMesh scan. A BVH can
             # be introduced later without changing the analysis/preview contract.
             with performance_stage(performance_report, "Analyze intersections"):
-                analysis = analyze_cube_cut(bm, cuboid)
+                analysis = analyze_convex_prism_cut(bm, prism)
 
             with performance_stage(
                     performance_report, "Prepare face-oriented X markers"):

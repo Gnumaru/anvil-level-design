@@ -1,5 +1,7 @@
 """Undoable operators that execute one captured pending mesh action."""
 
+import math
+
 import bmesh
 import bpy
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty
@@ -9,6 +11,7 @@ from ..core.geometry import compute_normal_from_verts
 from ..core.logging import debug_log
 from ..core.workspace_check import is_level_design_workspace
 from .pending_mesh_action import (
+    build_cylinder_weld_profile,
     complete_pending_action,
     get_pending_action_kind,
     resolve_pending_action,
@@ -54,6 +57,145 @@ def _clear_selection(bm):
     for vert in bm.verts:
         vert.select = False
     bm.select_flush(False)
+
+
+def _connect_matching_depth_vertices(bm, selected_verts, local_z):
+    """Connect selected boundary vertices that share one cylinder profile point."""
+    groups = []
+    for vert in selected_verts:
+        profile_position = vert.co - local_z * vert.co.dot(local_z)
+        group = next(
+            (
+                candidate
+                for candidate in groups
+                if (candidate[0] - profile_position).length < _FOLDED_EPSILON
+            ),
+            None,
+        )
+        if group is None:
+            groups.append([profile_position, [vert]])
+        else:
+            group[1].append(vert)
+
+    new_edges = []
+    for _profile_position, verts in groups:
+        if len(verts) < 2:
+            continue
+        verts.sort(key=lambda vert: vert.co.dot(local_z))
+        for index in range(len(verts) - 1):
+            first = verts[index]
+            second = verts[index + 1]
+            existing = next(
+                (
+                    edge
+                    for edge in first.link_edges
+                    if edge.other_vert(first) == second
+                ),
+                None,
+            )
+            new_edges.append(
+                existing if existing is not None else bm.edges.new((first, second))
+            )
+    return new_edges
+
+
+def _point_on_cylinder_side(point, side_start, side_end, local_z):
+    side_edge = side_end - side_start
+    side_normal = side_edge.cross(local_z)
+    if side_normal.length < _FOLDED_EPSILON:
+        return False
+    side_normal.normalize()
+    offset = point - side_start
+    if abs(offset.dot(side_normal)) >= _FOLDED_EPSILON:
+        return False
+
+    edge_dot_edge = side_edge.dot(side_edge)
+    edge_dot_depth = side_edge.dot(local_z)
+    depth_dot_depth = local_z.dot(local_z)
+    determinant = edge_dot_edge * depth_dot_depth - edge_dot_depth * edge_dot_depth
+    if abs(determinant) < _FOLDED_EPSILON:
+        return False
+    edge_factor = (
+        offset.dot(side_edge) * depth_dot_depth
+        - offset.dot(local_z) * edge_dot_depth
+    ) / determinant
+    return -_FOLDED_EPSILON <= edge_factor <= 1.0 + _FOLDED_EPSILON
+
+
+def _create_cylinder_folded_faces(bm, selected_edges, cylinder_params):
+    center, _radius_x, _radius_y, local_z, _side_count, _radius_mode = cylinder_params
+    selected_verts = list({vert for edge in selected_edges for vert in edge.verts})
+    depth_edges = _connect_matching_depth_vertices(
+        bm, selected_verts, local_z,
+    )
+    relevant_verts = set(selected_verts)
+    for edge in depth_edges:
+        relevant_verts.update(edge.verts)
+
+    profile = build_cylinder_weld_profile(cylinder_params)
+    created_faces = []
+    for side_index, side_start in enumerate(profile):
+        side_end = profile[(side_index + 1) % len(profile)]
+        plane_verts = [
+            vert
+            for vert in relevant_verts
+            if _point_on_cylinder_side(
+                vert.co, side_start, side_end, local_z,
+            )
+        ]
+        if len(plane_verts) < 3:
+            continue
+
+        side_edge = side_end - side_start
+        side_u = side_edge.normalized()
+        plane_normal = side_edge.cross(local_z).normalized()
+        side_w = plane_normal.cross(side_u).normalized()
+        centroid = sum((vert.co for vert in plane_verts), Vector()) / len(plane_verts)
+        polygon = sorted(
+            plane_verts,
+            key=lambda vert: math.atan2(
+                (vert.co - centroid).dot(side_w),
+                (vert.co - centroid).dot(side_u),
+            ),
+        )
+        inward_normal = plane_normal
+        if inward_normal.dot(center - (side_start + side_end) * 0.5) < 0:
+            inward_normal = -inward_normal
+        normal = compute_normal_from_verts([vert.co for vert in polygon])
+        if normal is not None and normal.dot(inward_normal) < 0:
+            polygon.reverse()
+        try:
+            created_faces.append(bm.faces.new(polygon))
+        except ValueError as exc:
+            debug_log(
+                f"[FoldedCylinder] Failed to create side {side_index}: {exc}"
+            )
+    return created_faces
+
+
+def _triangulate_folded_faces(bm, created_faces):
+    faces_to_triangulate = [
+        face for face in created_faces if face.is_valid and len(face.verts) > 4
+    ]
+    if not faces_to_triangulate:
+        return
+    result = bmesh.ops.triangulate(bm, faces=faces_to_triangulate)
+    triangles = {face for face in result.get('faces', []) if face.is_valid}
+    triangles.update(
+        face for face in created_faces if face.is_valid and len(face.verts) == 3
+    )
+    if triangles:
+        bmesh.ops.join_triangles(
+            bm,
+            faces=list(triangles),
+            cmp_seam=False,
+            cmp_sharp=False,
+            cmp_uvs=False,
+            cmp_vcols=False,
+            cmp_materials=False,
+            angle_face_threshold=3.14,
+            angle_shape_threshold=3.14,
+        )
 
 
 class LEVELDESIGN_OT_weld_bridge(bpy.types.Operator):
@@ -266,7 +408,7 @@ class LEVELDESIGN_OT_weld_corridor(bpy.types.Operator):
 
 
 class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
-    """Complete the folded cuboid sides captured by the pending action"""
+    """Complete the folded prism sides captured by the pending action"""
 
     bl_idname = "leveldesign.weld_folded_plane"
     bl_label = "Complete Folded Plane"
@@ -278,6 +420,21 @@ class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
     cdx: FloatProperty(options={'HIDDEN', 'SKIP_SAVE'})
     cdy: FloatProperty(options={'HIDDEN', 'SKIP_SAVE'})
     coplanar_blocked: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    is_cylinder: BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    cylinder_center: FloatVectorProperty(
+        size=3, options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    cylinder_radius_x: FloatVectorProperty(
+        size=3, options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    cylinder_radius_y: FloatVectorProperty(
+        size=3, options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    cylinder_local_z: FloatVectorProperty(
+        size=3, options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    cylinder_side_count: IntProperty(options={'HIDDEN', 'SKIP_SAVE'})
+    cylinder_radius_mode: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
 
     @classmethod
     def poll(cls, context):
@@ -294,7 +451,11 @@ class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
         action = _resolve_edit_action(obj, context.mode, bm, 'FOLDED_PLANE')
         if action is None:
             return {'CANCELLED'}
-        if action.cuboid_params is None:
+        if action.cylinder_params is not None:
+            if not self.is_cylinder:
+                return {'CANCELLED'}
+            return self._execute_cylinder(context, obj, bm, action)
+        if self.is_cylinder or action.cuboid_params is None:
             return {'CANCELLED'}
         stored_origin, stored_x, stored_y, stored_cdx, stored_cdy = action.cuboid_params
         if (
@@ -430,6 +591,53 @@ class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
         complete_pending_action(obj, action, bm)
         bmesh.update_edit_mesh(obj.data)
         self.report({'INFO'}, "Folded plane weld completed")
+        return {'FINISHED'}
+
+    def _execute_cylinder(self, context, obj, bm, action):
+        (
+            stored_center,
+            stored_radius_x,
+            stored_radius_y,
+            stored_local_z,
+            stored_side_count,
+            stored_radius_mode,
+        ) = action.cylinder_params
+        if (
+                not _vector_matches(self.cylinder_center, stored_center)
+                or not _vector_matches(
+                    self.cylinder_radius_x, stored_radius_x,
+                )
+                or not _vector_matches(
+                    self.cylinder_radius_y, stored_radius_y,
+                )
+                or not _vector_matches(
+                    self.cylinder_local_z, stored_local_z,
+                )
+                or self.cylinder_side_count != stored_side_count
+                or self.cylinder_radius_mode != stored_radius_mode):
+            return {'CANCELLED'}
+
+        selected_edges = [edge for edge in bm.edges if edge.select]
+        if not selected_edges:
+            self.report({'ERROR'}, "No edges selected")
+            return {'CANCELLED'}
+        created_faces = _create_cylinder_folded_faces(
+            bm, selected_edges, action.cylinder_params,
+        )
+        if not created_faces:
+            self.report({'ERROR'}, "No cylinder wall faces created")
+            return {'CANCELLED'}
+        _triangulate_folded_faces(bm, created_faces)
+        bm.normal_update()
+        from ..handlers.new_face_projection import project_new_faces
+        from ..handlers.face_cache import cache_face_data
+        project_new_faces(context, bm)
+        cache_face_data(context)
+        _clear_selection(bm)
+        context.tool_settings.mesh_select_mode = (False, False, True)
+        complete_pending_action(obj, action, bm)
+        bmesh.update_edit_mesh(obj.data)
+        self.report({'INFO'}, "Folded cylinder weld completed")
         return {'FINISHED'}
 
 

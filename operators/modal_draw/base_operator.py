@@ -8,6 +8,7 @@ Subclasses must override _execute_action() and _get_tool_name().
 Subclasses may override the _calculate_* hook methods for custom snapping.
 """
 
+import bpy
 from mathutils import Vector
 
 from . import utils
@@ -120,6 +121,10 @@ class ModalDrawBase:
 
     # --- Hook methods (may override) ---
 
+    def _on_info_visibility_changed(self, context, visible):
+        """Refresh or discard optional information when Alt changes state."""
+        pass
+
     def _is_valid_mode(self, context):
         """Check if the current mode is valid for this operator. Override to allow other modes."""
         return context.mode == 'EDIT_MESH'
@@ -172,6 +177,31 @@ class ModalDrawBase:
         if not hasattr(self, "_state"):
             return True
         return self._state == self.STATE_FIRST_VERTEX
+
+    def _modal_handler_target_changed(self, target):
+        handler_target = getattr(self, "_modal_handler_view_target", None)
+        if handler_target is None:
+            return False
+        return not target.matches(handler_target)
+
+    def _handoff_modal_to_view_target(self, context, target):
+        operator_id = self.__class__.bl_idname
+        operator_group_name, operator_name = operator_id.split(".", 1)
+        operator_group = getattr(bpy.ops, operator_group_name)
+        operator = getattr(operator_group, operator_name)
+        properties = self.as_keywords()
+
+        try:
+            with context.temp_override(**target.override_kwargs()):
+                result = operator('INVOKE_DEFAULT', **properties)
+        except RuntimeError as error:
+            self.report(
+                {'ERROR'},
+                f"Could not continue {self._get_tool_name()} in this view: {error}",
+            )
+            return False
+
+        return 'RUNNING_MODAL' in result
 
     def _resolve_view_event(self, context, event):
         target = None
@@ -332,12 +362,14 @@ class ModalDrawBase:
             self._preview = preview.get_preview()
             self._preview.register_handlers()
             self._preview.set_state(self.STATE_FIRST_VERTEX)
+            self._preview.set_info_visible(event.alt)
 
             # Set cursor
             context.window.cursor_modal_set('CROSSHAIR')
 
             # Add modal handler
             context.window_manager.modal_handler_add(self)
+            self._modal_handler_view_target = view_target
 
             # Header text
             self._update_header(context)
@@ -364,9 +396,29 @@ class ModalDrawBase:
             self._cleanup(context)
             return {'CANCELLED'}
 
+        if (
+            event.type == 'MOUSEMOVE'
+            and view_changed
+            and self._can_follow_view_target()
+            and self._modal_handler_target_changed(view_target)
+        ):
+            if not self._handoff_modal_to_view_target(context, view_target):
+                self._cleanup(context)
+            return {'CANCELLED'}
+
         with context.temp_override(**view_target.override_kwargs()):
             # Update 2D view check from the viewport currently under the mouse.
             self._is_2d_view = utils.is_2d_view(context)
+
+            # Alt is the shared information modifier. Information overlays are
+            # hidden by default and remain visible only while Alt is held.
+            if event.type in ('LEFT_ALT', 'RIGHT_ALT'):
+                info_visible = event.value == 'PRESS'
+            else:
+                info_visible = event.alt
+            if self._preview.set_info_visible(info_visible):
+                self._on_info_visibility_changed(context, info_visible)
+                utils.tag_redraw_all_3d_views()
 
             if view_changed:
                 self._update_header(context)

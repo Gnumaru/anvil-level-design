@@ -194,8 +194,6 @@ def cache_face_data(context):
     or when mesh topology changes. Face IDs are unique across the complete
     Edit Mode mesh set.
     """
-    global last_face_count, last_vertex_count
-
     if context.mode != 'EDIT_MESH':
         return
 
@@ -203,9 +201,17 @@ def cache_face_data(context):
     if not hasattr(context.scene, 'level_design_props'):
         return
 
+    ppm = context.scene.level_design_props.pixels_per_meter
+    cache_face_data_for_objects(context.view_layer.objects, ppm)
+
+
+def cache_face_data_for_objects(objects, ppm):
+    """Rebuild the face cache from an explicitly supplied object collection."""
+    global last_face_count, last_vertex_count
+
     edit_objects = []
     seen_meshes = set()
-    for obj in context.view_layer.objects:
+    for obj in objects:
         if obj.type != 'MESH' or obj.data is None or not obj.data.is_editmode:
             continue
         if obj.data.name in seen_meshes:
@@ -215,8 +221,6 @@ def cache_face_data(context):
 
     if not edit_objects:
         return
-
-    ppm = context.scene.level_design_props.pixels_per_meter
 
     face_data_cache.clear()
 

@@ -276,7 +276,7 @@ def derive_transform_from_uvs(face, uv_layer, ppm, me):
             # B = L / sqrt(du^2 * r^2 + dv^2)
             # A = r * B
             denom_sq = du * du * r * r + dv * dv
-            if denom_sq < epsilon:
+            if not math.isfinite(denom_sq) or denom_sq <= 0.0:
                 return None
 
             B = L / math.sqrt(denom_sq)

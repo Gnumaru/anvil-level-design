@@ -53,6 +53,9 @@ _REQUIRED_OPERATORS = [
 
 class APIAvailabilityTest(AnvilTestCase):
 
+    def test_operator_property_keyword_export_api_is_available_for_modal_view_handoff(self):
+        self.assertTrue(hasattr(bpy.types.Operator, "as_keywords"))
+
     def test_related_blender_default_perspective_orthographic_keymap_item_is_available_for_preferences_display(self):
         keymap = bpy.context.window_manager.keyconfigs.default.keymaps.get("3D View")
         found = False
@@ -281,8 +284,11 @@ class APIAvailabilityTest(AnvilTestCase):
             missing.append("bpy.utils.user_resource")
         if not hasattr(bpy.types, "UILayout"):
             missing.append("bpy.types.UILayout")
-        elif "operator_context" not in bpy.types.UILayout.bl_rna.properties:
-            missing.append("UILayout.operator_context")
+        else:
+            if "operator_context" not in bpy.types.UILayout.bl_rna.properties:
+                missing.append("UILayout.operator_context")
+            if "ui_units_x" not in bpy.types.UILayout.bl_rna.properties:
+                missing.append("UILayout.ui_units_x")
         for userpref_type_name in ("USERPREF_HT_header", "USERPREF_PT_navigation_bar", "USERPREF_PT_addons"):
             if not hasattr(bpy.types, userpref_type_name):
                 missing.append(f"bpy.types.{userpref_type_name}")

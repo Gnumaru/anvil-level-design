@@ -2,9 +2,9 @@
 Cube Cut Tool - Custom Intersection Geometry
 
 Custom intersection algorithm that:
-1. Finds intersection vertices (edge-plane and cuboid-face)
+1. Finds intersection vertices (edge-plane and prism-face)
 2. Splits edges at intersection points
-3. Removes faces inside the cuboid
+3. Removes faces inside the prism
 4. Reconstructs partial faces
 """
 
@@ -13,12 +13,11 @@ from mathutils import Vector
 from mathutils.geometry import intersect_line_line_2d
 
 from .analysis import (
-    CuboidPlanes,
     EPSILON,
-    analyze_cube_cut,
-    build_cube_cut_cuboid,
+    analyze_convex_prism_cut,
     face_is_available,
 )
+from .prism import build_cube_cut_prism
 from ...core.logging import debug_log
 from ...core.geometry import compute_normal_from_verts
 from ...core.uv_projection import compute_uv_projection_from_face, apply_uv_projection_to_face
@@ -27,49 +26,67 @@ from ...handlers import cache_face_data
 
 
 def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local_y, local_z):
-    """
-    Execute the cube cut operation.
-
-    Algorithm:
-    1. Find all intersection points (edge-plane and cuboid-face)
-    2. Split mesh edges at intersection points
-    3. Delete faces entirely inside the cuboid
-    4. Reconstruct faces that are partially inside
-    """
+    """Adapt Cube Cut operator values to the convex-prism cut API."""
     obj = context.active_object
     if obj is None or obj.type != 'MESH':
         return (False, "No active mesh object")
+    if not obj.data.is_editmode:
+        return (False, "Active mesh must be in edit mode")
 
-    me = obj.data
-    bm = bmesh.from_edit_mesh(me)
-
-    # Get pixels per meter for UV calculations
     props = context.scene.level_design_props
     ppm = props.pixels_per_meter
 
-    cuboid = build_cube_cut_cuboid(
-        obj.matrix_world,
-        first_vertex,
-        second_vertex,
-        depth,
-        local_x,
-        local_y,
-        local_z,
+    try:
+        prism = build_cube_cut_prism(
+            obj.matrix_world,
+            first_vertex,
+            second_vertex,
+            depth,
+            local_x,
+            local_y,
+            local_z,
+        )
+    except ValueError as error:
+        return (False, f"Invalid cut prism: {error}")
+
+    result = execute_convex_prism_cut(
+        obj,
+        context.tool_settings,
+        ppm,
+        prism,
     )
+    if result[0]:
+        cache_face_data(context)
+    return result
+
+
+def execute_convex_prism_cut(obj, tool_settings, ppm, prism):
+    """Cut an arbitrary mesh-local convex prism from an edit-mode mesh.
+
+    The caller owns construction of ``prism`` and any context-dependent cache
+    updates. Face reconstruction deliberately remains shared with Cube Cut.
+    """
+    if obj is None or obj.type != 'MESH':
+        return (False, "No active mesh object")
+    if not obj.data.is_editmode:
+        return (False, "Active mesh must be in edit mode")
+
+    me = obj.data
+    bm = bmesh.from_edit_mesh(me)
 
     # Analyze the unchanged BMesh before any geometry is deleted or split.
     # The result keeps the face and edge references that execution consumes;
     # faces_fully_inside is disjoint from faces_to_cut, and FACES_ONLY deletion
     # preserves the boundary geometry referenced by the remaining analysis.
-    analysis = analyze_cube_cut(bm, cuboid)
+    analysis = analyze_convex_prism_cut(bm, prism)
     faces_to_be_cut = analysis.faces_to_cut
     face_interior_points = analysis.face_interior_points
 
-    # Delete faces that are entirely inside the cuboid
+    # Delete faces that are entirely inside the prism
     if analysis.faces_fully_inside:
         debug_log(
             f"[CubeCut] Deleting {len(analysis.faces_fully_inside)} faces "
-            "entirely inside cuboid"
+            "entirely inside prism"
         )
         bmesh.ops.delete(
             bm,
@@ -164,14 +181,23 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
         face_normal = face.normal.copy()
 
         # Find edge-split vertices that are on this face's boundary
-        # Also include existing face vertices that lie on the cuboid boundary
-        # (these are effectively "split" vertices where the cuboid edge meets an existing vertex)
-        edge_verts_on_face = [v for v in face.verts if v in split_verts_set or
-                             (cuboid.point_inside(v.co) and not cuboid.point_strictly_inside(v.co))]
+        # Also include existing face vertices that lie on the prism boundary.
+        # These are effectively split vertices where a prism edge meets one.
+        edge_verts_on_face = [
+            vertex for vertex in face.verts
+            if vertex in split_verts_set or (
+                prism.point_inside(vertex.co) and
+                not prism.point_strictly_inside(vertex.co)
+            )
+        ]
 
         # Compute input variables for _verts_to_faces
         # Use face normal for consistent winding in angle sorting
-        verts_to_delete = [v for v in face.verts if v not in split_verts_set and _should_delete_vertex_for_face(v, face, cuboid)]
+        verts_to_delete = [
+            vertex for vertex in face.verts
+            if vertex not in split_verts_set and
+            _should_delete_vertex_for_face(vertex, face, prism)
+        ]
 
         # Validate that this cut will create a valid shape
         # Count unique positions (zero-depth cuts create duplicate vertices at same positions)
@@ -238,7 +264,11 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
     newly_created_faces = []
     for new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, uv_projections, material_index, host_edges in face_data_list:
-        new_faces = _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, cuboid, me, ppm, vert_plane_map, host_edges)
+        new_faces = _verts_to_faces(
+            bm, new_verts, verts_on_original_exterior,
+            verts_in_original_interior, face_normal, prism, me, ppm,
+            vert_plane_map, host_edges,
+        )
         if new_faces:
             for new_face in new_faces:
                 # Apply material from original face
@@ -361,7 +391,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
     # === STEP 8: Select cut boundary edges ===
     # Switch to edge select mode and select only edges on the cut boundary
-    # (edges with exactly 1 linked face where both vertices lie on the cuboid surface)
+    # (edges with exactly 1 linked face where both vertices lie on the prism surface)
     bm.select_mode = {'EDGE'}
     for v in bm.verts:
         v.select = False
@@ -374,7 +404,10 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
     for e in bm.edges:
         if not e.is_valid:
             continue
-        if len(e.link_faces) == 1 and cuboid.point_on_surface(e.verts[0].co) and cuboid.point_on_surface(e.verts[1].co):
+        if (
+                len(e.link_faces) == 1 and
+                prism.point_on_surface(e.verts[0].co) and
+                prism.point_on_surface(e.verts[1].co)):
             e.select = True
             boundary_count += 1
 
@@ -384,10 +417,7 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
     bmesh.update_edit_mesh(me)
 
     # Set Blender's mesh select mode to edge
-    context.tool_settings.mesh_select_mode = (False, True, False)
-
-    # Cache faces so the depsgraph handler doesn't overwrite our UVs
-    cache_face_data(context)
+    tool_settings.mesh_select_mode = (False, True, False)
 
     return (True, "Cut complete")
 
@@ -398,7 +428,7 @@ def _split_edges_at_intersections(bm, edge_splits):
 
     Returns:
         tuple: (newly created vertices, set of faces that had edges split,
-                dict mapping each split vert to the set of cuboid plane indices it lies on)
+                dict mapping each split vert to its prism plane indices)
     """
     new_verts = []
     vert_plane_map = {}  # BMVert -> set of plane indices
@@ -445,7 +475,7 @@ def _split_edges_at_intersections(bm, edge_splits):
             new_t = max(0.01, min(0.99, new_t))  # Clamp to avoid degenerate splits
 
             # Check if intersection coincides with an existing vertex
-            # (happens when a cuboid edge passes through a mesh edge)
+            # (happens when a prism edge passes through a mesh edge)
             if (intersection_point - v1.co).length < EPSILON:
                 if v1 not in vert_plane_map:
                     vert_plane_map[v1] = set()
@@ -473,8 +503,8 @@ def _split_edges_at_intersections(bm, edge_splits):
             new_vert.co = intersection_point.copy()  # Ensure exact position
             new_verts.append(new_vert)
 
-            # Track which cuboid plane(s) this vertex lies on (as a set,
-            # since a vertex at a cuboid edge/corner can be on multiple planes)
+            # Track which prism plane(s) this vertex lies on (as a set,
+            # since a vertex at a prism edge can be on multiple planes)
             if new_vert not in vert_plane_map:
                 vert_plane_map[new_vert] = set()
             vert_plane_map[new_vert].add(plane_idx)
@@ -603,30 +633,30 @@ def _sort_verts_by_angle_with_normal(verts, normal):
     return sorted(verts, key=angle_key)
 
 
-def _should_delete_vertex_for_face(vertex, face, cuboid):
+def _should_delete_vertex_for_face(vertex, face, prism):
     """Check if a vertex should be deleted when processing a specific face.
 
     Returns True if:
-    - Vertex is strictly inside the cuboid, OR
-    - Vertex is on the cuboid boundary and has no edges (on this face) leading outside the cuboid
+    - Vertex is strictly inside the prism, OR
+    - Vertex is on the prism boundary and has no face edge leading outside
 
     Only considers edges that belong to the given face.
     """
-    if cuboid.point_strictly_inside(vertex.co):
+    if prism.point_strictly_inside(vertex.co):
         return True
 
-    if cuboid.point_inside(vertex.co):
+    if prism.point_inside(vertex.co):
         # On boundary - check if any edge on this face goes outside
         face_edges = set(face.edges)
         for edge in vertex.link_edges:
             if edge not in face_edges:
                 continue  # Skip edges not on this face
             other_vert = edge.other_vert(vertex)
-            if not cuboid.point_inside(other_vert.co):
+            if not prism.point_inside(other_vert.co):
                 return False  # Has edge outside on this face, keep it
         return True  # No edges on this face go outside, delete it
 
-    return False  # Outside cuboid, keep it
+    return False  # Outside prism, keep it
 
 
 def _segment_visible_in_polygon(a, b, edges, face_normal):
@@ -663,7 +693,7 @@ def _segment_visible_in_polygon(a, b, edges, face_normal):
     return True
 
 
-def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, cuboid, me, ppm, vert_plane_map, host_edges):
+def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, prism, me, ppm, vert_plane_map, host_edges):
     import math
 
     debug_log(f"[CubeCut] _verts_to_faces: new_verts={[v.co[:] for v in new_verts]}")
@@ -702,8 +732,8 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
             debug_log(f"[CubeCut]   Skipping edge (both adjacent on exterior): {v1.co[:]} -> {v2.co[:]}")
             continue
 
-        # Skip cross-hole edges between split vertices that share no cuboid plane.
-        # When the cuboid cuts through a face, each cuboid plane creates split
+        # Skip cross-hole edges between split vertices that share no prism plane.
+        # When the prism cuts through a face, each prism plane creates split
         # vertices on the face edges. Valid closing edges connect splits from the
         # SAME plane (sealing one side of the cut). Edges between splits from
         # entirely DIFFERENT planes would bridge across the removed region.
@@ -711,7 +741,7 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
         # same original edge create an "already exists" barrier, but on triangles
         # (or other odd faces) the splits land on different original edges with
         # no such barrier. We use sets of plane indices (not single values) because
-        # a vertex at a cuboid edge or corner can belong to multiple planes.
+        # a vertex at a prism edge or corner can belong to multiple planes.
         v1_planes = vert_plane_map.get(v1)
         v2_planes = vert_plane_map.get(v2)
         if v1_planes is not None and v2_planes is not None and v1_planes.isdisjoint(v2_planes):

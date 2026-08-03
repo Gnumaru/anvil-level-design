@@ -13,6 +13,7 @@ from . import material_mappings
 from . import pixels_per_meter
 from . import modal_draw
 from . import cube_cut
+from . import cylinder_cut
 from . import box_builder
 from . import visible_select
 from . import select_linked
@@ -47,6 +48,7 @@ def register():
     pixels_per_meter.register()
     modal_draw.register()
     cube_cut.register()
+    cylinder_cut.register()
     box_builder.register()
     visible_select.register()
     select_linked.register()
@@ -82,6 +84,7 @@ def unregister():
     select_linked.unregister()
     visible_select.unregister()
     box_builder.unregister()
+    cylinder_cut.unregister()
     cube_cut.unregister()
     modal_draw.unregister()
     pixels_per_meter.unregister()

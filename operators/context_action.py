@@ -140,15 +140,35 @@ def _run_queued_action():
                 )
             elif action.kind == 'FOLDED_PLANE':
                 pending = action.payload["pending"]
-                origin, local_x, local_y, cdx, cdy = pending.cuboid_params
-                result = bpy.ops.leveldesign.weld_folded_plane(
-                    origin=origin,
-                    local_x=local_x,
-                    local_y=local_y,
-                    cdx=cdx,
-                    cdy=cdy,
-                    coplanar_blocked=pending.coplanar_blocked,
-                )
+                if pending.cylinder_params is not None:
+                    (
+                        center,
+                        radius_x,
+                        radius_y,
+                        local_z,
+                        side_count,
+                        radius_mode,
+                    ) = pending.cylinder_params
+                    result = bpy.ops.leveldesign.weld_folded_plane(
+                        is_cylinder=True,
+                        cylinder_center=center,
+                        cylinder_radius_x=radius_x,
+                        cylinder_radius_y=radius_y,
+                        cylinder_local_z=local_z,
+                        cylinder_side_count=side_count,
+                        cylinder_radius_mode=radius_mode,
+                    )
+                else:
+                    origin, local_x, local_y, cdx, cdy = pending.cuboid_params
+                    result = bpy.ops.leveldesign.weld_folded_plane(
+                        origin=origin,
+                        local_x=local_x,
+                        local_y=local_y,
+                        cdx=cdx,
+                        cdy=cdy,
+                        coplanar_blocked=pending.coplanar_blocked,
+                        is_cylinder=False,
+                    )
             if 'FINISHED' in result:
                 bpy.ops.ed.undo_push(message=action.label)
     except (ReferenceError, RuntimeError) as exc:
