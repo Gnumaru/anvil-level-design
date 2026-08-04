@@ -6,7 +6,7 @@ ModalDrawBase subclass that previews and executes cube cut geometry.
 
 import bmesh
 import bpy
-from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty
 from mathutils import Vector
 
 from . import geometry
@@ -30,31 +30,50 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
     bl_label = "Cube Cut"
     bl_options = {'REGISTER', 'UNDO'}
 
+    reconstruction_mode: EnumProperty(
+        name="Face Reconstruction",
+        description="Choose how cut faces are reconstructed",
+        items=(
+            (
+                geometry.RECONSTRUCTION_MODE_QUADS,
+                "Reconstruct Quads",
+                "Reconstruct cut surfaces as quads where possible",
+            ),
+            (
+                geometry.RECONSTRUCTION_MODE_NGONS,
+                "Reconstruct Ngons",
+                "Use the fewest face-local connector edges required for valid topology",
+            ),
+        ),
+        default=geometry.RECONSTRUCTION_MODE_QUADS,
+    )
+
     action_first_vertex: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_second_vertex: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_depth: FloatProperty(
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_local_x: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_local_y: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_local_z: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
+
     action_ortho_infinite_cut: BoolProperty(
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
 
     @classmethod
@@ -65,6 +84,9 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
             context.active_object.type == 'MESH' and
             context.mode == 'EDIT_MESH'
         )
+
+    def draw(self, context):
+        self.layout.prop(self, "reconstruction_mode")
 
     def invoke(self, context, event):
         # The preview cache key is made only from the snapped cut dimensions.
@@ -309,9 +331,9 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
             coplanar_blocked = snapshot_coplanar_sides(
                 bm_snap, (snap_origin, snap_lx, snap_ly, snap_cdx, snap_cdy))
 
-        result = geometry.execute_cube_cut(
+        result = geometry.execute_cube_cut_with_reconstruction(
             context, first_vertex, second_vertex, depth,
-            local_x, local_y, local_z
+            local_x, local_y, local_z, self.reconstruction_mode,
         )
         success, message = result
 

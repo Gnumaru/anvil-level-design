@@ -397,9 +397,7 @@ class ModalDrawBase:
             return {'CANCELLED'}
 
         if (
-            event.type == 'MOUSEMOVE'
-            and view_changed
-            and self._can_follow_view_target()
+            self._can_follow_view_target()
             and self._modal_handler_target_changed(view_target)
         ):
             if not self._handoff_modal_to_view_target(context, view_target):

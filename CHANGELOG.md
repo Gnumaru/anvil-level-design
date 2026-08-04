@@ -3,6 +3,7 @@
 # 1.8.7
 - Add CYLINDER CUT
 - Hold ALT to view cut intersections for cylinder and cube cut
+- Added reconstruct as ngons cut mode
 - Added creation and cut buttons to the Anvil panel
 - Rename Face Aligned Project to Box Project (it was never face aligned!)
 - New faces will be selected after cut welds

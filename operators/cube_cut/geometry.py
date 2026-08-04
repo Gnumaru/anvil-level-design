@@ -25,7 +25,31 @@ from ...core.uv_layers import get_all_uv_layers
 from ...handlers import cache_face_data
 
 
+RECONSTRUCTION_MODE_QUADS = 'QUADS'
+RECONSTRUCTION_MODE_NGONS = 'NGONS'
+RECONSTRUCTION_MODES = {
+    RECONSTRUCTION_MODE_QUADS,
+    RECONSTRUCTION_MODE_NGONS,
+}
+
+
 def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local_y, local_z):
+    """Run Cube Cut with the original quad reconstruction behavior."""
+    return execute_cube_cut_with_reconstruction(
+        context,
+        first_vertex,
+        second_vertex,
+        depth,
+        local_x,
+        local_y,
+        local_z,
+        RECONSTRUCTION_MODE_QUADS,
+    )
+
+
+def execute_cube_cut_with_reconstruction(
+        context, first_vertex, second_vertex, depth, local_x, local_y, local_z,
+        reconstruction_mode):
     """Adapt Cube Cut operator values to the convex-prism cut API."""
     obj = context.active_object
     if obj is None or obj.type != 'MESH':
@@ -49,11 +73,12 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
     except ValueError as error:
         return (False, f"Invalid cut prism: {error}")
 
-    result = execute_convex_prism_cut(
+    result = execute_convex_prism_cut_with_reconstruction(
         obj,
         context.tool_settings,
         ppm,
         prism,
+        reconstruction_mode,
     )
     if result[0]:
         cache_face_data(context)
@@ -61,6 +86,18 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
 
 
 def execute_convex_prism_cut(obj, tool_settings, ppm, prism):
+    """Run a convex-prism cut with the original quad reconstruction."""
+    return execute_convex_prism_cut_with_reconstruction(
+        obj,
+        tool_settings,
+        ppm,
+        prism,
+        RECONSTRUCTION_MODE_QUADS,
+    )
+
+
+def execute_convex_prism_cut_with_reconstruction(
+        obj, tool_settings, ppm, prism, reconstruction_mode):
     """Cut an arbitrary mesh-local convex prism from an edit-mode mesh.
 
     The caller owns construction of ``prism`` and any context-dependent cache
@@ -70,6 +107,8 @@ def execute_convex_prism_cut(obj, tool_settings, ppm, prism):
         return (False, "No active mesh object")
     if not obj.data.is_editmode:
         return (False, "Active mesh must be in edit mode")
+    if reconstruction_mode not in RECONSTRUCTION_MODES:
+        return (False, f"Unknown face reconstruction mode: {reconstruction_mode}")
 
     me = obj.data
     bm = bmesh.from_edit_mesh(me)
@@ -264,11 +303,18 @@ def execute_convex_prism_cut(obj, tool_settings, ppm, prism):
 
     newly_created_faces = []
     for new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, uv_projections, material_index, host_edges in face_data_list:
-        new_faces = _verts_to_faces(
+        new_faces, connector_edges = _verts_to_faces(
             bm, new_verts, verts_on_original_exterior,
             verts_in_original_interior, face_normal, prism, me, ppm,
             vert_plane_map, host_edges,
         )
+        if reconstruction_mode == RECONSTRUCTION_MODE_NGONS:
+            new_faces = _minimize_face_local_connector_edges(
+                bm,
+                new_faces,
+                connector_edges,
+                face_normal,
+            )
         if new_faces:
             for new_face in new_faces:
                 # Apply material from original face
@@ -286,22 +332,26 @@ def execute_convex_prism_cut(obj, tool_settings, ppm, prism):
     # Also quadrilate any newly created faces from cutting that are n-gons
     faces_to_quadrilate = []
 
-    # Check adjacent faces that had their edges split (but weren't deleted/cut)
-    for face in faces_with_split_edges:
-        if not face_is_available(face):
-            continue
-        if len(face.verts) > 4:
-            # This is an n-gon that needs quadrilating
-            faces_to_quadrilate.append(face)
-            debug_log(f"[CubeCut] Adjacent face needs quadrilating: {len(face.verts)} verts")
+    if reconstruction_mode == RECONSTRUCTION_MODE_QUADS:
+        # Check adjacent faces that had their edges split (but weren't
+        # deleted/cut). N-gon reconstruction deliberately leaves these faces
+        # alone: a shared-edge split is enough to avoid a T-junction, and the
+        # edge between two original faces must never be dissolved.
+        for face in faces_with_split_edges:
+            if not face_is_available(face):
+                continue
+            if len(face.verts) > 4:
+                # This is an n-gon that needs quadrilating
+                faces_to_quadrilate.append(face)
+                debug_log(f"[CubeCut] Adjacent face needs quadrilating: {len(face.verts)} verts")
 
-    # Check newly created faces from cutting
-    for face in newly_created_faces:
-        if not face.is_valid:
-            continue
-        if len(face.verts) > 4:
-            faces_to_quadrilate.append(face)
-            debug_log(f"[CubeCut] Newly created face needs quadrilating: {len(face.verts)} verts")
+        # Check newly created faces from cutting
+        for face in newly_created_faces:
+            if not face.is_valid:
+                continue
+            if len(face.verts) > 4:
+                faces_to_quadrilate.append(face)
+                debug_log(f"[CubeCut] Newly created face needs quadrilating: {len(face.verts)} verts")
 
     if faces_to_quadrilate:
         debug_log(f"[CubeCut] === STEP 6: Quadrilating {len(faces_to_quadrilate)} n-gon faces ===")
@@ -693,6 +743,195 @@ def _segment_visible_in_polygon(a, b, edges, face_normal):
     return True
 
 
+def _minimize_face_local_connector_edges(
+        bm, created_faces, connector_edges, face_normal):
+    """Merge reconstruction cells without crossing an original-face boundary.
+
+    ``connector_edges`` contains only the spokes added while rebuilding one
+    deleted source face. Cutter-boundary edges, surviving source edges, and
+    shared mesh edges are deliberately absent, so no merge can cross from one
+    original face to another.
+
+    A connector can be removed when its two faces share only that edge and its
+    endpoints. If the faces share two connectors, removing either would create
+    one face with a hole, which Blender cannot represent as a valid BMFace. The
+    iteration therefore naturally leaves two connectors around each enclosed
+    cut loop while removing every connector from a notch or split component.
+    """
+    region_faces = {
+        face for face in created_faces
+        if face is not None and face.is_valid
+    }
+    remaining_connectors = {
+        edge for edge in connector_edges
+        if edge is not None and edge.is_valid
+    }
+    rejected_connectors = set()
+    initial_connector_count = len(remaining_connectors)
+
+    while True:
+        merged_any = False
+        for connector_edge in sorted(
+                remaining_connectors,
+                key=_face_local_connector_merge_key):
+            if not connector_edge.is_valid:
+                remaining_connectors.discard(connector_edge)
+                continue
+            if connector_edge in rejected_connectors:
+                continue
+            if len(connector_edge.link_faces) != 2:
+                continue
+
+            first_face, second_face = connector_edge.link_faces
+            if first_face not in region_faces or second_face not in region_faces:
+                continue
+            if not first_face.is_valid or not second_face.is_valid:
+                continue
+
+            shared_edges = set(first_face.edges) & set(second_face.edges)
+            if shared_edges != {connector_edge}:
+                continue
+            shared_verts = set(first_face.verts) & set(second_face.verts)
+            if shared_verts != set(connector_edge.verts):
+                continue
+
+            merged_face = _merge_faces_across_connector(
+                bm,
+                first_face,
+                second_face,
+                connector_edge,
+                face_normal,
+            )
+            if merged_face is None:
+                rejected_connectors.add(connector_edge)
+                continue
+
+            region_faces.discard(first_face)
+            region_faces.discard(second_face)
+            region_faces.add(merged_face)
+            remaining_connectors.discard(connector_edge)
+            rejected_connectors.clear()
+            merged_any = True
+            break
+
+        if not merged_any:
+            break
+
+    final_faces = [face for face in region_faces if face.is_valid]
+    final_connector_count = sum(
+        1 for edge in remaining_connectors
+        if edge.is_valid and len(edge.link_faces) == 2
+    )
+    debug_log(
+        f"[CubeCut] N-gon reconstruction merged "
+        f"{initial_connector_count - final_connector_count} face-local "
+        f"connectors; kept {final_connector_count}"
+    )
+    return final_faces
+
+
+def _face_local_connector_merge_key(edge):
+    """Prefer removing longer connectors, with a coordinate-stable tie-break."""
+    if not edge.is_valid:
+        return (0.0, ())
+    delta = edge.verts[1].co - edge.verts[0].co
+    coordinates = tuple(sorted(
+        (
+            round(vertex.co.x, 6),
+            round(vertex.co.y, 6),
+            round(vertex.co.z, 6),
+        )
+        for vertex in edge.verts
+    ))
+    return (-delta.length_squared, coordinates)
+
+
+def _merge_faces_across_connector(
+        bm, first_face, second_face, connector_edge, face_normal):
+    """Replace two cells sharing one connector with their simple union."""
+    boundary_edges = [
+        edge for edge in set(first_face.edges) | set(second_face.edges)
+        if edge is not connector_edge
+    ]
+    boundary_verts = _trace_simple_edge_cycle(boundary_edges)
+    if boundary_verts is None or len(boundary_verts) < 3:
+        return None
+
+    merged_normal = compute_normal_from_verts(
+        [vertex.co for vertex in boundary_verts]
+    )
+    if merged_normal is None or merged_normal.length < EPSILON:
+        return None
+    if merged_normal.dot(face_normal) < 0:
+        boundary_verts.reverse()
+
+    # Create the replacement before deleting either source cell. BMesh allows
+    # the short-lived non-manifold radial state, and this keeps a failed create
+    # non-destructive.
+    try:
+        merged_face = bm.faces.new(boundary_verts)
+    except ValueError:
+        return None
+
+    bmesh.ops.delete(
+        bm,
+        geom=[first_face, second_face],
+        context='FACES_ONLY',
+    )
+    if connector_edge.is_valid and not connector_edge.link_faces:
+        bmesh.ops.delete(bm, geom=[connector_edge], context='EDGES')
+    return merged_face
+
+
+def _trace_simple_edge_cycle(edges):
+    """Return ordered vertices when ``edges`` form exactly one simple cycle."""
+    if len(edges) < 3:
+        return None
+
+    adjacency = {}
+    for edge in edges:
+        if not edge.is_valid:
+            return None
+        for vertex in edge.verts:
+            adjacency.setdefault(vertex, []).append(edge)
+
+    if any(len(vertex_edges) != 2 for vertex_edges in adjacency.values()):
+        return None
+
+    start_vertex = edges[0].verts[0]
+    ordered_verts = [start_vertex]
+    used_edges = set()
+    current_vertex = start_vertex
+    previous_edge = None
+
+    for _ in range(len(edges)):
+        candidates = [
+            edge for edge in adjacency[current_vertex]
+            if edge is not previous_edge
+        ]
+        if not candidates:
+            return None
+
+        next_edge = candidates[0]
+        if next_edge in used_edges:
+            return None
+        used_edges.add(next_edge)
+        next_vertex = next_edge.other_vert(current_vertex)
+
+        if next_vertex is start_vertex:
+            if len(used_edges) != len(edges):
+                return None
+            return ordered_verts
+        if next_vertex in ordered_verts:
+            return None
+
+        ordered_verts.append(next_vertex)
+        current_vertex = next_vertex
+        previous_edge = next_edge
+
+    return None
+
+
 def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original_interior, face_normal, prism, me, ppm, vert_plane_map, host_edges):
     import math
 
@@ -702,7 +941,7 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
     debug_log(f"[CubeCut] _verts_to_faces: face_normal={face_normal[:]}")
 
     if len(new_verts) < 2:
-        return []
+        return ([], [])
 
     # Helper to check if two verts are adjacent in the exterior loop
     exterior_set = set(verts_on_original_exterior)
@@ -761,6 +1000,7 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
             debug_log(f"[CubeCut]   Edge already exists: {v1.co[:]} -> {v2.co[:]}")
 
     # Connect interior vertices to closest exterior vertex (in the "away" direction)
+    connector_edges = []
     for interior_vert in verts_in_original_interior:
         # Find the two connected edges from the new_verts loop
         connected_verts = []
@@ -825,7 +1065,8 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
         edge_exists = any(best_vert in e.verts for e in interior_vert.link_edges)
         if not edge_exists:
             try:
-                bm.edges.new([interior_vert, best_vert])
+                connector_edge = bm.edges.new([interior_vert, best_vert])
+                connector_edges.append(connector_edge)
                 debug_log(f"[CubeCut]   Connected interior {interior_vert.co[:]} to exterior {best_vert.co[:]}")
             except ValueError:
                 debug_log(f"[CubeCut]   Failed to connect interior {interior_vert.co[:]} to exterior {best_vert.co[:]}")
@@ -836,7 +1077,7 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
     # Use the provided face_normal for angular ordering (captured from original face)
     if face_normal is None or face_normal.length < EPSILON:
         debug_log(f"[CubeCut]   Invalid face normal for angular ordering")
-        return []
+        return ([], connector_edges)
 
     def signed_angle(v_from, v_to, normal):
         """Compute signed angle from v_from to v_to around normal axis."""
@@ -922,4 +1163,4 @@ def _verts_to_faces(bm, new_verts, verts_on_original_exterior, verts_in_original
             except ValueError as e:
                 debug_log(f"[CubeCut]   Failed to create face: {e}")
 
-    return created_faces
+    return (created_faces, connector_edges)

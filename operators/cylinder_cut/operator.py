@@ -8,6 +8,10 @@ from mathutils import Vector
 from . import geometry
 from .prism import build_cylinder_cut_prism, build_cylinder_profile
 from ..cube_cut.analysis import analyze_convex_prism_cut
+from ..cube_cut.geometry import (
+    RECONSTRUCTION_MODE_NGONS,
+    RECONSTRUCTION_MODE_QUADS,
+)
 from ..cube_cut.operator import _build_world_cut_vertex_markers
 from ..modal_draw.base_operator import MIN_RECTANGLE_SIZE, ModalDrawBase
 from ..modal_draw import utils as modal_draw_utils
@@ -57,25 +61,42 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
         ),
         default='EDGES',
     )
+    reconstruction_mode: EnumProperty(
+        name="Face Reconstruction",
+        description="Choose how cut faces are reconstructed",
+        items=(
+            (
+                RECONSTRUCTION_MODE_QUADS,
+                "Reconstruct Quads",
+                "Reconstruct cut surfaces as quads where possible",
+            ),
+            (
+                RECONSTRUCTION_MODE_NGONS,
+                "Reconstruct Ngons",
+                "Use the fewest face-local connector edges required for valid topology",
+            ),
+        ),
+        default=RECONSTRUCTION_MODE_QUADS,
+    )
 
     action_center: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_depth: FloatProperty(
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_local_x: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_local_y: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
     action_local_z: FloatVectorProperty(
         size=3,
-        options={'HIDDEN', 'SKIP_SAVE'},
+        options={'HIDDEN'},
     )
 
     @classmethod
@@ -93,6 +114,7 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
         layout.prop(self, "radius_y")
         layout.prop(self, "side_count")
         layout.prop(self, "radius_mode")
+        layout.prop(self, "reconstruction_mode")
 
     def invoke(self, context, event):
         self._side_count = self.side_count
@@ -272,11 +294,12 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
             local_z,
             self._side_count,
             self._radius_mode,
+            self.reconstruction_mode,
         )
 
     def _execute_cylinder_cut(self, context, center, radius_x, radius_y, depth,
-                              local_x, local_y, local_z, side_count,
-                              radius_mode):
+                               local_x, local_y, local_z, side_count,
+                               radius_mode, reconstruction_mode):
         obj = context.active_object
         cylinder_weld_params = build_cylinder_weld_params(
             obj,
@@ -291,7 +314,7 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
         )
 
         pixels_per_meter = context.scene.level_design_props.pixels_per_meter
-        result = geometry.execute_cylinder_cut(
+        result = geometry.execute_cylinder_cut_with_reconstruction(
             obj,
             context.tool_settings,
             pixels_per_meter,
@@ -304,6 +327,7 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
             local_z,
             side_count,
             radius_mode,
+            reconstruction_mode,
         )
 
         if result[0]:
@@ -352,6 +376,7 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
             Vector(self.action_local_z),
             self.side_count,
             self.radius_mode,
+            self.reconstruction_mode,
         )
         self._last_action_result = result
 
