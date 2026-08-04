@@ -7,6 +7,7 @@ import bpy
 from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty, IntProperty, StringProperty
 from mathutils import Vector
 
+from ..core.face_id import get_face_id_layer
 from ..core.geometry import compute_normal_from_verts
 from ..core.logging import debug_log
 from ..core.workspace_check import is_level_design_workspace
@@ -57,6 +58,22 @@ def _clear_selection(bm):
     for vert in bm.verts:
         vert.select = False
     bm.select_flush(False)
+
+
+def _snapshot_existing_faces(bm):
+    # Custom-data layer creation invalidates BMesh element references. Ensure
+    # the layer used by new-face projection exists before capturing faces.
+    get_face_id_layer(bm)
+    return set(bm.faces)
+
+
+def _select_new_faces(bm, existing_faces):
+    _clear_selection(bm)
+    bm.select_mode = {'FACE'}
+    for face in bm.faces:
+        if face.is_valid and face not in existing_faces:
+            face.select = True
+    bm.select_flush_mode()
 
 
 def _connect_matching_depth_vertices(bm, selected_verts, local_z):
@@ -220,6 +237,7 @@ class LEVELDESIGN_OT_weld_bridge(bpy.types.Operator):
         action = _resolve_edit_action(obj, context.mode, bm, 'BRIDGE')
         if action is None:
             return {'CANCELLED'}
+        existing_faces = _snapshot_existing_faces(bm)
         try:
             _bridge_edge_loops()
         except RuntimeError as exc:
@@ -230,7 +248,7 @@ class LEVELDESIGN_OT_weld_bridge(bpy.types.Operator):
         from ..handlers.face_cache import cache_face_data
         project_new_faces(context, bm)
         cache_face_data(context)
-        _clear_selection(bm)
+        _select_new_faces(bm, existing_faces)
         context.tool_settings.mesh_select_mode = (False, False, True)
         complete_pending_action(obj, action, bm)
         bmesh.update_edit_mesh(obj.data)
@@ -350,6 +368,7 @@ class LEVELDESIGN_OT_weld_corridor(bpy.types.Operator):
                 )):
             return {'CANCELLED'}
         direction = Vector(self.direction)
+        existing_faces = _snapshot_existing_faces(bm)
         debug_log(
             f"[Corridor] Execute: depth={self.depth:.4f}, direction={direction}, "
             f"back_plane_offset={self.back_plane_offset:.4f}"
@@ -399,7 +418,7 @@ class LEVELDESIGN_OT_weld_corridor(bpy.types.Operator):
         from ..handlers.face_cache import cache_face_data
         project_new_faces(context, bm)
         cache_face_data(context)
-        _clear_selection(bm)
+        _select_new_faces(bm, existing_faces)
         context.tool_settings.mesh_select_mode = (False, False, True)
         complete_pending_action(obj, action, bm)
         bmesh.update_edit_mesh(obj.data)
@@ -470,6 +489,7 @@ class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
         local_x = Vector(self.local_x)
         local_y = Vector(self.local_y)
         local_z = local_x.cross(local_y).normalized()
+        existing_faces = _snapshot_existing_faces(bm)
         selected_edges = [edge for edge in bm.edges if edge.select]
         selected_verts = list({vert for edge in selected_edges for vert in edge.verts})
         if not selected_edges:
@@ -586,7 +606,7 @@ class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
         from ..handlers.face_cache import cache_face_data
         project_new_faces(context, bm)
         cache_face_data(context)
-        _clear_selection(bm)
+        _select_new_faces(bm, existing_faces)
         context.tool_settings.mesh_select_mode = (False, False, True)
         complete_pending_action(obj, action, bm)
         bmesh.update_edit_mesh(obj.data)
@@ -617,6 +637,7 @@ class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
                 or self.cylinder_radius_mode != stored_radius_mode):
             return {'CANCELLED'}
 
+        existing_faces = _snapshot_existing_faces(bm)
         selected_edges = [edge for edge in bm.edges if edge.select]
         if not selected_edges:
             self.report({'ERROR'}, "No edges selected")
@@ -633,7 +654,7 @@ class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
         from ..handlers.face_cache import cache_face_data
         project_new_faces(context, bm)
         cache_face_data(context)
-        _clear_selection(bm)
+        _select_new_faces(bm, existing_faces)
         context.tool_settings.mesh_select_mode = (False, False, True)
         complete_pending_action(obj, action, bm)
         bmesh.update_edit_mesh(obj.data)
