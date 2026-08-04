@@ -35,6 +35,9 @@ RECONSTRUCTION_MODES = {
 
 def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local_y, local_z):
     """Run Cube Cut with the original quad reconstruction behavior."""
+    obj = context.active_object
+    if obj is None or obj.type != 'MESH':
+        return (False, "No active mesh object")
     return execute_cube_cut_with_reconstruction(
         context,
         first_vertex,
@@ -44,12 +47,13 @@ def execute_cube_cut(context, first_vertex, second_vertex, depth, local_x, local
         local_y,
         local_z,
         RECONSTRUCTION_MODE_QUADS,
+        obj.matrix_world,
     )
 
 
 def execute_cube_cut_with_reconstruction(
         context, first_vertex, second_vertex, depth, local_x, local_y, local_z,
-        reconstruction_mode):
+        reconstruction_mode, matrix_world):
     """Adapt Cube Cut operator values to the convex-prism cut API."""
     obj = context.active_object
     if obj is None or obj.type != 'MESH':
@@ -62,7 +66,7 @@ def execute_cube_cut_with_reconstruction(
 
     try:
         prism = build_cube_cut_prism(
-            obj.matrix_world,
+            matrix_world,
             first_vertex,
             second_vertex,
             depth,

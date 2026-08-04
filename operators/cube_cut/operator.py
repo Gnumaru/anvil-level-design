@@ -7,7 +7,7 @@ ModalDrawBase subclass that previews and executes cube cut geometry.
 import bmesh
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 from . import geometry
 from .analysis import analyze_convex_prism_cut
@@ -69,6 +69,10 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
     )
     action_local_z: FloatVectorProperty(
         size=3,
+        options={'HIDDEN'},
+    )
+    action_matrix_world: FloatVectorProperty(
+        size=16,
         options={'HIDDEN'},
     )
 
@@ -310,12 +314,19 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
         # The first clicked point becomes the cut pivot.
         # Snapshot coplanar faces BEFORE the cut modifies geometry
         from mathutils import Vector
+        matrix_values = self.action_matrix_world
+        matrix_world = Matrix((
+            matrix_values[0:4],
+            matrix_values[4:8],
+            matrix_values[8:12],
+            matrix_values[12:16],
+        ))
         obj = context.active_object
         coplanar_blocked = 0
         if obj and obj.type == 'MESH':
             import bmesh as _bmesh
             bm_snap = _bmesh.from_edit_mesh(obj.data)
-            w2l = obj.matrix_world.inverted()
+            w2l = matrix_world.inverted()
             w2l_rot = w2l.to_3x3()
             snap_origin = w2l @ first_vertex
             snap_lx = (w2l_rot @ Vector(local_x)).normalized()
@@ -333,7 +344,7 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
 
         result = geometry.execute_cube_cut_with_reconstruction(
             context, first_vertex, second_vertex, depth,
-            local_x, local_y, local_z, self.reconstruction_mode,
+            local_x, local_y, local_z, self.reconstruction_mode, matrix_world,
         )
         success, message = result
 
@@ -363,6 +374,9 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
         self.action_local_x = local_x
         self.action_local_y = local_y
         self.action_local_z = local_z
+        self.action_matrix_world = tuple(
+            value for row in context.active_object.matrix_world for value in row
+        )
         self.action_ortho_infinite_cut = self._is_2d_view
 
     def execute(self, context):
@@ -371,6 +385,10 @@ class MESH_OT_cube_cut(ModalDrawBase, bpy.types.Operator):
         local_x = Vector(self.action_local_x)
         local_y = Vector(self.action_local_y)
         local_z = Vector(self.action_local_z)
+
+        # Adjust Last Operation can replay before Blender refreshes the
+        # object's runtime matrix_world cache after undo (temporarily identity).
+        # Use the matrix captured with the world-space draw values instead.
 
         result = self._execute_action(
             context, first_vertex, second_vertex, self.action_depth,

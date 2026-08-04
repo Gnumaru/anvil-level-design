@@ -3,7 +3,7 @@
 import bmesh
 import bpy
 from bpy.props import EnumProperty, FloatProperty, FloatVectorProperty, IntProperty
-from mathutils import Vector
+from mathutils import Matrix, Vector
 
 from . import geometry
 from .prism import build_cylinder_cut_prism, build_cylinder_profile
@@ -96,6 +96,10 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
     )
     action_local_z: FloatVectorProperty(
         size=3,
+        options={'HIDDEN'},
+    )
+    action_matrix_world: FloatVectorProperty(
+        size=16,
         options={'HIDDEN'},
     )
 
@@ -283,6 +287,13 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
         difference = second_vertex - first_vertex
         radius_x = abs(difference.dot(local_x))
         radius_y = abs(difference.dot(local_y))
+        matrix_values = self.action_matrix_world
+        matrix_world = Matrix((
+            matrix_values[0:4],
+            matrix_values[4:8],
+            matrix_values[8:12],
+            matrix_values[12:16],
+        ))
         return self._execute_cylinder_cut(
             context,
             first_vertex,
@@ -295,11 +306,12 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
             self._side_count,
             self._radius_mode,
             self.reconstruction_mode,
+            matrix_world,
         )
 
     def _execute_cylinder_cut(self, context, center, radius_x, radius_y, depth,
                                local_x, local_y, local_z, side_count,
-                               radius_mode, reconstruction_mode):
+                               radius_mode, reconstruction_mode, matrix_world):
         obj = context.active_object
         cylinder_weld_params = build_cylinder_weld_params(
             obj,
@@ -328,6 +340,7 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
             side_count,
             radius_mode,
             reconstruction_mode,
+            matrix_world,
         )
 
         if result[0]:
@@ -361,10 +374,23 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
         self.action_local_x = local_x
         self.action_local_y = local_y
         self.action_local_z = local_z
+        self.action_matrix_world = tuple(
+            value for row in context.active_object.matrix_world for value in row
+        )
         self.side_count = self._side_count
         self.radius_mode = self._radius_mode
 
     def execute(self, context):
+        matrix_values = self.action_matrix_world
+        matrix_world = Matrix((
+            matrix_values[0:4],
+            matrix_values[4:8],
+            matrix_values[8:12],
+            matrix_values[12:16],
+        ))
+
+        # Adjust Last Operation may run before Blender has refreshed the
+        # runtime matrix_world cache after undo, so use the captured matrix.
         result = self._execute_cylinder_cut(
             context,
             Vector(self.action_center),
@@ -377,6 +403,7 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
             self.side_count,
             self.radius_mode,
             self.reconstruction_mode,
+            matrix_world,
         )
         self._last_action_result = result
 

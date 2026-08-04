@@ -11,6 +11,8 @@ def execute_cylinder_cut(obj, tool_settings, ppm, center, radius_x, radius_y,
                          depth, local_x, local_y, local_z, side_count,
                          radius_mode):
     """Run Cylinder Cut with the original quad reconstruction behavior."""
+    if obj is None or obj.type != 'MESH':
+        return (False, "No active mesh object")
     return execute_cylinder_cut_with_reconstruction(
         obj,
         tool_settings,
@@ -25,12 +27,14 @@ def execute_cylinder_cut(obj, tool_settings, ppm, center, radius_x, radius_y,
         side_count,
         radius_mode,
         RECONSTRUCTION_MODE_QUADS,
+        obj.matrix_world,
     )
 
 
 def execute_cylinder_cut_with_reconstruction(
         obj, tool_settings, ppm, center, radius_x, radius_y, depth, local_x,
-        local_y, local_z, side_count, radius_mode, reconstruction_mode):
+        local_y, local_z, side_count, radius_mode, reconstruction_mode,
+        matrix_world):
     """Cut an elliptical polygon prism from an edit-mode mesh."""
     if obj is None or obj.type != 'MESH':
         return (False, "No active mesh object")
@@ -39,7 +43,7 @@ def execute_cylinder_cut_with_reconstruction(
 
     try:
         prism = build_cylinder_cut_prism(
-            obj.matrix_world,
+            matrix_world,
             center,
             radius_x,
             radius_y,
