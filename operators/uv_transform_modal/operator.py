@@ -64,7 +64,7 @@ from .interaction import (
 from .hotkeys import pixel_snap_shortcut_label, pixel_snap_state_for_event
 
 
-REPETITION_RETARGET_CELL_MARGIN_FACTOR = 0.25
+REPETITION_RETARGET_CELL_MARGIN_FACTOR = 0.4
 REPETITION_RETARGET_MIN_MARGIN_PIXELS = 1.0
 
 
@@ -494,7 +494,7 @@ class MESH_OT_uv_transform_modal(Operator):
                 and not self._dragging
                 and not self._view_navigating
                 and not self._mouse_in_active_gizmo_zone(
-                    mouse_pos, handle_layout, hit_radius * 1.5
+                    mouse_pos, handle_layout
                 )):
             repetition = pick_repetition_from_mouse(
                 region, rv3d, mouse_pos, quad, ui_scale
@@ -1040,8 +1040,7 @@ class MESH_OT_uv_transform_modal(Operator):
             self._repetition_grid_opacities,
         )
 
-    def _mouse_in_active_gizmo_zone(
-            self, mouse_pos, handle_layout, maximum_margin):
+    def _mouse_in_active_gizmo_zone(self, mouse_pos, handle_layout):
         """Keep the active tile stable while its controls are approachable."""
         if handle_layout is None:
             return False
@@ -1051,12 +1050,9 @@ class MESH_OT_uv_transform_modal(Operator):
             (corners[(index + 1) % len(corners)] - corners[index]).length
             for index in range(len(corners))
         )
-        margin = min(
-            maximum_margin,
-            max(
-                REPETITION_RETARGET_MIN_MARGIN_PIXELS,
-                shortest_cell_edge * REPETITION_RETARGET_CELL_MARGIN_FACTOR,
-            ),
+        margin = max(
+            REPETITION_RETARGET_MIN_MARGIN_PIXELS,
+            shortest_cell_edge * REPETITION_RETARGET_CELL_MARGIN_FACTOR,
         )
 
         positions = list(corners)

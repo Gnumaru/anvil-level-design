@@ -11,6 +11,7 @@
 - More general auto uving (let me know if you see any issues)
 - Default material name is now {filename}{extension}
 - Added a new material template {encodedRelativePath}
+- Changing grid cell in UV Transform mode is less sensitive
 
 # 1.8.6
 - Fix texture browser overlay in Blender 5.2
