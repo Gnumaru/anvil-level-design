@@ -22,7 +22,7 @@ from .material_shader import (
 _BLENDER_SUFFIX = re.compile(r'\.\d{3,}$')
 _UNASSIGNED_MATERIAL_NAME = "ANVIL_Unassigned"
 MATERIAL_SCHEMA_VERSION = 1
-DEFAULT_MATERIAL_NAME_PATTERN = "{relativePath}{filename}{extension}"
+DEFAULT_MATERIAL_NAME_PATTERN = "{filename}{extension}"
 _last_material_count = 0
 
 
@@ -280,6 +280,25 @@ def _material_relative_path(image_folder, blend_filepath):
     return ""
 
 
+def _encoded_material_relative_path(image_folder, blend_filepath):
+    if not blend_filepath:
+        return ""
+
+    blend_folder = os.path.dirname(os.path.abspath(blend_filepath))
+    try:
+        relative_path = os.path.relpath(image_folder, blend_folder)
+    except ValueError:
+        return ""
+
+    if relative_path == '.':
+        return "RP__ENDRP"
+    if relative_path:
+        normalized_path = _normalized_material_path(relative_path).rstrip('/')
+        encoded_path = normalized_path.replace('/', '__')
+        return f"RP__{encoded_path}__ENDRP"
+    return ""
+
+
 def _image_name_parts(image):
     filepath = ""
     try:
@@ -299,17 +318,27 @@ def _image_name_parts(image):
             image_folder,
             bpy.data.filepath,
         )
-        return relative_path, filename, extension
+        encoded_relative_path = _encoded_material_relative_path(
+            image_folder,
+            bpy.data.filepath,
+        )
+        return relative_path, encoded_relative_path, filename, extension
 
     image_name = _BLENDER_SUFFIX.sub('', image.name)
     filename, extension = os.path.splitext(image_name)
-    return "", filename, extension
+    return "", "", filename, extension
 
 
 def material_name_for_image(image, pattern):
-    relative_path, filename, extension = _image_name_parts(image)
+    (
+        relative_path,
+        encoded_relative_path,
+        filename,
+        extension,
+    ) = _image_name_parts(image)
     return (
         pattern
+        .replace("{encodedRelativePath}", encoded_relative_path)
         .replace("{relativePath}", relative_path)
         .replace("{filename}", filename)
         .replace("{extension}", extension)

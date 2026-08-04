@@ -282,7 +282,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
     pref_default_material_name_pattern: bpy.props.StringProperty(
         name="Remembered Material Name Pattern",
         description="Last saved file's material naming pattern, used to initialise new unsaved files",
-        default="{relativePath}{filename}{extension}",
+        default="{filename}{extension}",
         options={'HIDDEN'},
     )
 

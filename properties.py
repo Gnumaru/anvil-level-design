@@ -563,10 +563,12 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         description=(
             "Naming pattern for new image materials\n"
             "{relativePath}: Folder path relative to the .blend file\n"
+            "{encodedRelativePath}: Encoded relative folder path "
+            "(RP__...__ENDRP)\n"
             "{filename}: Filename without its extension\n"
             "{extension}: File extension including the dot"
         ),
-        default="{relativePath}{filename}{extension}",
+        default="{filename}{extension}",
     )
 
     # === UI Collapse State ===

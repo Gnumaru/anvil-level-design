@@ -9,6 +9,8 @@
 - Post action dialogue follows cursor to screen area
 - Fix cube cut edge case
 - More general auto uving (let me know if you see any issues)
+- Default material name is now {filename}{extension}
+- Added a new material template {encodedRelativePath}
 
 # 1.8.6
 - Fix texture browser overlay in Blender 5.2

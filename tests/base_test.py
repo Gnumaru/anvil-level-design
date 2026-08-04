@@ -78,7 +78,7 @@ def _purge_all():
     props.default_emission_strength = 0.0
     props.default_emission_color = (1.0, 1.0, 1.0, 1.0)
     props.default_specular = 0.5
-    props.default_material_name_pattern = "{relativePath}{filename}{extension}"
+    props.default_material_name_pattern = "{filename}{extension}"
     prefab_libraries = getattr(bpy.context.scene, "anvil_prefab_libraries", None)
     if prefab_libraries is not None:
         prefab_libraries.clear()
