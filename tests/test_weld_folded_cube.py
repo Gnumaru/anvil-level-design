@@ -27,7 +27,7 @@ def _setup_plain_cube(name):
 
     Returns (obj, ctx).
     """
-    obj = create_textured_cube(name, 1.0, 1.0, face_aligned=True)
+    obj = create_textured_cube(name, 1.0, 1.0, use_box_project=True)
     ctx = _get_context_override()
 
     with bpy.context.temp_override(**ctx):
@@ -195,7 +195,7 @@ class FoldedPlaneWeldCubeDoubleTest(AnvilTestCase):
         """
         # --- First cut: bottom to middle (same as single-cut test) ---
         obj = create_textured_cube("weld_folded_double", 1.0, 1.0,
-                                   face_aligned=True)
+                                   use_box_project=True)
         ctx = _get_context_override()
 
         with bpy.context.temp_override(**ctx):

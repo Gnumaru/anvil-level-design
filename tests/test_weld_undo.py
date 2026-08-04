@@ -18,7 +18,7 @@ from .helpers import (
 
 
 def _create_pending_corridor(name):
-    obj = create_textured_cube(name, 1.0, 1.0)
+    obj = create_textured_cube(name, 1.0, 1.0, use_box_project=False)
     ctx = _get_context_override()
     with bpy.context.temp_override(**ctx):
         bpy.ops.object.mode_set(mode='EDIT')
@@ -85,7 +85,9 @@ class CorridorWeldUndoTest(AnvilTestCase):
         Uses operator-based geometry (delete face) so the undo system properly
         tracks subsequent BMesh layer changes.
         """
-        obj = create_textured_cube("corridor_undo", 1.0, 1.0)
+        obj = create_textured_cube(
+            "corridor_undo", 1.0, 1.0, use_box_project=False
+        )
         obj_name = obj.name
         ctx = _get_context_override()
         uctx = get_undo_context()
@@ -172,7 +174,9 @@ class CorridorWeldUndoTest(AnvilTestCase):
 
     def test_corridor_edge_only_selection_change_invalidates_pending_action(self):
         """Changing selected edges invalidates Corridor even with no selected faces."""
-        obj = create_textured_cube("corridor_edge_selection", 1.0, 1.0)
+        obj = create_textured_cube(
+            "corridor_edge_selection", 1.0, 1.0, use_box_project=False
+        )
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):
             bpy.ops.object.mode_set(mode='EDIT')

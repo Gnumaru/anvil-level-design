@@ -29,7 +29,7 @@ def _setup_subdivided_triangulated_cube(test_case, name):
 
     Returns (obj, ctx) with the object in edit mode, all faces selected.
     """
-    obj = create_textured_cube(name, 1.0, 1.0, face_aligned=True)
+    obj = create_textured_cube(name, 1.0, 1.0, use_box_project=True)
     ctx = _get_context_override()
 
     with bpy.context.temp_override(**ctx):

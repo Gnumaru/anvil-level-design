@@ -4,7 +4,7 @@ import bpy
 import bmesh
 
 from ..core.materials import create_material_with_image, find_material_with_image
-from ..core.uv_projection import face_aligned_project
+from ..core.uv_projection import box_project
 from ..core.uv_projection import apply_uv_to_face
 
 TEXTURE_PATH = os.path.join(os.path.dirname(__file__), "dev_orange_wall.png")
@@ -99,17 +99,17 @@ def create_vertical_plane(name):
     return obj
 
 
-def create_textured_cube(name, scale_u, scale_v, face_aligned=False):
+def create_textured_cube(name, scale_u, scale_v, use_box_project):
     """Create a 1x1x1 cube with all faces textured at the given UV scale.
 
     The cube spans (0,0,0) to (1,1,1). Returns the object in object mode.
 
     Args:
         name: Object name
-        scale_u: Horizontal UV scale (ignored when face_aligned is True)
-        scale_v: Vertical UV scale (ignored when face_aligned is True)
-        face_aligned: If True, use face-aligned world-axis projection
-                      instead of per-face local projection
+        scale_u: Horizontal UV scale (ignored when use_box_project is True)
+        scale_v: Vertical UV scale (ignored when use_box_project is True)
+        use_box_project: If True, use box projection instead of per-face local
+                         projection
     """
     mesh = bpy.data.meshes.new(name)
     bm = bmesh.new()
@@ -129,16 +129,16 @@ def create_textured_cube(name, scale_u, scale_v, face_aligned=False):
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
 
-    if face_aligned:
-        _apply_material_face_aligned(obj, 1.0)
+    if use_box_project:
+        _apply_material_box_project(obj, 1.0)
     else:
         _apply_material(obj, scale_u, scale_v)
 
     return obj
 
 
-def _apply_material_face_aligned(obj, scale):
-    """Load dev_orange_wall.png and apply it with face-aligned projection."""
+def _apply_material_box_project(obj, scale):
+    """Load dev_orange_wall.png and apply it with Box Project."""
     image = bpy.data.images.load(TEXTURE_PATH, check_existing=True)
 
     mat = find_material_with_image(image)
@@ -158,7 +158,7 @@ def _apply_material_face_aligned(obj, scale):
 
     for face in bm.faces:
         face.material_index = mat_index
-        face_aligned_project(face, uv_layer, mat, ppm, scale=scale)
+        box_project(face, uv_layer, mat, ppm, scale)
 
     bmesh.update_edit_mesh(obj.data)
     with bpy.context.temp_override(**ctx):
@@ -188,8 +188,8 @@ def add_uv_layer(obj, layer_name, scale_u, scale_v):
             bpy.ops.object.mode_set(mode='OBJECT')
 
 
-def add_uv_layer_face_aligned(obj, layer_name, scale):
-    """Add a new UV layer and project all faces with face_aligned_project."""
+def add_uv_layer_box_project(obj, layer_name, scale):
+    """Add a new UV layer and project all faces with Box Project."""
     mat = obj.data.materials[0]
     ppm = bpy.context.scene.level_design_props.pixels_per_meter
     was_edit = (obj.mode == 'EDIT')
@@ -202,7 +202,7 @@ def add_uv_layer_face_aligned(obj, layer_name, scale):
     uv_layer = bm.loops.layers.uv.new(layer_name)
 
     for face in bm.faces:
-        face_aligned_project(face, uv_layer, mat, ppm, scale=scale)
+        box_project(face, uv_layer, mat, ppm, scale)
 
     bmesh.update_edit_mesh(obj.data)
     if not was_edit:

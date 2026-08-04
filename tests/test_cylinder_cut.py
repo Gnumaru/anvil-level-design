@@ -8,8 +8,8 @@ from ..operators.weld import set_weld_from_edge_selection
 from .base_test import AnvilTestCase
 from .helpers import (
     _get_context_override,
-    _apply_material_face_aligned,
-    add_uv_layer_face_aligned,
+    _apply_material_box_project,
+    add_uv_layer_box_project,
     create_textured_cube,
     get_context_action_kind,
     wait_for_condition,
@@ -20,12 +20,12 @@ class CylinderCutTest(AnvilTestCase):
     """Test cylinder cut geometry, UV preservation, and weld integration."""
 
     def _execute_textured_cube_cut(self, object_name, side_count, radius_mode):
-        obj = create_textured_cube(object_name, 1.0, 1.0, face_aligned=True)
+        obj = create_textured_cube(object_name, 1.0, 1.0, use_box_project=True)
         context_override = _get_context_override()
         with bpy.context.temp_override(**context_override):
             bpy.ops.object.mode_set(mode='EDIT')
 
-        add_uv_layer_face_aligned(obj, "UVMap.001", 0.5)
+        add_uv_layer_box_project(obj, "UVMap.001", 0.5)
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.select_mode = {'FACE'}
@@ -262,7 +262,7 @@ class CylinderCutTest(AnvilTestCase):
             f"cylinder_cut_folded_weld_{radius_mode.lower()}",
             1.0,
             1.0,
-            face_aligned=True,
+            use_box_project=True,
         )
         context_override = _get_context_override()
         with bpy.context.temp_override(**context_override):
@@ -357,7 +357,7 @@ class CylinderCutTest(AnvilTestCase):
             f"cylinder_cut_edge_aligned_{radius_mode.lower()}",
             1.0,
             1.0,
-            face_aligned=True,
+            use_box_project=True,
         )
         context_override = _get_context_override()
         with bpy.context.temp_override(**context_override):
@@ -439,7 +439,7 @@ class CylinderCutTest(AnvilTestCase):
         bpy.context.collection.objects.link(obj)
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
-        _apply_material_face_aligned(obj, 5.0)
+        _apply_material_box_project(obj, 5.0)
 
         context_override = _get_context_override()
         with bpy.context.temp_override(**context_override):
@@ -558,7 +558,7 @@ class CylinderCutTest(AnvilTestCase):
         bpy.context.collection.objects.link(obj)
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
-        _apply_material_face_aligned(obj, 1.0)
+        _apply_material_box_project(obj, 1.0)
 
         context_override = _get_context_override()
         with bpy.context.temp_override(**context_override):
@@ -661,7 +661,7 @@ class CylinderCutTest(AnvilTestCase):
         bpy.context.collection.objects.link(obj)
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
-        _apply_material_face_aligned(obj, 1.0)
+        _apply_material_box_project(obj, 1.0)
 
         context_override = _get_context_override()
         with bpy.context.temp_override(**context_override):
@@ -776,7 +776,7 @@ class CylinderCutTest(AnvilTestCase):
         bpy.context.collection.objects.link(obj)
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
-        _apply_material_face_aligned(obj, 1.0)
+        _apply_material_box_project(obj, 1.0)
 
         context_override = _get_context_override()
         with bpy.context.temp_override(**context_override):

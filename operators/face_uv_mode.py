@@ -7,7 +7,7 @@ from ..core.logging import debug_log
 from ..core.workspace_check import is_level_design_workspace
 from ..core.geometry import align_2d_shape_to_square
 from ..core.materials import get_texture_dimensions_from_material
-from ..core.uv_projection import derive_transform_from_uvs, face_aligned_project, get_face_local_axes, apply_uv_to_face
+from ..core.uv_projection import derive_transform_from_uvs, box_project, get_face_local_axes, apply_uv_to_face
 from ..core.uv_layers import get_render_active_uv_layer
 from ..core.hotspot_queries import face_has_hotspot_material
 from mathutils import Vector
@@ -25,10 +25,10 @@ from .snapping_hotkeys import (
 )
 
 
-class LEVELDESIGN_OT_face_aligned_project(Operator):
-    """Project UVs aligned to each face independently"""
-    bl_idname = "leveldesign.face_aligned_project"
-    bl_label = "Face-Aligned Projection"
+class LEVELDESIGN_OT_box_project(Operator):
+    """Project UVs from the nearest object-space axis"""
+    bl_idname = "leveldesign.box_project"
+    bl_label = "Box Project"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -60,7 +60,7 @@ class LEVELDESIGN_OT_face_aligned_project(Operator):
 
         props = context.scene.level_design_props
         ppm = props.pixels_per_meter
-        scale = props.projection_scale
+        scale = props.box_project_scale
 
         projected_count = 0
         for face in selected_faces:
@@ -69,7 +69,7 @@ class LEVELDESIGN_OT_face_aligned_project(Operator):
                 continue
 
             mat = me.materials[face.material_index] if face.material_index < len(me.materials) else None
-            face_aligned_project(face, uv_layer, mat, ppm, scale)
+            box_project(face, uv_layer, mat, ppm, scale)
             projected_count += 1
 
         bmesh.update_edit_mesh(me)
@@ -805,7 +805,7 @@ class LEVELDESIGN_OT_snapping_mode_dispatch(Operator):
 
 classes = (
     *snapping_hotkey_classes,
-    LEVELDESIGN_OT_face_aligned_project,
+    LEVELDESIGN_OT_box_project,
     LEVELDESIGN_OT_align_uv,
     LEVELDESIGN_OT_fit_to_face,
     LEVELDESIGN_OT_face_uv_mode,
@@ -843,7 +843,7 @@ def register():
 
         # UV shortcut keymaps (unbound by default)
         kmi = km.keymap_items.new(
-            "leveldesign.face_aligned_project",
+            "leveldesign.box_project",
             'NONE', 'PRESS',
             head=True
         )

@@ -4,6 +4,7 @@
 - Add CYLINDER CUT
 - Hold ALT to view cut intersections for cylinder and cube cut
 - Added creation and cut buttons to the Anvil panel
+- Rename Face Aligned Project to Box Project (it was never face aligned!)
 - New faces will be selected after cut welds
 - Post action dialogue follows cursor to screen area
 - Fix cube cut edge case

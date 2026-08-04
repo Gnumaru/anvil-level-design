@@ -430,7 +430,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
             "leveldesign.select_linked": "Selection",
             "leveldesign.select_invalid_uvs": "Selection",
             "leveldesign.face_uv_mode": "UV",
-            "leveldesign.face_aligned_project": "UV",
+            "leveldesign.box_project": "UV",
             "leveldesign.align_uv": "UV",
             "leveldesign.fit_to_face": "UV",
             "leveldesign.apply_image_to_face": "UV",
@@ -600,8 +600,8 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
                         elif kmi_addon.idname == "leveldesign.visible_object_select":
                             extend = getattr(kmi_addon.properties, "extend", False)
                             display_name = f"Visible Select (Object Mode) ({'Extend' if extend else 'Click'})"
-                        elif kmi_addon.idname == "leveldesign.face_aligned_project":
-                            display_name = "Face Aligned Project"
+                        elif kmi_addon.idname == "leveldesign.box_project":
+                            display_name = "Box Project"
                         elif kmi_addon.idname == "leveldesign.align_uv":
                             direction = getattr(kmi_addon.properties, "direction", "CENTER")
                             display_name = f"UV Align ({direction.title()})"

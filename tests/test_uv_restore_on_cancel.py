@@ -23,7 +23,9 @@ class WorldScaleUVRestoreTest(AnvilTestCase):
     """Cancelling a transform modal with ESC must restore UVs to their pre-modal state."""
 
     def test_grab_modal_escape_cancel_restores_uvs(self):
-        obj = create_textured_cube("cube", scale_u=1.0, scale_v=1.0)
+        obj = create_textured_cube(
+            "cube", scale_u=1.0, scale_v=1.0, use_box_project=False
+        )
 
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):

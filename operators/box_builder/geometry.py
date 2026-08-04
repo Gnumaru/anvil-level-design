@@ -17,7 +17,7 @@ from ...core.materials import (
     resolve_material_for_image,
 )
 from ...core.face_id import get_face_id_layer
-from ...core.uv_projection import face_aligned_project
+from ...core.uv_projection import box_project
 from ...core.uv_layers import get_render_active_uv_layer
 
 
@@ -450,7 +450,7 @@ def _apply_material_and_uvs(
                     if face.material_index < len(me.materials)
                     else None
                 )
-                face_aligned_project(face, uv_layer, mat, ppm)
+                box_project(face, uv_layer, mat, ppm, 1.0)
                 cache_single_face(face, bm, ppm, me)
             return
 
@@ -460,7 +460,7 @@ def _apply_material_and_uvs(
             if not face.is_valid:
                 continue
             face.material_index = mat_idx
-            face_aligned_project(face, uv_layer, default_material, ppm)
+            box_project(face, uv_layer, default_material, ppm, 1.0)
             cache_single_face(face, bm, ppm, me)
 
 
@@ -585,7 +585,7 @@ def execute_box_builder_object_mode(first_vertex, second_vertex, depth,
             if not face.is_valid:
                 continue
             face.material_index = mat_idx
-            face_aligned_project(face, uv_layer, material, ppm)
+            box_project(face, uv_layer, material, ppm, 1.0)
             cache_single_face(face, bm_edit, ppm, me)
 
         bmesh.update_edit_mesh(me)

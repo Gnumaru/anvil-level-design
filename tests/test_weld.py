@@ -32,7 +32,9 @@ class WeldUndoStackTest(AnvilTestCase):
         5. Ctrl+Z (undo corridor):              CORRIDOR
         6. Ctrl+Z (undo to before cut):         NONE
         """
-        obj = create_textured_cube("weld_stack", 1.0, 1.0)
+        obj = create_textured_cube(
+            "weld_stack", 1.0, 1.0, use_box_project=False
+        )
         obj_name = obj.name
 
         ctx = _get_context_override()

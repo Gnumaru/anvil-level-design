@@ -23,7 +23,7 @@ def _setup_cube_and_select_top_face(name, scale_u, scale_v):
 
     Returns the object (in edit mode with top face selected).
     """
-    obj = create_textured_cube(name, scale_u, scale_v)
+    obj = create_textured_cube(name, scale_u, scale_v, use_box_project=False)
     add_uv_layer(obj, "UVMap.001", 0.5, 0.5)
 
     ctx = _get_context_override()

@@ -18,7 +18,7 @@ from ..core.materials import (
     resolve_material_for_image,
 )
 from ..core.uv_layers import get_render_active_uv_layer
-from ..core.uv_projection import face_aligned_project, apply_uv_to_face, derive_transform_from_uvs
+from ..core.uv_projection import box_project, apply_uv_to_face, derive_transform_from_uvs
 from ..handlers.active_image import set_previous_image
 from ..handlers.face_cache import cache_single_face
 
@@ -215,5 +215,5 @@ def _apply_regular_uv_projection(selected_faces, uv_layer, mat, ppm, me, face_ol
             )
             cache_single_face(target_face, bm, ppm, me)
         else:
-            face_aligned_project(target_face, uv_layer, mat, ppm)
+            box_project(target_face, uv_layer, mat, ppm, 1.0)
             cache_single_face(target_face, bm, ppm, me)

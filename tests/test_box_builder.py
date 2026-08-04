@@ -58,10 +58,10 @@ class BoxBuilderTest(AnvilTestCase):
 
         self.assertEqual(len(bm.faces), 6, "Box should have 6 faces")
 
-        # Face-aligned projection maps world coordinates onto the best
+        # Box Project maps object coordinates onto the best
         # projection plane per face.  Rotation varies by orientation.
         # Key: (nx, ny, nz, cx, cy, cz)
-        # face_aligned_project keeps V pointing world-+Z on vertical faces and
+        # box_project keeps V pointing object-+Z on vertical faces and
         # un-mirrors by flipping U on +Y and -X, so those two end up at 180°.
         expected = {
             (0, -1, 0, 0.5, 0.0, 0.5):  (90.0, 0.0, 0.0),    # front

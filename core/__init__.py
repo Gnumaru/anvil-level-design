@@ -48,7 +48,7 @@ from .materials import (
 from .uv_projection import (
     get_face_local_axes,
     derive_transform_from_uvs,
-    face_aligned_project,
+    box_project,
     compute_uv_projection_from_face,
     apply_uv_projection_to_face,
     transfer_uvs_from_projection,

@@ -7,9 +7,9 @@ from ..operators.cube_cut.geometry import execute_cube_cut
 from .base_test import AnvilTestCase
 from .helpers import (
     create_textured_cube,
-    add_uv_layer_face_aligned,
+    add_uv_layer_box_project,
     _get_context_override,
-    _apply_material_face_aligned,
+    _apply_material_box_project,
 )
 
 
@@ -26,13 +26,13 @@ class CubeCutTest(AnvilTestCase):
 
     def test_cube_cut_through_hole(self):
         """Cut a hole through a textured cube and verify UVs on remaining faces."""
-        obj = create_textured_cube("cc_cube", 1.0, 1.0, face_aligned=True)
+        obj = create_textured_cube("cc_cube", 1.0, 1.0, use_box_project=True)
 
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):
             bpy.ops.object.mode_set(mode='EDIT')
 
-        add_uv_layer_face_aligned(obj, "UVMap.001", 0.5)
+        add_uv_layer_box_project(obj, "UVMap.001", 0.5)
 
         # Select all faces so cube cut processes them
         bm = bmesh.from_edit_mesh(obj.data)
@@ -69,7 +69,7 @@ class CubeCutTest(AnvilTestCase):
         ppm = bpy.context.scene.level_design_props.pixels_per_meter
 
         # Expected transforms per face, keyed by (normal, centroid).
-        # The source cube uses face-aligned projection, so uncut faces
+        # The source cube uses Box Project, so uncut faces
         # inherit those rotations. Cut frame pieces preserve the original
         # face's UV mapping via planar re-projection.
         # Key: (nx, ny, nz, cx, cy, cz)
@@ -85,7 +85,7 @@ class CubeCutTest(AnvilTestCase):
             (0, -1, 0, 0.5, 0.0, 0.88):   (0.0, 0.25, 0.75, 0.5, 0.5),
             (0, -1, 0, 0.5, 0.0, 0.12):   (180.0, 0.75, 0.25, 0.5, 0.5),
             (0, -1, 0, 0.12, 0.0, 0.5):   (90.0, 0.25, 0.25, 0.5, 0.5),
-            # Back frame (+Y normal at y=1) — face_aligned_project flips U
+            # Back frame (+Y normal at y=1) — box_project flips U
             # on +Y faces, so offsets on U and some rotations flip relative
             # to the mirrored counterparts on the front frame.
             (0, 1, 0, 0.5, 1.0, 0.88):    (0.0, 0.25, 0.75, 0.5, 0.5),
@@ -165,7 +165,7 @@ class CubeCutTest(AnvilTestCase):
 
     def test_cube_cut_through_hole_then_bridge(self):
         """Cut a through-hole then bridge the two openings, verify bridged face UVs."""
-        obj = create_textured_cube("cc_bridge", 1.0, 1.0, face_aligned=True)
+        obj = create_textured_cube("cc_bridge", 1.0, 1.0, use_box_project=True)
 
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):
@@ -225,7 +225,7 @@ class CubeCutTest(AnvilTestCase):
         #  (b) get_best_neighbor_face ranks neighbors and breaks ties by
         #      bmesh edge/face iteration order — not deterministic across
         #      suites, since prior tests' operations perturb internal order.
-        # Before face_aligned_project was un-mirrored, (b) collapsed into two
+        # Before box_project was un-mirrored, (b) collapsed into two
         # equivalent forms so the test only needed two alternatives. Now the
         # V-flipped and non-flipped sources produce distinct outputs, giving
         # up to four valid forms per face.
@@ -284,13 +284,13 @@ class CubeCutTest(AnvilTestCase):
 
     def test_cube_cut_edge_aligned_hole(self):
         """Cut a hole where the top of the cut aligns with the top of the cube."""
-        obj = create_textured_cube("cc_cube_edge", 1.0, 1.0, face_aligned=True)
+        obj = create_textured_cube("cc_cube_edge", 1.0, 1.0, use_box_project=True)
 
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):
             bpy.ops.object.mode_set(mode='EDIT')
 
-        add_uv_layer_face_aligned(obj, "UVMap.001", 0.5)
+        add_uv_layer_box_project(obj, "UVMap.001", 0.5)
 
         # Select all faces so cube cut processes them
         bm = bmesh.from_edit_mesh(obj.data)
@@ -367,7 +367,7 @@ class CubeCutTest(AnvilTestCase):
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
 
-        _apply_material_face_aligned(obj, 5.0)
+        _apply_material_box_project(obj, 5.0)
 
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):
@@ -468,7 +468,7 @@ class CubeCutTest(AnvilTestCase):
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
 
-        _apply_material_face_aligned(obj, 1.0)
+        _apply_material_box_project(obj, 1.0)
 
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):
@@ -557,7 +557,7 @@ class CubeCutTest(AnvilTestCase):
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
 
-        _apply_material_face_aligned(obj, 1.0)
+        _apply_material_box_project(obj, 1.0)
 
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):
@@ -633,7 +633,7 @@ class CubeCutTest(AnvilTestCase):
         bpy.context.collection.objects.link(obj)
         bpy.context.view_layer.objects.active = obj
         obj.select_set(True)
-        _apply_material_face_aligned(obj, 1.0)
+        _apply_material_box_project(obj, 1.0)
 
         ctx = _get_context_override()
         with bpy.context.temp_override(**ctx):

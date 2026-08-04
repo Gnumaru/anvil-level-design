@@ -763,11 +763,11 @@ class LEVELDESIGN_PT_uv_shortcuts_panel(Panel):
         row = layout.row(align=True)
         row.enabled = has_mesh and not library_object
         row.operator(
-            "leveldesign.face_aligned_project",
-            text="Face-Aligned Project",
+            "leveldesign.box_project",
+            text="Box Project",
             icon='MOD_UVPROJECT',
         )
-        row.prop(props, "projection_scale", text="")
+        row.prop(props, "box_project_scale", text="")
 
         # Alignment
         row = layout.row(align=True)

@@ -44,8 +44,8 @@ def get_face_local_axes(face):
     return (local_x, local_y)
 
 
-def face_aligned_project(face, uv_layer, mat, ppm, scale=1.0):
-    """Project UVs aligned to the face using world-axis planar projection.
+def box_project(face, uv_layer, mat, ppm, scale):
+    """Project UVs from the nearest object-space axis.
 
     Chooses the best projection plane (XY, XZ, or YZ) based on the face
     normal's dominant component, then maps vertex positions to UVs using

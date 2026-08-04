@@ -320,8 +320,8 @@ def update_texture_offset(self, context):
     apply_offset_to_selected_faces(context)
 
 
-def update_projection_scale(self, context):
-    """Called when projection_scale changes - automatically runs face-aligned projection"""
+def update_box_project_scale(self, context):
+    """Run Box Project when its scale changes."""
     if get_updating_from_selection():
         return
 
@@ -329,7 +329,7 @@ def update_projection_scale(self, context):
     if context.mode not in {'EDIT_MESH', 'OBJECT'}:
         return
 
-    bpy.ops.leveldesign.face_aligned_project()
+    bpy.ops.leveldesign.box_project()
 
 
 def _sync_prefab_random_scale_vector_to_x(props, attr_name):
@@ -469,13 +469,13 @@ class LevelDesignProperties(bpy.types.PropertyGroup):
         min=0,
     )
 
-    projection_scale: FloatProperty(
+    box_project_scale: FloatProperty(
         name="Scale",
-        description="Scale to use for face-aligned projection",
+        description="Scale applied by Box Project",
         default=1.0,
         min=0.001,
         max=100.0,
-        update=update_projection_scale,
+        update=update_box_project_scale,
     )
 
     # auto_hotspot moved to per-object properties
