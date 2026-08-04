@@ -102,17 +102,26 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
 
     def modal(self, context, event):
         if event.value == 'PRESS' and event.type in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
-            if event.type == 'WHEELUPMOUSE':
-                self._side_count += 1
-            else:
-                self._side_count = max(3, self._side_count - 1)
-            self.side_count = self._side_count
-            self._cut_preview_dimensions = None
-            self._update_shape_preview()
-            self._update_cut_vertex_preview(context)
-            self._update_header(context)
-            modal_draw_utils.tag_redraw_all_3d_views()
-            return {'RUNNING_MODAL'}
+            target = getattr(self, "_active_view_target", None)
+            if (
+                not getattr(self, "_cancelled", False)
+                and target is not None
+                and target.is_live()
+            ):
+                # Keep registered-property changes in the viewport used by the
+                # draw operation so Blender places Adjust Last Operation there.
+                with context.temp_override(**target.override_kwargs()):
+                    if event.type == 'WHEELUPMOUSE':
+                        self._side_count += 1
+                    else:
+                        self._side_count = max(3, self._side_count - 1)
+                    self.side_count = self._side_count
+                    self._cut_preview_dimensions = None
+                    self._update_shape_preview()
+                    self._update_cut_vertex_preview(context)
+                    self._update_header(context)
+                    modal_draw_utils.tag_redraw_all_3d_views()
+                    return {'RUNNING_MODAL'}
 
         return super().modal(context, event)
 
