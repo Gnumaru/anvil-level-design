@@ -16,9 +16,13 @@ from .analysis import (
     analyze_convex_prism_cut,
     face_is_available,
 )
+from .concave_reconstruction import build_canonical_cut_graph
 from .convex_prism import EPSILON
 from ...core.logging import debug_log
-from ...core.geometry import compute_normal_from_verts
+from ...core.geometry import (
+    compute_normal_from_verts,
+    polygon_has_negligible_area,
+)
 from ...core.uv_projection import compute_uv_projection_from_face, apply_uv_projection_to_face
 from ...core.uv_layers import get_all_uv_layers
 
@@ -163,6 +167,27 @@ def execute_prism_cut_with_face_reconstruction(
     debug_log(f"[CubeCut] Total interior vertices created: {sum(len(v) for _, v in face_interior_verts)}")
     debug_log(f"[CubeCut] Faces to process: {len(face_interior_verts)}")
 
+    canonical_cut_graph = None
+    if face_reconstruction_function is not None:
+        canonical_cut_graph = build_canonical_cut_graph(
+            bm,
+            faces_to_be_cut,
+            prism,
+            split_verts,
+            dict(face_interior_verts),
+        )
+        split_verts = [
+            vertex for vertex in split_verts if vertex.is_valid
+        ]
+        face_interior_verts = [
+            (
+                face,
+                [vertex for vertex in interior_verts if vertex.is_valid],
+            )
+            for face, interior_verts in face_interior_verts
+            if face.is_valid
+        ]
+
     # === STEP 4: Capture face data and delete faces being processed ===
     # Capture vertex data for each face BEFORE deleting faces
     debug_log(f"\n[CubeCut] === STEP 4: Capture face data and delete faces ===")
@@ -257,7 +282,16 @@ def execute_prism_cut_with_face_reconstruction(
         # survive the 'FACES_ONLY' delete below.
         host_edges = list(face.edges)
 
-        face_data_list.append((new_verts, verts_on_original_exterior, verts_in_original_interior, original_face_verts, face_normal, uv_projections, material_index, host_edges))
+        cut_segments = None
+        if canonical_cut_graph is not None:
+            cut_segments = canonical_cut_graph.segments_for_face(face)
+            new_verts.extend(
+                vertex
+                for vertex in canonical_cut_graph.vertices_for_face(face)
+                if vertex not in new_verts
+            )
+
+        face_data_list.append((new_verts, verts_on_original_exterior, verts_in_original_interior, original_face_verts, face_normal, uv_projections, material_index, host_edges, cut_segments))
         faces_to_delete.append(face)
         debug_log(f"[CubeCut] Captured data for face {face.index}: {len(new_verts)} new_verts, {len(verts_on_original_exterior)} exterior, {len(verts_in_original_interior)} interior, uv_layers={len(uv_projections)}")
 
@@ -271,7 +305,7 @@ def execute_prism_cut_with_face_reconstruction(
     bm.edges.ensure_lookup_table()
 
     newly_created_faces = []
-    for new_verts, verts_on_original_exterior, verts_in_original_interior, original_face_verts, face_normal, uv_projections, material_index, host_edges in face_data_list:
+    for new_verts, verts_on_original_exterior, verts_in_original_interior, original_face_verts, face_normal, uv_projections, material_index, host_edges, cut_segments in face_data_list:
         if face_reconstruction_function is None:
             new_faces, connector_edges = _verts_to_faces(
                 bm, new_verts, verts_on_original_exterior,
@@ -285,6 +319,8 @@ def execute_prism_cut_with_face_reconstruction(
                 new_verts,
                 face_normal,
                 prism,
+                cut_segments,
+                canonical_cut_graph,
             )
         if reconstruction_mode == RECONSTRUCTION_MODE_NGONS:
             new_faces = _minimize_face_local_connector_edges(
@@ -294,7 +330,12 @@ def execute_prism_cut_with_face_reconstruction(
                 face_normal,
             )
         elif face_reconstruction_function is not None:
-            new_faces = _join_reconstructed_triangles(bm, new_faces)
+            new_faces = _join_face_local_triangles_to_quads(
+                bm,
+                new_faces,
+                connector_edges,
+                face_normal,
+            )
         if new_faces:
             for new_face in new_faces:
                 # Apply material from original face
@@ -306,6 +347,7 @@ def execute_prism_cut_with_face_reconstruction(
                         u_axis, v_axis, origin_uv, origin_pos, source_normal = proj
                         apply_uv_projection_to_face(new_face, layer, u_axis, v_axis, origin_uv, origin_pos, source_normal)
             newly_created_faces.extend(new_faces)
+
     #
     # === STEP 6: Quadrilate n-gons created by edge splits ===
     # Faces that had edges split but weren't cut are now n-gons and need to be quadrilated
@@ -313,25 +355,70 @@ def execute_prism_cut_with_face_reconstruction(
     faces_to_quadrilate = []
 
     if reconstruction_mode == RECONSTRUCTION_MODE_QUADS:
-        # Check adjacent faces that had their edges split (but weren't
-        # deleted/cut). N-gon reconstruction deliberately leaves these faces
-        # alone: a shared-edge split is enough to avoid a T-junction, and the
-        # edge between two original faces must never be dissolved.
-        for face in faces_with_split_edges:
-            if not face_is_available(face):
-                continue
-            if len(face.verts) > 4:
-                # This is an n-gon that needs quadrilating
-                faces_to_quadrilate.append(face)
-                debug_log(f"[CubeCut] Adjacent face needs quadrilating: {len(face.verts)} verts")
+        if face_reconstruction_function is not None:
+            # Rebuild each untouched neighbor independently. Its current
+            # edges are the source-face boundary after edge splitting, so
+            # they must remain protected while only face-local connectors
+            # may be removed to form quads.
+            for face in faces_with_split_edges:
+                if not face_is_available(face) or len(face.verts) <= 4:
+                    continue
 
-        # Check newly created faces from cutting
-        for face in newly_created_faces:
-            if not face.is_valid:
-                continue
-            if len(face.verts) > 4:
-                faces_to_quadrilate.append(face)
-                debug_log(f"[CubeCut] Newly created face needs quadrilating: {len(face.verts)} verts")
+                projections = {}
+                for layer in get_all_uv_layers(bm, me):
+                    projection = compute_uv_projection_from_face(face, layer)
+                    if projection is not None:
+                        projections[layer.name] = projection
+                material_index = face.material_index
+                face_normal = face.normal.copy()
+                local_faces = _quadrangulate_face_locally(
+                    bm,
+                    face,
+                    face_normal,
+                )
+                for local_face in local_faces:
+                    local_face.material_index = material_index
+                    for layer_name, projection in projections.items():
+                        layer = bm.loops.layers.uv.get(layer_name)
+                        if layer is None:
+                            continue
+                        (
+                            u_axis,
+                            v_axis,
+                            origin_uv,
+                            origin_pos,
+                            source_normal,
+                        ) = projection
+                        apply_uv_projection_to_face(
+                            local_face,
+                            layer,
+                            u_axis,
+                            v_axis,
+                            origin_uv,
+                            origin_pos,
+                            source_normal,
+                        )
+        else:
+            # Preserve the legacy convex reconstruction behavior.
+            for face in faces_with_split_edges:
+                if not face_is_available(face):
+                    continue
+                if len(face.verts) > 4:
+                    faces_to_quadrilate.append(face)
+                    debug_log(
+                        f"[CubeCut] Adjacent face needs quadrilating: "
+                        f"{len(face.verts)} verts"
+                    )
+
+            for face in newly_created_faces:
+                if not face.is_valid:
+                    continue
+                if len(face.verts) > 4:
+                    faces_to_quadrilate.append(face)
+                    debug_log(
+                        f"[CubeCut] Newly created face needs quadrilating: "
+                        f"{len(face.verts)} verts"
+                    )
 
     if faces_to_quadrilate:
         debug_log(f"[CubeCut] === STEP 6: Quadrilating {len(faces_to_quadrilate)} n-gon faces ===")
@@ -434,10 +521,18 @@ def execute_prism_cut_with_face_reconstruction(
     for e in bm.edges:
         if not e.is_valid:
             continue
-        if (
-                len(e.link_faces) == 1 and
-                prism.point_on_surface(e.verts[0].co) and
-                prism.point_on_surface(e.verts[1].co)):
+        if canonical_cut_graph is not None:
+            is_cut_boundary = (
+                len(e.link_faces) == 1
+                and canonical_cut_graph.edge_is_boundary(e)
+            )
+        else:
+            is_cut_boundary = (
+                len(e.link_faces) == 1
+                and prism.point_on_surface(e.verts[0].co)
+                and prism.point_on_surface(e.verts[1].co)
+            )
+        if is_cut_boundary:
             e.select = True
             boundary_count += 1
 
@@ -663,22 +758,109 @@ def _sort_verts_by_angle_with_normal(verts, normal):
     return sorted(verts, key=angle_key)
 
 
-def _join_reconstructed_triangles(bm, faces):
-    """Join triangles emitted by a non-legacy face reconstructor."""
-    valid_faces = [face for face in faces if face.is_valid]
-    if not valid_faces:
-        return []
-    result = bmesh.ops.join_triangles(
+def _quadrangulate_face_locally(bm, face, face_normal):
+    """Triangulate one split source face without crossing its boundary."""
+    protected_boundary_edges = set(face.edges)
+    result = bmesh.ops.triangulate(bm, faces=[face])
+    local_faces = _discard_numerically_degenerate_faces(
         bm,
-        faces=valid_faces,
-        angle_face_threshold=3.14159,
-        angle_shape_threshold=3.14159,
+        result.get('faces', []),
     )
-    joined_faces = {
-        face for face in result.get('faces', []) if face.is_valid
+    connector_edges = {
+        edge
+        for local_face in local_faces
+        for edge in local_face.edges
+        if edge not in protected_boundary_edges
     }
-    joined_faces.update(face for face in valid_faces if face.is_valid)
-    return list(joined_faces)
+    return _join_face_local_triangles_to_quads(
+        bm,
+        local_faces,
+        connector_edges,
+        face_normal,
+    )
+
+
+def _discard_numerically_degenerate_faces(bm, faces):
+    """Remove face-local triangulation cells with negligible altitude."""
+    valid_faces = [
+        face for face in faces
+        if face is not None and face.is_valid
+    ]
+    degenerate_faces = [
+        face for face in valid_faces
+        if polygon_has_negligible_area(
+            [vertex.co for vertex in face.verts],
+            EPSILON,
+        )
+    ]
+
+    if degenerate_faces:
+        bmesh.ops.delete(
+            bm,
+            geom=degenerate_faces,
+            context='FACES_ONLY',
+        )
+        debug_log(
+            f"[PrismCut] Removed {len(degenerate_faces)} numerically "
+            "degenerate face-local triangulation cells"
+        )
+    return [face for face in valid_faces if face.is_valid]
+
+
+def _join_face_local_triangles_to_quads(
+        bm, faces, connector_edges, face_normal):
+    """Join triangle pairs only across one source face's interior edges."""
+    region_faces = {
+        face for face in faces
+        if face is not None and face.is_valid
+    }
+    remaining_connectors = {
+        edge for edge in connector_edges
+        if edge is not None and edge.is_valid
+    }
+
+    for connector_edge in sorted(
+            remaining_connectors,
+            key=_face_local_connector_merge_key):
+        if not connector_edge.is_valid:
+            continue
+        linked_faces = [
+            face for face in connector_edge.link_faces
+            if face in region_faces and face.is_valid
+        ]
+        if len(linked_faces) != 2:
+            continue
+
+        first_face, second_face = linked_faces
+        if len(first_face.verts) != 3 or len(second_face.verts) != 3:
+            continue
+        shared_edges = set(first_face.edges) & set(second_face.edges)
+        if shared_edges != {connector_edge}:
+            continue
+
+        boundary_edges = [
+            edge
+            for edge in set(first_face.edges) | set(second_face.edges)
+            if edge is not connector_edge
+        ]
+        boundary_verts = _trace_simple_edge_cycle(boundary_edges)
+        if boundary_verts is None or len(boundary_verts) != 4:
+            continue
+
+        merged_face = _merge_faces_across_connector(
+            bm,
+            first_face,
+            second_face,
+            connector_edge,
+            face_normal,
+        )
+        if merged_face is None:
+            continue
+        region_faces.discard(first_face)
+        region_faces.discard(second_face)
+        region_faces.add(merged_face)
+
+    return [face for face in region_faces if face.is_valid]
 
 
 def _should_delete_vertex_for_face(vertex, face, prism):

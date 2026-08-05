@@ -95,6 +95,26 @@ class ConcavePrism:
             True,
         )
 
+    def point_inside_ignoring_caps(self, point, ignored_cap_indices):
+        """Return inside status while treating selected caps as unbounded."""
+        signed_depth = (Vector(point) - self.cap_vertices[0]).dot(
+            self.cap_normal
+        )
+        if 0 not in ignored_cap_indices and signed_depth < -EPSILON:
+            return False
+        if (
+                1 not in ignored_cap_indices
+                and signed_depth > self._cap_separation + EPSILON):
+            return False
+        depth_fraction = signed_depth / self._cap_separation
+        profile_point = Vector(point) - self.extrusion * depth_fraction
+        return _point_in_polygon_2d(
+            self._project_to_profile(profile_point),
+            self._profile_vertices_2d,
+            self.boundary_epsilon,
+            True,
+        )
+
     def point_strictly_inside(self, point):
         """Return whether a point is inside and away from every boundary."""
         signed_depth = (Vector(point) - self.cap_vertices[0]).dot(

@@ -64,6 +64,43 @@ def compute_normal_from_verts(verts):
     return normal.normalized()
 
 
+def polygon_has_negligible_area(positions, linear_tolerance):
+    """Return whether a polygon is thinner than a linear tolerance."""
+    points = [
+        position.co if hasattr(position, 'co') else position
+        for position in positions
+    ]
+    if len(points) < 3:
+        return True
+
+    maximum_edge_length = max(
+        (
+            points[(index + 1) % len(points)] - point
+        ).length
+        for index, point in enumerate(points)
+    )
+    if maximum_edge_length <= linear_tolerance:
+        return True
+
+    double_area_normal = Vector((0.0, 0.0, 0.0))
+    for index, point in enumerate(points):
+        following = points[(index + 1) % len(points)]
+        double_area_normal.x += (
+            (point.y - following.y) * (point.z + following.z)
+        )
+        double_area_normal.y += (
+            (point.z - following.z) * (point.x + following.x)
+        )
+        double_area_normal.z += (
+            (point.x - following.x) * (point.y + following.y)
+        )
+
+    return (
+        double_area_normal.length
+        <= linear_tolerance * maximum_edge_length
+    )
+
+
 def are_verts_coplanar(verts, tolerance=0.001):
     """Check if all vertices lie on a single plane.
 

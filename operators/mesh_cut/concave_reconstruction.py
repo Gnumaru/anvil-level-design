@@ -4,12 +4,562 @@ from mathutils import Vector
 from mathutils.geometry import delaunay_2d_cdt, tessellate_polygon
 
 from .convex_prism import EPSILON
-from ...core.geometry import compute_normal_from_verts
+from ...core.geometry import (
+    compute_normal_from_verts,
+    polygon_has_negligible_area,
+)
 from ...core.logging import debug_log
 
 
+class _CanonicalCutNode:
+    """One shared cutter/mesh intersection point."""
+
+    def __init__(self, point, face, anchor_vertex):
+        self.point = Vector(point).copy()
+        self.faces = {face}
+        self.anchor_vertex = anchor_vertex
+
+
+class _CanonicalCutEdge:
+    """One graph edge, possibly contributed by multiple source faces."""
+
+    def __init__(self, start, end):
+        self.start = start
+        self.end = end
+        self.faces = set()
+        self.supporting_planes = set()
+        self.active = True
+
+
+class CanonicalCutGraph:
+    """Canonical cutter intersection segments shared by all source faces."""
+
+    def __init__(
+            self, edges_by_face, edges, suppressed_cap_indices, epsilon):
+        self._edges_by_face = edges_by_face
+        self._edges = edges
+        self.suppressed_cap_indices = suppressed_cap_indices
+        self.epsilon = epsilon
+        self._bmesh_boundary_edges = set()
+
+    def segments_for_face(self, face):
+        """Return canonical 3D segment coordinates for one source face."""
+        return [
+            (edge.start.point.copy(), edge.end.point.copy())
+            for edge in self._edges_by_face.get(face, [])
+            if edge.active
+        ]
+
+    def edge_is_boundary(self, edge):
+        """Return whether reconstruction registered this exact graph edge."""
+        return edge in self._bmesh_boundary_edges
+
+    def register_boundary_edges(self, edges):
+        """Record exact BMesh edges emitted for graph constraints."""
+        self._bmesh_boundary_edges.update(edges)
+
+    def vertices_for_face(self, face):
+        """Return the canonical BMesh vertices used by one source face."""
+        return list({
+            node.anchor_vertex
+            for edge in self._edges_by_face.get(face, [])
+            if edge.active
+            for node in (edge.start, edge.end)
+            if node.anchor_vertex is not None
+            and node.anchor_vertex.is_valid
+        })
+
+    def point_inside(self, point, prism):
+        """Classify a reconstruction cell using the normalised graph caps."""
+        return prism.point_inside_ignoring_caps(
+            point,
+            self.suppressed_cap_indices,
+        )
+
+    def canonical_point(self, point):
+        """Return the graph coordinate for a nearby source-loop point."""
+        nearest_node = None
+        nearest_distance = self.epsilon
+        for edge in self._edges:
+            if not edge.active:
+                continue
+            for node in (edge.start, edge.end):
+                distance = (node.point - point).length
+                if distance <= nearest_distance:
+                    nearest_node = node
+                    nearest_distance = distance
+        if nearest_node is None:
+            return Vector(point).copy()
+        return nearest_node.point.copy()
+
+def build_canonical_cut_graph(
+        bm, faces, prism, split_verts, face_interior_verts):
+    """Build one canonical intersection graph before rebuilding any face.
+
+    Individual source faces still need planar CDT reconstruction, but their
+    cutter constraints now refer to shared graph nodes. Nodes at host edges or
+    known cutter/face intersections are anchored to the BMesh vertices that
+    reconstruction must reuse.
+    """
+    valid_faces = [face for face in faces if face is not None and face.is_valid]
+    epsilon = _canonical_graph_epsilon(valid_faces, prism)
+    canonical_epsilon = max(
+        epsilon,
+        _prism_coordinate_scale(prism) * 6e-7,
+    )
+    face_neighbors = _face_neighbors(valid_faces)
+    split_verts_set = set(split_verts)
+    nodes = []
+    anchor_nodes = {}
+    edges_by_face = {}
+    graph_edges = {}
+
+    for face in valid_faces:
+        face_anchors = _face_graph_anchors(
+            face,
+            prism,
+            split_verts_set,
+            face_interior_verts.get(face, []),
+        )
+        origin = face.verts[0].co
+        raw_segments = _prism_surface_plane_segments(
+            prism,
+            origin,
+            face.normal,
+            epsilon,
+        )
+        clipped_segments = _clip_segments_to_face(
+            raw_segments,
+            face,
+            prism,
+            epsilon,
+        )
+        face_edges = []
+        seen_segments = set()
+        for start, end in clipped_segments:
+            start_node = _canonical_graph_node(
+                nodes,
+                anchor_nodes,
+                start,
+                face,
+                face_anchors,
+                face_neighbors,
+                epsilon,
+                canonical_epsilon,
+            )
+            end_node = _canonical_graph_node(
+                nodes,
+                anchor_nodes,
+                end,
+                face,
+                face_anchors,
+                face_neighbors,
+                epsilon,
+                canonical_epsilon,
+            )
+            if start_node is end_node:
+                continue
+            segment_key = frozenset((id(start_node), id(end_node)))
+            if segment_key in seen_segments:
+                continue
+            seen_segments.add(segment_key)
+            graph_edge = graph_edges.get(segment_key)
+            if graph_edge is None:
+                graph_edge = _CanonicalCutEdge(start_node, end_node)
+                graph_edges[segment_key] = graph_edge
+            graph_edge.faces.add(face)
+            graph_edge.supporting_planes.update(
+                _segment_supporting_planes(start, end, prism, epsilon)
+            )
+            face_edges.append(graph_edge)
+        edges_by_face[face] = face_edges
+
+    suppressed_cap_indices = _remove_redundant_cap_paths(
+        list(graph_edges.values()),
+        prism,
+    )
+
+    active_nodes = {
+        node
+        for edge in graph_edges.values()
+        if edge.active
+        for node in (edge.start, edge.end)
+    }
+    for node in active_nodes:
+        if node.anchor_vertex is None:
+            node.anchor_vertex = bm.verts.new(node.point)
+
+    node_degrees = {node: 0 for node in active_nodes}
+    node_neighbors = {node: [] for node in active_nodes}
+    active_edges = [edge for edge in graph_edges.values() if edge.active]
+    for edge in active_edges:
+        node_degrees[edge.start] += 1
+        node_degrees[edge.end] += 1
+        node_neighbors[edge.start].append(edge.end)
+        node_neighbors[edge.end].append(edge.start)
+    unexpected_nodes = [
+        (tuple(node.point), degree)
+        for node, degree in node_degrees.items()
+        if degree != 2
+    ]
+    debug_log(
+        f"[PrismCut] Canonical cut graph has {len(active_nodes)} nodes and "
+        f"{len(active_edges)} active edges across {len(valid_faces)} faces; "
+        f"unexpected node degrees: {unexpected_nodes}"
+    )
+    for node, degree in node_degrees.items():
+        if degree != 2:
+            debug_log(
+                f"[PrismCut] Graph node {tuple(node.point)} degree {degree} "
+                f"neighbors "
+                f"{[tuple(neighbor.point) for neighbor in node_neighbors[node]]} "
+                f"faces {[face.index for face in node.faces]}"
+            )
+    return CanonicalCutGraph(
+        edges_by_face,
+        list(graph_edges.values()),
+        suppressed_cap_indices,
+        canonical_epsilon,
+    )
+
+
+def _segment_supporting_planes(start, end, prism, epsilon):
+    midpoint = (start + end) * 0.5
+    return {
+        plane_index
+        for plane_index, (plane_point, plane_normal) in enumerate(prism.planes)
+        if abs((midpoint - plane_point).dot(plane_normal)) <= epsilon * 4
+    }
+
+
+def _remove_redundant_cap_paths(edges, prism):
+    """Remove cap-only paths that make an otherwise cyclic graph branch."""
+    active_edges = [edge for edge in edges if edge.active]
+    node_edges = _graph_node_edges(active_edges)
+    cap_indices = set(prism.cap_plane_indices)
+    cap_only_edges = {
+        edge for edge in active_edges
+        if edge.supporting_planes
+        and edge.supporting_planes <= cap_indices
+    }
+    visited = set()
+    suppressed_cap_indices = set()
+
+    for starting_edge in cap_only_edges:
+        if starting_edge in visited:
+            continue
+        component_edges = set()
+        component_nodes = set()
+        pending = [starting_edge]
+        while pending:
+            edge = pending.pop()
+            if edge in visited:
+                continue
+            visited.add(edge)
+            component_edges.add(edge)
+            component_nodes.update((edge.start, edge.end))
+            for node in (edge.start, edge.end):
+                pending.extend(
+                    candidate for candidate in node_edges[node]
+                    if candidate in cap_only_edges
+                    and candidate not in visited
+                )
+
+        attachment_nodes = [
+            node for node in component_nodes
+            if any(edge not in component_edges for edge in node_edges[node])
+        ]
+        if len(attachment_nodes) != 2:
+            continue
+        if not all(
+                len(node_edges[node]) > 2
+                and len(node_edges[node]) - sum(
+                    edge in component_edges for edge in node_edges[node]
+                ) >= 2
+                for node in attachment_nodes):
+            continue
+        for edge in component_edges:
+            edge.active = False
+            suppressed_cap_indices.update(edge.supporting_planes)
+        debug_log(
+            f"[PrismCut] Removed redundant cap path with "
+            f"{len(component_edges)} graph edges"
+        )
+    return suppressed_cap_indices
+
+
+def _graph_node_edges(edges):
+    result = {}
+    for edge in edges:
+        result.setdefault(edge.start, []).append(edge)
+        result.setdefault(edge.end, []).append(edge)
+    return result
+
+
+def _clip_segments_to_face(segments, face, prism, epsilon):
+    """Clip cutter-plane segments to one source polygon.
+
+    The CDT used to perform this clipping independently for every face. Making
+    the crossings explicit here lets adjacent faces share one canonical node
+    at their common BMesh edge.
+    """
+    origin, axis_x, axis_y = _face_coordinate_system(
+        list(face.verts),
+        face.normal,
+    )
+
+    def project(point):
+        offset = Vector(point) - origin
+        return Vector((offset.dot(axis_x), offset.dot(axis_y)))
+
+    source_loop = [project(vertex.co) for vertex in face.verts]
+    boundary_segments = _loop_segments(source_loop)
+    clipped = []
+
+    for start_3d, end_3d in segments:
+        start_2d = project(start_3d)
+        end_2d = project(end_3d)
+        segment_2d = end_2d - start_2d
+        if segment_2d.length <= epsilon:
+            continue
+
+        parameters = [0.0, 1.0]
+        for boundary_start, boundary_end in boundary_segments:
+            parameters.extend(_segment_boundary_parameters(
+                start_2d,
+                end_2d,
+                boundary_start,
+                boundary_end,
+                epsilon,
+            ))
+        parameter_epsilon = epsilon / segment_2d.length
+        parameters = _unique_sorted_parameters(
+            parameters,
+            parameter_epsilon,
+        )
+
+        for index in range(len(parameters) - 1):
+            start_parameter = parameters[index]
+            end_parameter = parameters[index + 1]
+            if end_parameter - start_parameter <= parameter_epsilon:
+                continue
+            midpoint_parameter = (
+                start_parameter + end_parameter
+            ) * 0.5
+            midpoint = start_2d + segment_2d * midpoint_parameter
+            if not _point_in_polygon_2d(
+                    midpoint, source_loop, epsilon, True):
+                continue
+            if not _segment_separates_prism_regions(
+                    midpoint,
+                    segment_2d,
+                    origin,
+                    axis_x,
+                    axis_y,
+                    prism,
+                    epsilon):
+                continue
+            segment_3d = end_3d - start_3d
+            clipped.append((
+                start_3d + segment_3d * start_parameter,
+                start_3d + segment_3d * end_parameter,
+            ))
+
+    return _deduplicate_segments(clipped, epsilon)
+
+
+def _segment_separates_prism_regions(
+        midpoint, direction, origin, axis_x, axis_y, prism, epsilon):
+    perpendicular = Vector((-direction.y, direction.x)).normalized()
+    maximum_distance = direction.length * 0.2
+    for multiplier in (4.0, 16.0, 64.0):
+        distance = min(epsilon * multiplier, maximum_distance)
+        if distance <= epsilon:
+            continue
+        first = midpoint + perpendicular * distance
+        second = midpoint - perpendicular * distance
+        first_3d = origin + axis_x * first.x + axis_y * first.y
+        second_3d = origin + axis_x * second.x + axis_y * second.y
+        if prism.point_inside(first_3d) != prism.point_inside(second_3d):
+            return True
+    return False
+
+
+def _segment_boundary_parameters(
+        start, end, boundary_start, boundary_end, epsilon):
+    direction = end - start
+    boundary_direction = boundary_end - boundary_start
+    denominator = _cross_2d(direction, boundary_direction)
+    offset = boundary_start - start
+    scale = max(1.0, direction.length * boundary_direction.length)
+
+    if abs(denominator) > epsilon * scale:
+        parameter = _cross_2d(offset, boundary_direction) / denominator
+        boundary_parameter = _cross_2d(offset, direction) / denominator
+        parameter_epsilon = epsilon / max(direction.length, epsilon)
+        boundary_parameter_epsilon = (
+            epsilon / max(boundary_direction.length, epsilon)
+        )
+        if (
+                -parameter_epsilon <= parameter <= 1.0 + parameter_epsilon
+                and
+                -boundary_parameter_epsilon <= boundary_parameter <=
+                1.0 + boundary_parameter_epsilon):
+            return [max(0.0, min(1.0, parameter))]
+        return []
+
+    if abs(_cross_2d(offset, direction)) > epsilon * max(
+            1.0, direction.length):
+        return []
+
+    length_squared = direction.length_squared
+    if length_squared <= epsilon * epsilon:
+        return []
+    return [
+        max(0.0, min(1.0, (point - start).dot(direction) / length_squared))
+        for point in (boundary_start, boundary_end)
+        if _point_on_segment_2d(point, start, end, epsilon)
+    ]
+
+
+def _unique_sorted_parameters(parameters, epsilon):
+    sorted_parameters = sorted(parameters)
+    unique = []
+    for parameter in sorted_parameters:
+        if unique and abs(parameter - unique[-1]) <= epsilon:
+            continue
+        unique.append(parameter)
+    return unique
+
+
+def _cross_2d(first, second):
+    return first.x * second.y - first.y * second.x
+
+
+def _canonical_graph_epsilon(faces, prism):
+    points = [vertex.co for face in faces for vertex in face.verts]
+    if points:
+        minimum = Vector((
+            min(point.x for point in points),
+            min(point.y for point in points),
+            min(point.z for point in points),
+        ))
+        maximum = Vector((
+            max(point.x for point in points),
+            max(point.y for point in points),
+            max(point.z for point in points),
+        ))
+        host_extent = (maximum - minimum).length
+    else:
+        host_extent = 0.0
+    return max(
+        EPSILON * 10,
+        host_extent * 1e-7,
+        prism.cap_extent * 1e-7,
+    )
+
+
+def _prism_coordinate_scale(prism):
+    return max(
+        abs(component)
+        for vertex in prism.vertices
+        for component in vertex
+    )
+
+
+def _face_neighbors(faces):
+    face_set = set(faces)
+    neighbors = {face: set() for face in faces}
+    for face in faces:
+        for edge in face.edges:
+            neighbors[face].update(
+                linked_face for linked_face in edge.link_faces
+                if linked_face in face_set and linked_face is not face
+            )
+    return neighbors
+
+
+def _face_graph_anchors(
+        face, prism, split_verts, interior_verts):
+    anchors = list(interior_verts)
+    for vertex in face.verts:
+        if (
+                vertex in split_verts
+                or (
+                    prism.point_inside(vertex.co)
+                    and not prism.point_strictly_inside(vertex.co)
+                )):
+            anchors.append(vertex)
+    return _unique_valid_verts(anchors)
+
+
+def _canonical_graph_node(
+        nodes, anchor_nodes, point, face, face_anchors, face_neighbors,
+        epsilon, canonical_epsilon):
+    anchor = _nearest_graph_anchor(
+        point,
+        face_anchors,
+        canonical_epsilon,
+    )
+    if anchor is not None:
+        node = anchor_nodes.get(anchor)
+        if node is not None:
+            node.faces.add(face)
+            return node
+
+    node = _nearest_compatible_graph_node(
+        nodes,
+        point,
+        face,
+        face_neighbors,
+        epsilon,
+        canonical_epsilon,
+    )
+    if node is None:
+        canonical_point = anchor.co if anchor is not None else point
+        node = _CanonicalCutNode(canonical_point, face, anchor)
+        nodes.append(node)
+    else:
+        node.faces.add(face)
+        if anchor is not None and node.anchor_vertex is None:
+            node.point = anchor.co.copy()
+            node.anchor_vertex = anchor
+
+    if anchor is not None:
+        anchor_nodes[anchor] = node
+    return node
+
+
+def _nearest_graph_anchor(point, anchors, epsilon):
+    nearest = None
+    nearest_distance = epsilon
+    for anchor in anchors:
+        distance = (anchor.co - point).length
+        if distance <= nearest_distance:
+            nearest = anchor
+            nearest_distance = distance
+    return nearest
+
+
+def _nearest_compatible_graph_node(
+        nodes, point, face, face_neighbors, epsilon, canonical_epsilon):
+    nearest = None
+    nearest_distance = canonical_epsilon
+    compatible_faces = face_neighbors[face] | {face}
+    for node in nodes:
+        if not node.faces & compatible_faces:
+            continue
+        distance = (node.point - point).length
+        tolerance = canonical_epsilon
+        if distance <= tolerance and distance <= nearest_distance:
+            nearest = node
+            nearest_distance = distance
+    return nearest
+
+
 def reconstruct_concave_prism_face(
-        bm, source_face_verts, cut_candidate_verts, face_normal, prism):
+        bm, source_face_verts, cut_candidate_verts, face_normal, prism,
+        cut_segments_3d, cut_graph):
     """Rebuild one source face from a constrained planar subdivision."""
     if len(source_face_verts) < 3:
         return ([], [])
@@ -25,16 +575,13 @@ def reconstruct_concave_prism_face(
     def unproject(point):
         return origin + axis_x * point.x + axis_y * point.y
 
-    source_loop_2d = [project(vertex.co) for vertex in source_face_verts]
+    source_loop_2d = [
+        project(cut_graph.canonical_point(vertex.co))
+        for vertex in source_face_verts
+    ]
     face_extent = _polygon_extent(source_loop_2d)
     epsilon = max(EPSILON, face_extent * 1e-8)
 
-    cut_segments_3d = _prism_surface_plane_segments(
-        prism,
-        origin,
-        face_normal,
-        epsilon,
-    )
     cut_segments_2d = [
         (project(start), project(end))
         for start, end in cut_segments_3d
@@ -78,21 +625,36 @@ def reconstruct_concave_prism_face(
     output_coordinates = result[0]
     output_faces = result[2]
 
-    retained_faces = []
-    retained_output_indices = set()
+    subdivision_faces = []
+    subdivision_output_indices = set()
+    degenerate_cell_count = 0
     for output_face in output_faces:
         if len(output_face) < 3:
             continue
+        cell_points_2d = [
+            output_coordinates[index] for index in output_face
+        ]
+        if polygon_has_negligible_area(
+                [unproject(point) for point in cell_points_2d],
+                epsilon):
+            degenerate_cell_count += 1
+            continue
         centroid_2d = _polygon_centroid_2d(
-            [output_coordinates[index] for index in output_face]
+            cell_points_2d
         )
         if not _point_in_polygon_2d(
                 centroid_2d, source_loop_2d, epsilon, True):
             continue
-        if prism.point_inside(unproject(centroid_2d)):
+        if cut_graph.point_inside(unproject(centroid_2d), prism):
             continue
-        retained_faces.append(output_face)
-        retained_output_indices.update(output_face)
+        subdivision_faces.append(output_face)
+        subdivision_output_indices.update(output_face)
+
+    if degenerate_cell_count:
+        debug_log(
+            f"[PrismCut] Rejected {degenerate_cell_count} negligible-area "
+            "CDT cells before face creation"
+        )
 
     known_verts = _unique_valid_verts(
         list(source_face_verts) + list(cut_candidate_verts)
@@ -101,7 +663,7 @@ def reconstruct_concave_prism_face(
         (vertex, project(vertex.co)) for vertex in known_verts
     ]
     output_verts = {}
-    for output_index in retained_output_indices:
+    for output_index in subdivision_output_indices:
         point_2d = output_coordinates[output_index]
         matching_vert = _nearest_matching_vert(
             point_2d,
@@ -115,7 +677,7 @@ def reconstruct_concave_prism_face(
 
     created_faces = []
     created_face_keys = set()
-    for output_face in retained_faces:
+    for output_face in subdivision_faces:
         face_verts = [output_verts[index] for index in output_face]
         face_key = frozenset(face_verts)
         if len(face_key) < 3 or face_key in created_face_keys:
@@ -148,6 +710,18 @@ def reconstruct_concave_prism_face(
             epsilon * 4,
         )
     }
+    graph_boundary_edges = {
+        edge
+        for face in created_faces
+        for edge in face.edges
+        if _edge_lies_on_constraints(
+            edge,
+            cut_segments_2d,
+            project,
+            epsilon * 4,
+        )
+    }
+    cut_graph.register_boundary_edges(graph_boundary_edges)
     debug_log(
         f"[PrismCut] CDT reconstructed {len(created_faces)} cells with "
         f"{len(connector_edges)} removable connectors"
