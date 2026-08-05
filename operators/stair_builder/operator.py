@@ -1,5 +1,7 @@
 """Stair Builder modal operator."""
 
+import random
+
 import bpy
 from bpy.props import (
     BoolProperty,
@@ -232,6 +234,11 @@ class MESH_OT_stair_builder(
     action_had_selection: BoolProperty()
     action_was_edit_mode: BoolProperty()
     action_object_name: StringProperty()
+    action_uv_random_seed: IntProperty(
+        default=0,
+        min=0,
+        max=2147483647,
+    )
 
     def _calculated_layout(self):
         return geometry.calculate_stair_layout(
@@ -461,7 +468,7 @@ class MESH_OT_stair_builder(
     def _execute_stair_builder(
             self, context, first_vertex, second_vertex, depth, local_x,
             local_y, local_z, action_was_edit_mode, action_object_name,
-            name_suffix):
+            name_suffix, uv_random_seed):
         pixels_per_meter = context.scene.level_design_props.pixels_per_meter
         common_parameters = (
             first_vertex,
@@ -485,6 +492,7 @@ class MESH_OT_stair_builder(
             self.border_width,
             self.border_alignment,
             self.underside,
+            uv_random_seed,
         )
 
         if not action_was_edit_mode:
@@ -527,6 +535,7 @@ class MESH_OT_stair_builder(
             context.mode == 'EDIT_MESH',
             active_object.name if active_object is not None else "",
             self.name_suffix,
+            self.action_uv_random_seed,
         )
 
     def _capture_action_properties(self, context, first_vertex, second_vertex,
@@ -543,6 +552,7 @@ class MESH_OT_stair_builder(
         self.action_object_name = (
             active_object.name if active_object is not None else ""
         )
+        self.action_uv_random_seed = random.randint(0, 2147483647)
 
     def execute(self, context):
         self._had_selection = self.action_had_selection
@@ -557,6 +567,7 @@ class MESH_OT_stair_builder(
             self.action_was_edit_mode,
             self.action_object_name,
             self.name_suffix,
+            self.action_uv_random_seed,
         )
         return self._report_builder_result(result)
 

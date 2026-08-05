@@ -1,6 +1,7 @@
 """Geometry creation and preview data for Stair Builder."""
 
 import math
+import random
 
 import bmesh
 import bpy
@@ -12,10 +13,20 @@ from ..box_builder.geometry import (
     _next_box_builder_datablock_name,
 )
 from ..modal_draw.base_operator import MIN_RECTANGLE_SIZE
+from ..texture_apply import _dispatch_set_uv_from_other_face
 from ...core.face_id import get_face_id_layer
-from ...core.materials import MaterialMappingConflictError, ensure_material_slot
+from ...core.geometry import align_2d_shape_to_square
+from ...core.materials import (
+    MaterialMappingConflictError,
+    ensure_material_slot,
+    get_texture_dimensions_from_material,
+)
 from ...core.uv_layers import get_render_active_uv_layer
-from ...core.uv_projection import box_project
+from ...core.uv_projection import (
+    box_project,
+    derive_transform_from_uvs,
+    get_face_local_axes,
+)
 from ...handlers import cache_single_face
 
 
@@ -274,6 +285,8 @@ class _StairMeshData:
         self._frame = frame
         self.vertices = []
         self.faces = []
+        self.uv_bottom_edges = {}
+        self.uv_source_faces = {}
         self._vertex_indices = {}
 
     def _position(self, coordinate):
@@ -311,18 +324,41 @@ class _StairMeshData:
             cleaned.pop()
             cleaned_keys.pop()
         if len(cleaned) < 3:
-            return
+            return None
 
         positions = [self._position(coordinate) for coordinate in cleaned]
         normal = _polygon_normal(positions)
         if normal.length < 1e-12:
-            return
+            return None
         if normal.dot(desired_normal) < 0.0:
             cleaned.reverse()
-        self.faces.append([
+        face_indices = [
             self._vertex_index(coordinate)
             for coordinate in cleaned
-        ])
+        ]
+        self.faces.append(face_indices)
+        return face_indices
+
+    def add_uv_bottom_face(
+            self, coordinates, desired_normal, bottom_edge_coordinates):
+        face_indices = self.add_face(coordinates, desired_normal)
+        if face_indices is None:
+            return None
+        bottom_edge_indices = frozenset(
+            self._vertex_index(coordinate)
+            for coordinate in bottom_edge_coordinates
+        )
+        if len(bottom_edge_indices) != 2:
+            return face_indices
+        self.uv_bottom_edges[frozenset(face_indices)] = bottom_edge_indices
+        return face_indices
+
+    def set_uv_source(self, target_face_indices, source_face_indices):
+        if target_face_indices is None or source_face_indices is None:
+            return
+        self.uv_source_faces[frozenset(target_face_indices)] = frozenset(
+            source_face_indices
+        )
 
 
 def _upper_profile(layout):
@@ -426,6 +462,13 @@ def _profile_points_between(profile, start_run, end_run):
     return points
 
 
+def _profile_face_at_run(profile_faces, run):
+    for start_run, end_run, face_indices in profile_faces:
+        if start_run - 1e-9 <= run <= end_run + 1e-9:
+            return face_indices
+    return None
+
+
 def _build_stair_mesh_data(
         layout, termination, include_final_riser, left_side, right_side,
         back, left_border, right_border, border_alignment, underside):
@@ -446,11 +489,12 @@ def _build_stair_mesh_data(
     left_inner = layout['left_border_width']
     right_inner = width - layout['right_border_width']
 
+    riser_faces = []
     previous_height = 0.0
     for index, tread_height in enumerate(layout['tread_heights']):
         start = index * tread_depth
         end = (index + 1) * tread_depth
-        data.add_face(
+        riser_faces.append(data.add_uv_bottom_face(
             (
                 (start, left_inner, previous_height),
                 (start, right_inner, previous_height),
@@ -458,8 +502,12 @@ def _build_stair_mesh_data(
                 (start, left_inner, tread_height),
             ),
             -run_axis,
-        )
-        data.add_face(
+            (
+                (start, left_inner, previous_height),
+                (start, right_inner, previous_height),
+            ),
+        ))
+        data.add_uv_bottom_face(
             (
                 (start, left_inner, tread_height),
                 (end, left_inner, tread_height),
@@ -467,19 +515,25 @@ def _build_stair_mesh_data(
                 (start, right_inner, tread_height),
             ),
             vertical_axis,
+            (
+                (start, left_inner, tread_height),
+                (start, right_inner, tread_height),
+            ),
         )
         previous_height = tread_height
 
     ramp_profile = _border_profile(layout, border_alignment)
     ramp_surface_profile = _border_surface_profile(ramp_profile)
     ramp_end_height = ramp_profile[-1][1]
+    left_border_top_faces = []
+    right_border_top_faces = []
     if left_border:
         for profile_index in range(len(ramp_profile) - 1):
             start_run, start_height = ramp_profile[profile_index]
             end_run, end_height = ramp_profile[profile_index + 1]
             if max(start_height, end_height) <= 1e-12:
                 continue
-            data.add_face(
+            face_indices = data.add_uv_bottom_face(
                 (
                     (start_run, 0.0, start_height),
                     (end_run, 0.0, end_height),
@@ -487,6 +541,13 @@ def _build_stair_mesh_data(
                     (start_run, left_inner, start_height),
                 ),
                 vertical_axis,
+                (
+                    (start_run, 0.0, start_height),
+                    (end_run, 0.0, end_height),
+                ),
+            )
+            left_border_top_faces.append(
+                (start_run, end_run, face_indices)
             )
     if right_border:
         for profile_index in range(len(ramp_profile) - 1):
@@ -494,7 +555,7 @@ def _build_stair_mesh_data(
             end_run, end_height = ramp_profile[profile_index + 1]
             if max(start_height, end_height) <= 1e-12:
                 continue
-            data.add_face(
+            face_indices = data.add_uv_bottom_face(
                 (
                     (start_run, right_inner, start_height),
                     (end_run, right_inner, end_height),
@@ -502,6 +563,13 @@ def _build_stair_mesh_data(
                     (start_run, width, start_height),
                 ),
                 vertical_axis,
+                (
+                    (start_run, width, start_height),
+                    (end_run, width, end_height),
+                ),
+            )
+            right_border_top_faces.append(
+                (start_run, end_run, face_indices)
             )
 
     if border_alignment == BORDER_ALIGN_STEP_TIPS:
@@ -542,7 +610,7 @@ def _build_stair_mesh_data(
                 start_run,
                 end_run,
             )
-            data.add_face(
+            side_cap_face = data.add_face(
                 (
                     [(start_run, left_inner, tread_height),
                      (end_run, left_inner, tread_height)]
@@ -553,6 +621,15 @@ def _build_stair_mesh_data(
                 ),
                 desired_normal,
             )
+            source_face = (
+                riser_faces[index]
+                if border_alignment == BORDER_ALIGN_RISER_BOTTOMS
+                else _profile_face_at_run(
+                    left_border_top_faces,
+                    (start_run + end_run) * 0.5,
+                )
+            )
+            data.set_uv_source(side_cap_face, source_face)
     if right_border:
         desired_normal = (
             -width_axis
@@ -567,7 +644,7 @@ def _build_stair_mesh_data(
                 start_run,
                 end_run,
             )
-            data.add_face(
+            side_cap_face = data.add_face(
                 (
                     [(start_run, right_inner, tread_height),
                      (end_run, right_inner, tread_height)]
@@ -578,7 +655,17 @@ def _build_stair_mesh_data(
                 ),
                 desired_normal,
             )
+            source_face = (
+                riser_faces[index]
+                if border_alignment == BORDER_ALIGN_RISER_BOTTOMS
+                else _profile_face_at_run(
+                    right_border_top_faces,
+                    (start_run + end_run) * 0.5,
+                )
+            )
+            data.set_uv_source(side_cap_face, source_face)
 
+    sloped_underside_edge = None
     if underside in {UNDERSIDE_SOLID, UNDERSIDE_NONE}:
         underside_profile = [(0.0, 0.0), (run_length, 0.0)]
     else:
@@ -611,6 +698,10 @@ def _build_stair_mesh_data(
         if underside_start > 1e-9:
             underside_profile.append((underside_start, 0.0))
         underside_profile.append((run_length, underside_end_height))
+        sloped_underside_edge = (
+            (underside_start, 0.0),
+            (run_length, underside_end_height),
+        )
 
     if underside != UNDERSIDE_NONE:
         for profile_index in range(len(underside_profile) - 1):
@@ -632,17 +723,37 @@ def _build_stair_mesh_data(
     right_top_profile = ramp_surface_profile if right_border else stair_profile
     lower_profile = list(reversed(underside_profile))
     if left_side:
-        data.add_face(
+        coordinates = (
             [(run, 0.0, height) for run, height in left_top_profile]
-            + [(run, 0.0, height) for run, height in lower_profile],
-            -width_axis,
+            + [(run, 0.0, height) for run, height in lower_profile]
         )
+        if sloped_underside_edge is None:
+            data.add_face(coordinates, -width_axis)
+        else:
+            data.add_uv_bottom_face(
+                coordinates,
+                -width_axis,
+                tuple(
+                    (run, 0.0, height)
+                    for run, height in sloped_underside_edge
+                ),
+            )
     if right_side:
-        data.add_face(
+        coordinates = (
             [(run, width, height) for run, height in right_top_profile]
-            + [(run, width, height) for run, height in lower_profile],
-            width_axis,
+            + [(run, width, height) for run, height in lower_profile]
         )
+        if sloped_underside_edge is None:
+            data.add_face(coordinates, width_axis)
+        else:
+            data.add_uv_bottom_face(
+                coordinates,
+                width_axis,
+                tuple(
+                    (run, width, height)
+                    for run, height in sloped_underside_edge
+                ),
+            )
 
     if back:
         back_sections = []
@@ -676,7 +787,7 @@ def _build_stair_mesh_data(
                 (right_inner, width, ramp_end_height)
             )
         for start_width, end_width, bottom_height in final_riser_sections:
-            data.add_face(
+            data.add_uv_bottom_face(
                 (
                     (run_length, start_width, bottom_height),
                     (run_length, end_width, bottom_height),
@@ -684,6 +795,10 @@ def _build_stair_mesh_data(
                     (run_length, start_width, layout['height']),
                 ),
                 -run_axis,
+                (
+                    (run_length, start_width, bottom_height),
+                    (run_length, end_width, bottom_height),
+                ),
             )
 
     return data
@@ -939,6 +1054,165 @@ def _create_bmesh_geometry(bm, positions, face_indices):
     return (vertices, faces)
 
 
+def _uv_position_key(position):
+    return tuple(round(value, 9) for value in position)
+
+
+def _uv_bottom_edge_lookup(data, transformed_positions):
+    lookup = {}
+    for face_indices, edge_indices in data.uv_bottom_edges.items():
+        face_key = frozenset(
+            _uv_position_key(transformed_positions[index])
+            for index in face_indices
+        )
+        edge_key = frozenset(
+            _uv_position_key(transformed_positions[index])
+            for index in edge_indices
+        )
+        lookup[face_key] = edge_key
+    return lookup
+
+
+def _align_face_uv_bottom_edge(
+        face, uv_layer, bottom_edge_key, ppm, me):
+    loops = list(face.loops)
+    for edge_index, loop in enumerate(loops):
+        following = loops[(edge_index + 1) % len(loops)]
+        loop_edge_key = frozenset((
+            _uv_position_key(loop.vert.co),
+            _uv_position_key(following.vert.co),
+        ))
+        if loop_edge_key != bottom_edge_key:
+            continue
+
+        transform = derive_transform_from_uvs(face, uv_layer, ppm, me)
+        scale_u = transform['scale_u'] if transform is not None else 1.0
+        scale_v = transform['scale_v'] if transform is not None else 1.0
+        if abs(scale_u) < 1e-8:
+            scale_u = 1.0
+        if abs(scale_v) < 1e-8:
+            scale_v = 1.0
+
+        face_axes = get_face_local_axes(face)
+        if face_axes is None:
+            return False
+        face_local_x, face_local_y = face_axes
+        edge = following.vert.co - loop.vert.co
+        edge_angle = math.atan2(
+            edge.dot(face_local_y),
+            edge.dot(face_local_x),
+        )
+        cos_rotation = math.cos(-edge_angle)
+        sin_rotation = math.sin(-edge_angle)
+        projection_x = (
+            face_local_x * cos_rotation
+            - face_local_y * sin_rotation
+        )
+        projection_y = (
+            face_local_x * sin_rotation
+            + face_local_y * cos_rotation
+        )
+        material = (
+            me.materials[face.material_index]
+            if face.material_index < len(me.materials)
+            else None
+        )
+        texture_meters_u, texture_meters_v = (
+            get_texture_dimensions_from_material(material, ppm)
+        )
+        origin = loops[0].vert.co
+        for item in loops:
+            delta = item.vert.co - origin
+            item[uv_layer].uv = (
+                delta.dot(projection_x) / (scale_u * texture_meters_u),
+                delta.dot(projection_y) / (scale_v * texture_meters_v),
+            )
+
+        shape = [
+            (item[uv_layer].uv.x, item[uv_layer].uv.y)
+            for item in loops
+        ]
+        aligned = align_2d_shape_to_square(shape, edge_index, 0)
+        for item, uv in zip(loops, aligned):
+            item[uv_layer].uv = uv
+        return True
+    return False
+
+
+def _set_face_uv_x_offset(face, uv_layer, offset_x):
+    loops = list(face.loops)
+    if not loops:
+        return
+    offset_delta = offset_x - loops[0][uv_layer].uv.x
+    for loop in loops:
+        loop[uv_layer].uv.x += offset_delta
+
+
+def _align_stair_uv_bottom_edges(
+        data, transformed_positions, faces, uv_layer, ppm, me,
+        uv_random_seed):
+    lookup = _uv_bottom_edge_lookup(data, transformed_positions)
+    random_generator = random.Random(uv_random_seed)
+    aligned_faces = []
+    for face in faces:
+        if not face.is_valid:
+            continue
+        face_key = frozenset(
+            _uv_position_key(vertex.co)
+            for vertex in face.verts
+        )
+        bottom_edge_key = lookup.get(face_key)
+        if bottom_edge_key is None:
+            continue
+        if _align_face_uv_bottom_edge(
+                face, uv_layer, bottom_edge_key, ppm, me):
+            _set_face_uv_x_offset(
+                face,
+                uv_layer,
+                random_generator.random(),
+            )
+            aligned_faces.append(face)
+    return aligned_faces
+
+
+def _transfer_stair_uv_sources(
+        data, transformed_positions, faces, uv_layer, ppm, me, obj_matrix,
+        bm):
+    face_lookup = {
+        frozenset(
+            _uv_position_key(vertex.co)
+            for vertex in face.verts
+        ): face
+        for face in faces
+        if face.is_valid
+    }
+    transferred_faces = []
+    for target_indices, source_indices in data.uv_source_faces.items():
+        target_key = frozenset(
+            _uv_position_key(transformed_positions[index])
+            for index in target_indices
+        )
+        source_key = frozenset(
+            _uv_position_key(transformed_positions[index])
+            for index in source_indices
+        )
+        target_face = face_lookup.get(target_key)
+        source_face = face_lookup.get(source_key)
+        if target_face is None or source_face is None:
+            continue
+        if _dispatch_set_uv_from_other_face(
+                source_face,
+                target_face,
+                uv_layer,
+                ppm,
+                me,
+                obj_matrix,
+                bm=bm,
+        ):
+            transferred_faces.append(target_face)
+    return transferred_faces
+
+
 def _mesh_data_from_parameters(
         first_vertex, second_vertex, depth, local_x, local_y, local_z,
         orientation, sizing_mode, step_count, target_step_height,
@@ -981,7 +1255,7 @@ def execute_stair_builder_edit_mode(
         orientation, sizing_mode, step_count, target_step_height,
         height_distribution, termination, include_final_riser, left_side,
         right_side, back, left_border, right_border, border_width,
-        border_alignment, underside, obj, ppm):
+        border_alignment, underside, uv_random_seed, obj, ppm):
     """Add a stair mesh to the active edit-mode object."""
     if obj is None or obj.type != 'MESH':
         return (False, "No active mesh object")
@@ -1060,6 +1334,27 @@ def execute_stair_builder_edit_mode(
         me,
         obj,
     )
+    aligned_faces = _align_stair_uv_bottom_edges(
+        data,
+        local_positions,
+        new_faces,
+        uv_layer,
+        ppm,
+        me,
+        uv_random_seed,
+    )
+    for face in aligned_faces:
+        cache_single_face(face, bm, ppm, me)
+    _transfer_stair_uv_sources(
+        data,
+        local_positions,
+        new_faces,
+        uv_layer,
+        ppm,
+        me,
+        obj.matrix_world,
+        bm,
+    )
 
     new_face_vertex_positions = []
     bm.faces.index_update()
@@ -1081,7 +1376,7 @@ def execute_stair_builder_object_mode(
         orientation, sizing_mode, step_count, target_step_height,
         height_distribution, termination, include_final_riser, left_side,
         right_side, back, left_border, right_border, border_width,
-        border_alignment, underside, ppm, name_suffix):
+        border_alignment, underside, uv_random_seed, ppm, name_suffix):
     """Create a new stair object."""
     try:
         data = _mesh_data_from_parameters(
@@ -1146,21 +1441,44 @@ def execute_stair_builder_object_mode(
 
     if not me.uv_layers:
         me.uv_layers.new(name="UVMap")
+    material_index = None
     if material is not None:
         material_index = ensure_material_slot(me, material)
-        bpy.ops.object.mode_set(mode='EDIT')
-        bm_edit = bmesh.from_edit_mesh(me)
-        bm_edit.faces.ensure_lookup_table()
-        uv_layer = get_render_active_uv_layer(bm_edit, me)
-        if uv_layer is None:
-            uv_layer = bm_edit.loops.layers.uv.new("UVMap")
-        for face in bm_edit.faces:
-            if not face.is_valid:
-                continue
+    bpy.ops.object.mode_set(mode='EDIT')
+    bm_edit = bmesh.from_edit_mesh(me)
+    bm_edit.faces.ensure_lookup_table()
+    uv_layer = get_render_active_uv_layer(bm_edit, me)
+    if uv_layer is None:
+        uv_layer = bm_edit.loops.layers.uv.new("UVMap")
+    for face in bm_edit.faces:
+        if not face.is_valid:
+            continue
+        if material_index is not None:
             face.material_index = material_index
-            box_project(face, uv_layer, material, ppm, 1.0)
-            cache_single_face(face, bm_edit, ppm, me)
-        bmesh.update_edit_mesh(me)
-        bpy.ops.object.mode_set(mode='OBJECT')
+        box_project(face, uv_layer, material, ppm, 1.0)
+        cache_single_face(face, bm_edit, ppm, me)
+    aligned_faces = _align_stair_uv_bottom_edges(
+        data,
+        local_positions,
+        list(bm_edit.faces),
+        uv_layer,
+        ppm,
+        me,
+        uv_random_seed,
+    )
+    for face in aligned_faces:
+        cache_single_face(face, bm_edit, ppm, me)
+    _transfer_stair_uv_sources(
+        data,
+        local_positions,
+        list(bm_edit.faces),
+        uv_layer,
+        ppm,
+        me,
+        obj.matrix_world,
+        bm_edit,
+    )
+    bmesh.update_edit_mesh(me)
+    bpy.ops.object.mode_set(mode='OBJECT')
 
     return (True, "Stair object created")

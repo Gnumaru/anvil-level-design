@@ -1,7 +1,11 @@
+import random
+
 import bmesh
 import bpy
 from mathutils import Vector
 
+from ..handlers import set_active_image
+from ..operators.texture_apply import _dispatch_set_uv_from_other_face
 from ..operators.stair_builder.geometry import (
     BORDER_ALIGN_RISER_BOTTOMS,
     BORDER_ALIGN_STEP_TIPS,
@@ -16,8 +20,10 @@ from ..operators.stair_builder.geometry import (
     UNDERSIDE_SOLID,
     _create_bmesh_geometry,
     _mesh_data_from_parameters,
+    execute_stair_builder_object_mode,
 )
 from .base_test import AnvilTestCase
+from .helpers import TEXTURE_PATH
 
 
 class StairBuilderBorderFacesTest(AnvilTestCase):
@@ -171,3 +177,414 @@ class StairBuilderOperatorPropertiesTest(AnvilTestCase):
                 self.assertAlmostEqual(prop.default, default)
             else:
                 self.assertEqual(prop.default, default)
+
+
+class StairBuilderUvTest(AnvilTestCase):
+    """Test semantic UV origins on Stair Builder faces."""
+
+    TOLERANCE = 1e-5
+
+    def _axis_span(self, face, axis_index):
+        values = [vertex.co[axis_index] for vertex in face.verts]
+        return max(values) - min(values)
+
+    def _assert_face_edge_is_texture_bottom(self, face, uv_layer, predicate):
+        loops = list(face.loops)
+        for index, loop in enumerate(loops):
+            following = loops[(index + 1) % len(loops)]
+            if not predicate(loop.vert.co) or not predicate(following.vert.co):
+                continue
+            first_uv = loop[uv_layer].uv
+            second_uv = following[uv_layer].uv
+            self.assertAlmostEqual(first_uv.y, 0.0, delta=self.TOLERANCE)
+            self.assertAlmostEqual(second_uv.y, 0.0, delta=self.TOLERANCE)
+            self.assertGreater(
+                max(item[uv_layer].uv.y for item in loops),
+                self.TOLERANCE,
+            )
+            return
+        self.fail("Expected geometry edge was not found on stair face")
+
+    def _assert_face_uv_matches_alt_click(
+            self, source_face, target_face, uv_layer, ppm, me, obj_matrix):
+        actual_uvs = [loop[uv_layer].uv.copy() for loop in target_face.loops]
+        result = _dispatch_set_uv_from_other_face(
+            source_face,
+            target_face,
+            uv_layer,
+            ppm,
+            me,
+            obj_matrix,
+        )
+        self.assertTrue(result)
+        expected_uvs = [loop[uv_layer].uv.copy() for loop in target_face.loops]
+        for actual, expected in zip(actual_uvs, expected_uvs):
+            for axis in range(2):
+                difference = actual[axis] - expected[axis]
+                self.assertAlmostEqual(
+                    difference,
+                    round(difference),
+                    delta=self.TOLERANCE,
+                )
+
+    def _build_textured_stair_object(
+            self, border_alignment, underside, left_border, right_border,
+            uv_random_seed):
+        image = bpy.data.images.load(TEXTURE_PATH, check_existing=True)
+        set_active_image(image)
+        ppm = bpy.context.scene.level_design_props.pixels_per_meter
+        result = execute_stair_builder_object_mode(
+            Vector((0.0, 0.0, 0.0)),
+            Vector((3.0, -2.0, 0.0)),
+            1.5,
+            Vector((1.0, 0.0, 0.0)),
+            Vector((0.0, -1.0, 0.0)),
+            Vector((0.0, 0.0, 1.0)),
+            ORIENTATION_AXIS_1_POSITIVE,
+            SIZING_STEP_COUNT,
+            3,
+            0.1,
+            HEIGHT_EVEN,
+            TERMINATION_TOP_TREAD,
+            False,
+            True,
+            True,
+            False,
+            left_border,
+            right_border,
+            0.25,
+            border_alignment,
+            underside,
+            uv_random_seed,
+            ppm,
+            "",
+        )
+        self.assertTrue(result[0], result[1])
+        return bpy.context.active_object
+
+    def test_stair_builder_risers_treads_and_border_tops_align_to_texture_bottom(self):
+        obj = self._build_textured_stair_object(
+            BORDER_ALIGN_STEP_TIPS,
+            UNDERSIDE_NONE,
+            True,
+            True,
+            9384,
+        )
+
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        try:
+            bm.normal_update()
+            uv_layer = bm.loops.layers.uv.active
+            self.assertIsNotNone(uv_layer)
+
+            risers = [
+                face for face in bm.faces
+                if face.normal.x < -0.99
+                and self._axis_span(face, 0) < self.TOLERANCE
+                and self._axis_span(face, 1) > 1.0
+            ]
+            treads = [
+                face for face in bm.faces
+                if face.normal.z > 0.99
+                and self._axis_span(face, 1) > 1.0
+            ]
+            border_tops = [
+                face for face in bm.faces
+                if face.normal.z > 0.1
+                and 0.2 < self._axis_span(face, 1) < 0.3
+                and self._axis_span(face, 0) > self.TOLERANCE
+            ]
+            self.assertEqual(len(risers), 3)
+            self.assertEqual(len(treads), 3)
+            self.assertEqual(len(border_tops), 4)
+
+            for face in risers:
+                bottom_height = min(vertex.co.z for vertex in face.verts)
+                self._assert_face_edge_is_texture_bottom(
+                    face,
+                    uv_layer,
+                    lambda coordinate: abs(coordinate.z - bottom_height)
+                    < self.TOLERANCE,
+                )
+            for face in treads:
+                riser_run = min(vertex.co.x for vertex in face.verts)
+                self._assert_face_edge_is_texture_bottom(
+                    face,
+                    uv_layer,
+                    lambda coordinate: abs(coordinate.x - riser_run)
+                    < self.TOLERANCE,
+                )
+            for face in border_tops:
+                average_width = sum(vertex.co.y for vertex in face.verts) / len(
+                    face.verts
+                )
+                outside_width = 0.0 if average_width > -1.0 else -2.0
+                self._assert_face_edge_is_texture_bottom(
+                    face,
+                    uv_layer,
+                    lambda coordinate: abs(coordinate.y - outside_width)
+                    < self.TOLERANCE,
+                )
+        finally:
+            bm.free()
+
+    def test_stair_builder_riser_bottom_border_tops_align_outside_edges_to_texture_bottom(self):
+        obj = self._build_textured_stair_object(
+            BORDER_ALIGN_RISER_BOTTOMS,
+            UNDERSIDE_NONE,
+            True,
+            True,
+            2271,
+        )
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        try:
+            bm.normal_update()
+            uv_layer = bm.loops.layers.uv.active
+            self.assertIsNotNone(uv_layer)
+            border_tops = [
+                face for face in bm.faces
+                if face.normal.z > 0.1
+                and 0.2 < self._axis_span(face, 1) < 0.3
+                and self._axis_span(face, 0) > self.TOLERANCE
+            ]
+            self.assertEqual(len(border_tops), 2)
+            for face in border_tops:
+                average_width = sum(vertex.co.y for vertex in face.verts) / len(
+                    face.verts
+                )
+                outside_width = 0.0 if average_width > -1.0 else -2.0
+                self._assert_face_edge_is_texture_bottom(
+                    face,
+                    uv_layer,
+                    lambda coordinate: abs(coordinate.y - outside_width)
+                    < self.TOLERANCE,
+                )
+        finally:
+            bm.free()
+
+    def test_stair_builder_aligned_faces_receive_seeded_random_x_offsets(self):
+        uv_random_seed = 1984
+        obj = self._build_textured_stair_object(
+            BORDER_ALIGN_STEP_TIPS,
+            UNDERSIDE_NONE,
+            True,
+            True,
+            uv_random_seed,
+        )
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        try:
+            bm.normal_update()
+            uv_layer = bm.loops.layers.uv.active
+            self.assertIsNotNone(uv_layer)
+            aligned_faces = [
+                face for face in bm.faces
+                if (
+                    face.normal.x < -0.99
+                    and self._axis_span(face, 0) < self.TOLERANCE
+                    and self._axis_span(face, 1) > 1.0
+                )
+                or (
+                    face.normal.z > 0.99
+                    and self._axis_span(face, 1) > 1.0
+                )
+                or (
+                    face.normal.z > 0.1
+                    and 0.2 < self._axis_span(face, 1) < 0.3
+                    and self._axis_span(face, 0) > self.TOLERANCE
+                )
+            ]
+            self.assertEqual(len(aligned_faces), 10)
+
+            generator = random.Random(uv_random_seed)
+            expected_offsets = [
+                generator.random()
+                for _face in aligned_faces
+            ]
+            actual_offsets = [
+                list(face.loops)[0][uv_layer].uv.x % 1.0
+                for face in aligned_faces
+            ]
+            for actual, expected in zip(actual_offsets, expected_offsets):
+                self.assertAlmostEqual(
+                    actual,
+                    expected,
+                    delta=self.TOLERANCE,
+                )
+            self.assertGreater(
+                len({round(offset, 4) for offset in actual_offsets}),
+                1,
+            )
+        finally:
+            bm.free()
+
+    def test_stair_builder_riser_bottom_border_side_caps_tile_from_each_riser(self):
+        obj = self._build_textured_stair_object(
+            BORDER_ALIGN_RISER_BOTTOMS,
+            UNDERSIDE_NONE,
+            True,
+            True,
+            4132,
+        )
+        ppm = bpy.context.scene.level_design_props.pixels_per_meter
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        try:
+            bm.normal_update()
+            uv_layer = bm.loops.layers.uv.active
+            self.assertIsNotNone(uv_layer)
+            risers = [
+                face for face in bm.faces
+                if face.normal.x < -0.99
+                and self._axis_span(face, 0) < self.TOLERANCE
+                and self._axis_span(face, 1) > 1.0
+            ]
+            side_caps = [
+                face for face in bm.faces
+                if abs(face.normal.y) > 0.99
+                and self._axis_span(face, 1) < self.TOLERANCE
+                and 0.2 < abs(next(iter(face.verts)).co.y) < 1.8
+            ]
+            self.assertEqual(len(risers), 3)
+            self.assertEqual(len(side_caps), 6)
+            for side_cap in side_caps:
+                riser_run = min(vertex.co.x for vertex in side_cap.verts)
+                matching_risers = [
+                    face for face in risers
+                    if all(
+                        abs(vertex.co.x - riser_run) < self.TOLERANCE
+                        for vertex in face.verts
+                    )
+                ]
+                self.assertEqual(len(matching_risers), 1)
+                self._assert_face_uv_matches_alt_click(
+                    matching_risers[0],
+                    side_cap,
+                    uv_layer,
+                    ppm,
+                    obj.data,
+                    obj.matrix_world,
+                )
+        finally:
+            bm.free()
+
+    def test_stair_builder_step_tip_border_inside_triangles_tile_from_border_tops(self):
+        obj = self._build_textured_stair_object(
+            BORDER_ALIGN_STEP_TIPS,
+            UNDERSIDE_NONE,
+            True,
+            True,
+            7319,
+        )
+        ppm = bpy.context.scene.level_design_props.pixels_per_meter
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        try:
+            bm.normal_update()
+            uv_layer = bm.loops.layers.uv.active
+            self.assertIsNotNone(uv_layer)
+            border_tops = [
+                face for face in bm.faces
+                if face.normal.z > 0.1
+                and 0.2 < self._axis_span(face, 1) < 0.3
+                and self._axis_span(face, 0) > self.TOLERANCE
+            ]
+            inside_triangles = [
+                face for face in bm.faces
+                if len(face.verts) == 3
+                and abs(face.normal.y) > 0.99
+                and self._axis_span(face, 1) < self.TOLERANCE
+                and 0.2 < abs(next(iter(face.verts)).co.y) < 1.8
+            ]
+            self.assertEqual(len(border_tops), 4)
+            self.assertEqual(len(inside_triangles), 4)
+            for inside_triangle in inside_triangles:
+                run_midpoint = sum(
+                    vertex.co.x for vertex in inside_triangle.verts
+                ) / len(inside_triangle.verts)
+                side_y = next(iter(inside_triangle.verts)).co.y
+                matching_tops = [
+                    face for face in border_tops
+                    if min(vertex.co.x for vertex in face.verts)
+                    - self.TOLERANCE <= run_midpoint
+                    <= max(vertex.co.x for vertex in face.verts)
+                    + self.TOLERANCE
+                    and min(vertex.co.y for vertex in face.verts)
+                    - self.TOLERANCE <= side_y
+                    <= max(vertex.co.y for vertex in face.verts)
+                    + self.TOLERANCE
+                ]
+                self.assertEqual(len(matching_tops), 1)
+                self._assert_face_uv_matches_alt_click(
+                    matching_tops[0],
+                    inside_triangle,
+                    uv_layer,
+                    ppm,
+                    obj.data,
+                    obj.matrix_world,
+                )
+        finally:
+            bm.free()
+
+    def test_stair_builder_straight_slope_sides_align_texture_bottom_to_long_diagonal(self):
+        for borders_enabled in (False, True):
+            with self.subTest(borders_enabled=borders_enabled):
+                obj = self._build_textured_stair_object(
+                    BORDER_ALIGN_STEP_TIPS,
+                    UNDERSIDE_SLOPED,
+                    borders_enabled,
+                    borders_enabled,
+                    5926,
+                )
+                bm = bmesh.new()
+                bm.from_mesh(obj.data)
+                try:
+                    bm.normal_update()
+                    uv_layer = bm.loops.layers.uv.active
+                    self.assertIsNotNone(uv_layer)
+                    side_faces = [
+                        face for face in bm.faces
+                        if abs(face.normal.y) > 0.99
+                        and self._axis_span(face, 1) < self.TOLERANCE
+                        and self._axis_span(face, 0) > 2.9
+                    ]
+                    self.assertEqual(len(side_faces), 2)
+                    for side_face in side_faces:
+                        loops = list(side_face.loops)
+                        diagonal_edges = []
+                        for index, loop in enumerate(loops):
+                            following = loops[(index + 1) % len(loops)]
+                            run_span = abs(
+                                loop.vert.co.x - following.vert.co.x
+                            )
+                            height_span = abs(
+                                loop.vert.co.z - following.vert.co.z
+                            )
+                            if run_span > self.TOLERANCE \
+                                    and height_span > self.TOLERANCE:
+                                diagonal_edges.append((
+                                    run_span,
+                                    (loop.vert.co.z + following.vert.co.z)
+                                    * 0.5,
+                                    loop,
+                                    following,
+                                ))
+                        self.assertTrue(diagonal_edges)
+                        _run_span, _average_height, first, second = max(
+                            diagonal_edges,
+                            key=lambda edge: (edge[0], -edge[1]),
+                        )
+                        self.assertAlmostEqual(
+                            first[uv_layer].uv.y,
+                            0.0,
+                            delta=self.TOLERANCE,
+                        )
+                        self.assertAlmostEqual(
+                            second[uv_layer].uv.y,
+                            0.0,
+                            delta=self.TOLERANCE,
+                        )
+                finally:
+                    bm.free()
