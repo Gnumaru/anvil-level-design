@@ -379,7 +379,8 @@ class PrismCutTest(AnvilTestCase):
             "A through Prism Cut should offer Bridge for its two openings",
         )
 
-    def test_prism_cut_concave_t_profile_into_triangulated_sphere_bisects_crossed_edges(self):
+    def _assert_concave_t_profile_into_triangulated_sphere_bisects_edges(
+            self, reconstruction_mode, object_name):
         context_override = _get_context_override()
         with bpy.context.temp_override(**context_override):
             bpy.ops.mesh.primitive_ico_sphere_add(
@@ -387,7 +388,7 @@ class PrismCutTest(AnvilTestCase):
                 radius=4.0,
             )
         obj = bpy.context.active_object
-        obj.name = "prism_cut_concave_t_triangulated_sphere"
+        obj.name = object_name
 
         with bpy.context.temp_override(**context_override):
             bpy.ops.object.mode_set(mode='EDIT')
@@ -413,7 +414,7 @@ class PrismCutTest(AnvilTestCase):
                 action_profile_json=profile_json,
                 action_depth=1.6,
                 action_local_z=(0.0, 1.0, 0.0),
-                reconstruction_mode=RECONSTRUCTION_MODE_QUADS,
+                reconstruction_mode=reconstruction_mode,
             )
 
         self.assertIn('FINISHED', result)
@@ -462,4 +463,16 @@ class PrismCutTest(AnvilTestCase):
             [],
             "Every cut-boundary vertex on an existing edge should bisect "
             f"that edge; unbisected intersections: {unbisected_edges}",
+        )
+
+    def test_prism_cut_concave_t_profile_into_triangulated_sphere_bisects_crossed_edges(self):
+        self._assert_concave_t_profile_into_triangulated_sphere_bisects_edges(
+            RECONSTRUCTION_MODE_QUADS,
+            "prism_cut_concave_t_triangulated_sphere_quads",
+        )
+
+    def test_prism_cut_concave_t_profile_into_triangulated_sphere_ngons_mode_bisects_crossed_edges(self):
+        self._assert_concave_t_profile_into_triangulated_sphere_bisects_edges(
+            RECONSTRUCTION_MODE_NGONS,
+            "prism_cut_concave_t_triangulated_sphere_ngons",
         )
