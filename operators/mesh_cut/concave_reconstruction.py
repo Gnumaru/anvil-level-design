@@ -192,7 +192,80 @@ def _prism_surface_plane_segments(prism, plane_point, plane_normal, epsilon):
             )
             if segment is not None:
                 segments.append(segment)
-    return _deduplicate_segments(segments, epsilon)
+    return _deduplicate_segments(
+        _merge_touching_collinear_segments(segments, epsilon),
+        epsilon,
+    )
+
+
+def _merge_touching_collinear_segments(segments, epsilon):
+    """Remove tessellation-only vertices from plane intersection segments."""
+    merged = [
+        (start.copy(), end.copy())
+        for start, end in segments
+        if (end - start).length > epsilon
+    ]
+
+    changed = True
+    while changed:
+        changed = False
+        for first_index, (first_start, first_end) in enumerate(merged):
+            first_direction = first_end - first_start
+            first_length = first_direction.length
+            axis = first_direction / first_length
+
+            for second_index in range(first_index + 1, len(merged)):
+                second_start, second_end = merged[second_index]
+                second_direction = second_end - second_start
+                second_length = second_direction.length
+                if (
+                        first_direction.cross(second_direction).length >
+                        epsilon * first_length * second_length):
+                    continue
+                if (
+                        (second_start - first_start).cross(axis).length >
+                        epsilon
+                        or
+                        (second_end - first_start).cross(axis).length >
+                        epsilon):
+                    continue
+
+                second_start_distance = (
+                    second_start - first_start
+                ).dot(axis)
+                second_end_distance = (
+                    second_end - first_start
+                ).dot(axis)
+                minimum_distance = min(
+                    0.0,
+                    second_start_distance,
+                    second_end_distance,
+                )
+                maximum_distance = max(
+                    first_length,
+                    second_start_distance,
+                    second_end_distance,
+                )
+                if (
+                        min(second_start_distance, second_end_distance) >
+                        first_length + epsilon
+                        or
+                        max(second_start_distance, second_end_distance) <
+                        -epsilon):
+                    continue
+
+                merged[first_index] = (
+                    first_start + axis * minimum_distance,
+                    first_start + axis * maximum_distance,
+                )
+                merged.pop(second_index)
+                changed = True
+                break
+
+            if changed:
+                break
+
+    return merged
 
 
 def _tessellate_polygon_vertices(polygon):

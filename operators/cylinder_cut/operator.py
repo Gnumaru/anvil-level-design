@@ -100,6 +100,12 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
     )
     action_matrix_world: FloatVectorProperty(
         size=16,
+        default=(
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ),
         options={'HIDDEN'},
     )
 

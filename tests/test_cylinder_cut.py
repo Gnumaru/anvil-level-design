@@ -327,9 +327,14 @@ class CylinderCutTest(AnvilTestCase):
                 {0.0, 1.0},
             )
         self.assertEqual(
-            len([edge for edge in bm.edges if edge.select]),
-            0,
-            "Folded Plane should clear the cylinder cut boundary selection",
+            {face for face in bm.faces if face.select},
+            wall_faces,
+            "Folded Plane should select only the new cylinder wall faces",
+        )
+        self.assertEqual(
+            list(bpy.context.tool_settings.mesh_select_mode),
+            [False, False, True],
+            "Folded Plane should finish in face select mode",
         )
         self.assertIsNotNone(
             bm.loops.layers.uv.active,
