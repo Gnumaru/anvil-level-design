@@ -264,3 +264,104 @@ class PrismCutTest(AnvilTestCase):
         with bpy.context.temp_override(**context_override):
             bpy.ops.object.mode_set(mode='OBJECT')
         obj.data.update()
+
+    def test_prism_cut_concave_profile_through_triangulated_curved_patches_preserves_two_bridgeable_boundary_loops(self):
+        context_override = _get_context_override()
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.mesh.primitive_ico_sphere_add(
+                subdivisions=3,
+                radius=4.0,
+            )
+        obj = bpy.context.active_object
+        obj.name = "prism_cut_concave_triangulated_curved_patches"
+
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.object.mode_set(mode='EDIT')
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        affected_face_indices = {
+            13,
+            119,
+            120,
+            121,
+            122,
+            161,
+            162,
+            163,
+            166,
+            167,
+            168,
+            169,
+            183,
+            184,
+            186,
+            187,
+            190,
+            230,
+            231,
+            233,
+            234,
+            237,
+        }
+        affected_faces = {
+            face for face in bm.faces
+            if face.index in affected_face_indices
+        }
+        kept_faces = set(affected_faces)
+        for _ring_index in range(2):
+            adjacent_faces = set()
+            for face in kept_faces:
+                for edge in face.edges:
+                    adjacent_faces.update(edge.link_faces)
+            kept_faces.update(adjacent_faces)
+        bmesh.ops.delete(
+            bm,
+            geom=[
+                face for face in bm.faces
+                if face not in kept_faces
+            ],
+            context='FACES',
+        )
+        bm.select_mode = {'FACE'}
+        for face in bm.faces:
+            face.select = True
+        bmesh.update_edit_mesh(obj.data)
+
+        profile = [
+            Vector((3.25511681101733, -2.0, 1.0)),
+            Vector((3.74558999624644, -1.0, 2.0)),
+            Vector((4.94426661376765, 0.0, 0.0)),
+            Vector((3.98165780701048, -1.0, 1.0)),
+        ]
+        profile_json = json.dumps([list(vertex) for vertex in profile])
+        with bpy.context.temp_override(**context_override):
+            result = bpy.ops.leveldesign.prism_cut(
+                action_profile_json=profile_json,
+                action_depth=-2000.0,
+                action_local_z=(
+                    0.794655051,
+                    -0.577349472,
+                    0.187592478,
+                ),
+                reconstruction_mode=RECONSTRUCTION_MODE_QUADS,
+            )
+
+        self.assertIn('FINISHED', result)
+        bm = bmesh.from_edit_mesh(obj.data)
+        selected_edges = [edge for edge in bm.edges if edge.select]
+        self.assertEqual(
+            len(selected_edges),
+            45,
+            "The reproduced cut should retain its visible boundary selection",
+        )
+        for edge in selected_edges:
+            self.assertEqual(
+                len(edge.link_faces),
+                1,
+                "Every selected cut edge should be an open boundary edge",
+            )
+        self.assertEqual(
+            get_context_action_kind(),
+            'BRIDGE',
+            "A through Prism Cut should offer Bridge for its two openings",
+        )
