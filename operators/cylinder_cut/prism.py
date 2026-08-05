@@ -4,7 +4,7 @@ import math
 
 from mathutils import Vector
 
-from ..cube_cut.prism import EPSILON, build_convex_prism
+from ..mesh_cut.convex_prism import EPSILON, build_convex_prism
 
 
 RADIUS_MODE_EDGES = 'EDGES'

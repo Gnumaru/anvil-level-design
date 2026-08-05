@@ -1,0 +1,266 @@
+import json
+
+import bmesh
+import bpy
+from mathutils import Matrix, Vector
+
+from ..core.uv_projection import derive_transform_from_uvs
+from ..operators.mesh_cut.execution import (
+    RECONSTRUCTION_MODE_NGONS,
+    RECONSTRUCTION_MODE_QUADS,
+)
+from ..operators.prism_cut.geometry import (
+    execute_prism_cut_with_reconstruction,
+)
+from ..operators.prism_cut.operator import profile_candidate_invalid_message
+from ..operators.prism_cut.prism import build_prism_cut_prism
+from .base_test import AnvilTestCase
+from .helpers import (
+    _get_context_override,
+    add_uv_layer_box_project,
+    create_textured_cube,
+    get_context_action_kind,
+)
+
+
+class PrismCutTest(AnvilTestCase):
+    """Test concave Prism Cut geometry and reconstruction."""
+
+    def _concave_profile(self):
+        return [
+            Vector((0.20, -0.50, 0.20)),
+            Vector((0.80, -0.50, 0.20)),
+            Vector((0.80, -0.50, 0.45)),
+            Vector((0.55, -0.50, 0.45)),
+            Vector((0.55, -0.50, 0.80)),
+            Vector((0.20, -0.50, 0.80)),
+        ]
+
+    def _execute_concave_through_cut(self, object_name, reconstruction_mode):
+        obj = create_textured_cube(
+            object_name,
+            1.0,
+            1.0,
+            use_box_project=True,
+        )
+        context_override = _get_context_override()
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.object.mode_set(mode='EDIT')
+
+        add_uv_layer_box_project(obj, "UVMap.001", 0.5)
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.select_mode = {'FACE'}
+        for face in bm.faces:
+            face.select = True
+        bmesh.update_edit_mesh(obj.data)
+
+        with bpy.context.temp_override(**context_override):
+            success, message = execute_prism_cut_with_reconstruction(
+                obj,
+                bpy.context.tool_settings,
+                bpy.context.scene.level_design_props.pixels_per_meter,
+                self._concave_profile(),
+                2.0,
+                Vector((0.0, 1.0, 0.0)),
+                reconstruction_mode,
+                obj.matrix_world.copy(),
+            )
+
+        self.assertTrue(success, message)
+        return (obj, context_override)
+
+    def _assert_concave_through_cut_preserves_geometry(
+            self, reconstruction_mode):
+        obj, context_override = self._execute_concave_through_cut(
+            f"prism_cut_concave_{reconstruction_mode.lower()}",
+            reconstruction_mode,
+        )
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+
+        selected_edges = [edge for edge in bm.edges if edge.select]
+        self.assertEqual(
+            len(selected_edges),
+            12,
+            "Two six-edge concave openings should select 12 boundary edges",
+        )
+        for edge in selected_edges:
+            self.assertEqual(
+                len(edge.link_faces),
+                1,
+                "Every selected Prism Cut boundary edge should be open",
+            )
+
+        self.assertEqual(
+            len([face for face in bm.faces if face.select]),
+            0,
+            "Prism Cut should deselect reconstructed faces",
+        )
+        self.assertEqual(
+            list(bpy.context.tool_settings.mesh_select_mode),
+            [False, True, False],
+            "Prism Cut should finish in edge select mode",
+        )
+
+        pixels_per_meter = (
+            bpy.context.scene.level_design_props.pixels_per_meter
+        )
+        for face in bm.faces:
+            self.assertTrue(face.is_valid)
+            for layer, expected_scale in (
+                    (bm.loops.layers.uv[0], 1.0),
+                    (bm.loops.layers.uv[1], 0.5)):
+                transform = derive_transform_from_uvs(
+                    face,
+                    layer,
+                    pixels_per_meter,
+                    obj.data,
+                )
+                self.assertIsNotNone(
+                    transform,
+                    "Every remaining face should retain projected UVs",
+                )
+                self.assertAlmostEqual(
+                    transform['scale_u'], expected_scale, places=2
+                )
+                self.assertAlmostEqual(
+                    transform['scale_v'], expected_scale, places=2
+                )
+
+        if reconstruction_mode == RECONSTRUCTION_MODE_QUADS:
+            self.assertFalse(
+                any(len(face.verts) > 4 for face in bm.faces),
+                "Quad reconstruction should leave only triangles and quads",
+            )
+        else:
+            self.assertTrue(
+                any(len(face.verts) > 4 for face in bm.faces),
+                "Ngon reconstruction should preserve larger face regions",
+            )
+
+        bmesh.update_edit_mesh(obj.data)
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.object.mode_set(mode='OBJECT')
+        obj.data.update()
+
+    def test_prism_cut_concave_profile_through_hole_quads_mode_preserves_geometry(self):
+        self._assert_concave_through_cut_preserves_geometry(
+            RECONSTRUCTION_MODE_QUADS
+        )
+
+    def test_prism_cut_concave_profile_through_hole_ngons_mode_preserves_geometry(self):
+        self._assert_concave_through_cut_preserves_geometry(
+            RECONSTRUCTION_MODE_NGONS
+        )
+
+    def test_prism_cut_concave_profile_through_hole_bridge_creates_tunnel_faces(self):
+        obj, context_override = self._execute_concave_through_cut(
+            "prism_cut_concave_bridge",
+            RECONSTRUCTION_MODE_NGONS,
+        )
+        bm = bmesh.from_edit_mesh(obj.data)
+        existing_faces = set(bm.faces)
+
+        with bpy.context.temp_override(**context_override):
+            result = bpy.ops.mesh.bridge_edge_loops()
+        self.assertIn('FINISHED', result)
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bridge_faces = set(bm.faces) - existing_faces
+        self.assertEqual(
+            len(bridge_faces),
+            6,
+            "Bridge should add one tunnel face for every concave profile edge",
+        )
+        bmesh.update_edit_mesh(obj.data)
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.object.mode_set(mode='OBJECT')
+        obj.data.update()
+
+    def test_prism_cut_crossing_profile_edges_are_rejected(self):
+        crossing_profile = [
+            Vector((0.0, 0.0, 0.0)),
+            Vector((1.0, 0.0, 1.0)),
+            Vector((0.0, 0.0, 1.0)),
+            Vector((1.0, 0.0, 0.0)),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "must not cross or touch"):
+            build_prism_cut_prism(
+                Matrix.Identity(4),
+                crossing_profile,
+                1.0,
+                Vector((0.0, 1.0, 0.0)),
+            )
+
+    def test_prism_cut_candidate_edge_crossing_existing_edge_is_rejected(self):
+        profile_vertices = [
+            Vector((0.0, 0.0, 0.0)),
+            Vector((1.0, 0.0, 1.0)),
+            Vector((0.0, 0.0, 1.0)),
+        ]
+        message = profile_candidate_invalid_message(
+            profile_vertices,
+            Vector((1.0, 0.0, 0.0)),
+            Vector((1.0, 0.0, 0.0)),
+            Vector((0.0, 0.0, 1.0)),
+            Vector((0.0, 1.0, 0.0)),
+            False,
+        )
+        self.assertEqual(message, "Profile edges must not cross")
+
+    def test_prism_cut_concave_profile_classifies_reentrant_area_outside(self):
+        prism = build_prism_cut_prism(
+            Matrix.Identity(4),
+            self._concave_profile(),
+            2.0,
+            Vector((0.0, 1.0, 0.0)),
+        )
+
+        self.assertTrue(prism.point_inside(Vector((0.30, 0.0, 0.60))))
+        self.assertTrue(prism.point_inside(Vector((0.70, 0.0, 0.30))))
+        self.assertFalse(
+            prism.point_inside(Vector((0.70, 0.0, 0.60))),
+            "The area beyond the re-entrant corner must remain outside",
+        )
+
+    def test_prism_cut_captured_concave_profile_operator_values_replay(self):
+        obj = create_textured_cube(
+            "prism_cut_captured_operator_values",
+            1.0,
+            1.0,
+            use_box_project=True,
+        )
+        context_override = _get_context_override()
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.object.mode_set(mode='EDIT')
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.select_mode = {'FACE'}
+        for face in bm.faces:
+            face.select = True
+        bmesh.update_edit_mesh(obj.data)
+
+        profile_json = json.dumps([
+            list(vertex) for vertex in self._concave_profile()
+        ])
+        with bpy.context.temp_override(**context_override):
+            result = bpy.ops.leveldesign.prism_cut(
+                action_profile_json=profile_json,
+                action_depth=2.0,
+                action_local_z=(0.0, 1.0, 0.0),
+                reconstruction_mode=RECONSTRUCTION_MODE_NGONS,
+            )
+        self.assertIn('FINISHED', result)
+        self.assertEqual(
+            get_context_action_kind(),
+            'BRIDGE',
+            "A replayed through Prism Cut should offer Bridge",
+        )
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        self.assertEqual(len([edge for edge in bm.edges if edge.select]), 12)
+        bmesh.update_edit_mesh(obj.data)
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.object.mode_set(mode='OBJECT')
+        obj.data.update()

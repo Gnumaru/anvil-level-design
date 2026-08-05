@@ -657,6 +657,32 @@ def store_cylinder_from_edge_selection(
     debug_log(f"[ContextAction] Stored cylinder {kind} on '{obj.name}'")
 
 
+def store_prism_from_edge_selection(
+        obj, depth, direction, back_plane_offset):
+    """Capture bridge/corridor actions for an arbitrary Prism Cut boundary."""
+    if obj is None or obj.type != 'MESH' or not obj.data.is_editmode:
+        return
+    bm = bmesh.from_edit_mesh(obj.data)
+    kind, effective_depth = _derive_kind(bm, depth, None, None)
+    _set_on_bmesh(
+        bm,
+        kind,
+        effective_depth,
+        tuple(direction),
+        back_plane_offset,
+        None,
+        None,
+        None,
+        None,
+    )
+    bmesh.update_edit_mesh(obj.data)
+    if kind == 'NONE':
+        reset_runtime_state()
+    else:
+        _arm(obj, kind, False, bm)
+    debug_log(f"[ContextAction] Stored prism {kind} on '{obj.name}'")
+
+
 def store_from_box_builder(obj, new_face_vert_positions):
     if obj is None or obj.type != 'MESH' or not obj.data.is_editmode:
         return

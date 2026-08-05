@@ -7,8 +7,8 @@ from mathutils import Matrix, Vector
 
 from . import geometry
 from .prism import build_cylinder_cut_prism, build_cylinder_profile
-from ..cube_cut.analysis import analyze_convex_prism_cut
-from ..cube_cut.geometry import (
+from ..mesh_cut.analysis import analyze_convex_prism_cut
+from ..mesh_cut.execution import (
     RECONSTRUCTION_MODE_NGONS,
     RECONSTRUCTION_MODE_QUADS,
 )

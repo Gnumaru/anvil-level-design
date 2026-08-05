@@ -1,7 +1,7 @@
 """Cylinder Cut adapter for the shared convex-prism cutting engine."""
 
 from .prism import build_cylinder_cut_prism
-from ..cube_cut.geometry import (
+from ..mesh_cut.execution import (
     RECONSTRUCTION_MODE_QUADS,
     execute_convex_prism_cut_with_reconstruction,
 )

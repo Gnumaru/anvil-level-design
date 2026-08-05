@@ -79,6 +79,7 @@ class ModalDrawPreview:
         # dimensions independently from the final profile perimeter.
         self._custom_profile_vertices = None
         self._custom_profile_guides = []
+        self._custom_profile_closed = True
 
         # Prefab placement ghost data
         self._prefab_ghost = None
@@ -170,6 +171,16 @@ class ModalDrawPreview:
             (Vector(start).copy(), Vector(end).copy())
             for start, end in guides
         ]
+        self._custom_profile_closed = True
+
+    def update_open_custom_profile(self, vertices):
+        """Set an in-progress custom profile that must not close visually."""
+        self._custom_profile_vertices = (
+            [Vector(vertex).copy() for vertex in vertices]
+            if vertices is not None else None
+        )
+        self._custom_profile_guides = []
+        self._custom_profile_closed = False
 
     def set_prefab_ghost(self, prefab_ghost):
         """Set local-space albedo data for the prefab placement ghost."""
@@ -223,6 +234,7 @@ class ModalDrawPreview:
         self._info_visible = False
         self._custom_profile_vertices = None
         self._custom_profile_guides = []
+        self._custom_profile_closed = True
         self._prefab_ghost = None
         self._ghost_matrix = None
 
@@ -638,7 +650,10 @@ class ModalDrawPreview:
             return
 
         color = self._get_candidate_color(COLOR_RECTANGLE)
-        self._draw_line_loop(vertices, color)
+        if self._custom_profile_closed:
+            self._draw_line_loop(vertices, color)
+        else:
+            self._draw_line_strip(vertices, color)
         self._draw_segments(self._custom_profile_guides, color)
 
     def _draw_custom_prism_preview(self):
@@ -762,6 +777,39 @@ class ModalDrawPreview:
                 batch.draw(shader)
             except Exception:
                 pass  # Silent fail if drawing is not possible
+
+    def _draw_line_strip(self, points, color):
+        """Draw an open line strip through the given points."""
+        if len(points) < 2:
+            return
+
+        line_points = [point[:] for point in points]
+        try:
+            shader = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+            region = bpy.context.region
+            if region is None:
+                return
+            shader.uniform_float("viewportSize", (region.width, region.height))
+            shader.uniform_float("lineWidth", LINE_WIDTH)
+            shader.uniform_float("color", color)
+            batch = batch_for_shader(
+                shader,
+                'LINE_STRIP',
+                {"pos": line_points},
+            )
+            batch.draw(shader)
+        except Exception:
+            try:
+                shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+                shader.uniform_float("color", color)
+                batch = batch_for_shader(
+                    shader,
+                    'LINE_STRIP',
+                    {"pos": line_points},
+                )
+                batch.draw(shader)
+            except Exception:
+                pass
 
     def _draw_segments(self, segments, color):
         """Draw independent world-space line segments."""

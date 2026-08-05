@@ -4,6 +4,7 @@ import blf
 import bpy
 import gpu
 import imbuf
+from mathutils import Vector, geometry as mathutils_geometry
 from mathutils.bvhtree import BVHTree
 from .base_test import AnvilTestCase
 
@@ -202,6 +203,25 @@ class APIAvailabilityTest(AnvilTestCase):
             missing, [],
             f"Missing mathutils BVH API symbols: {', '.join(missing)}"
         )
+
+    def test_polygon_with_hole_tessellation_api_is_available(self):
+        self.assertTrue(hasattr(mathutils_geometry, "tessellate_polygon"))
+        self.assertTrue(hasattr(mathutils_geometry, "delaunay_2d_cdt"))
+        triangles = mathutils_geometry.tessellate_polygon([
+            [
+                Vector((0.0, 0.0, 0.0)),
+                Vector((2.0, 0.0, 0.0)),
+                Vector((2.0, 2.0, 0.0)),
+                Vector((0.0, 2.0, 0.0)),
+            ],
+            [
+                Vector((0.5, 0.5, 0.0)),
+                Vector((0.5, 1.5, 0.0)),
+                Vector((1.5, 1.5, 0.0)),
+                Vector((1.5, 0.5, 0.0)),
+            ],
+        ])
+        self.assertGreater(len(triangles), 0)
 
     def test_all_required_blender_data_apis_exist(self):
         missing = []

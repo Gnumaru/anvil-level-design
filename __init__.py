@@ -446,6 +446,7 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
             "leveldesign.box_builder": "Tools",
             "leveldesign.cube_cut": "Tools",
             "leveldesign.cylinder_cut": "Tools",
+            "leveldesign.prism_cut": "Tools",
             "leveldesign.prefab_browser": "Tools",
             "leveldesign.texture_browser": "Tools",
             "leveldesign.fix_material_mappings": "Tools",

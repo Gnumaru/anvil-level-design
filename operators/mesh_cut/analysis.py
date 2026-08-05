@@ -1,18 +1,17 @@
-"""Read-only analysis for Cube Cut geometry.
+"""Read-only analysis for profile-based mesh cuts.
 
-This module owns the discovery needed before Cube Cut mutates a BMesh.
-Geometry execution consumes the same convex-prism analysis that future previews
-can use, keeping intersection rules in one place.
+This module owns the discovery performed before the shared cut engine mutates a
+BMesh. Execution and tool previews consume the same intersection result.
 """
 
 from mathutils import Vector
 from mathutils.geometry import intersect_line_plane
 
-from .prism import EPSILON
+from .convex_prism import EPSILON
 from ...core.logging import debug_log
 
 
-class CubeCutCandidateMarker:
+class ProfileCutCandidateMarker:
     """A predicted vertex location paired with one supporting face normal.
 
     A new vertex on a sharp edge can have more than one marker entry because
@@ -25,8 +24,8 @@ class CubeCutCandidateMarker:
         self.face_normal = face_normal
 
 
-class CubeCutAnalysis:
-    """Read-only result describing what a Cube Cut would operate on.
+class ProfileCutAnalysis:
+    """Read-only result describing what a profile cut would operate on.
 
     The face and edge collections contain live BMesh references so geometry
     execution can consume this result without rediscovering intersections.
@@ -64,6 +63,15 @@ def should_process_face(face, any_faces_selected):
 
 def analyze_convex_prism_cut(bm, prism):
     """Return all convex-prism cut classifications without mutating BMesh."""
+    return _analyze_prism_cut(bm, prism, True)
+
+
+def analyze_concave_prism_cut(bm, prism):
+    """Analyze a concave prism without convex-only whole-face deletion."""
+    return _analyze_prism_cut(bm, prism, False)
+
+
+def _analyze_prism_cut(bm, prism, classify_fully_inside_faces):
     bm.faces.ensure_lookup_table()
 
     # Apply selection filter: only process selected faces (or all if none selected)
@@ -82,8 +90,12 @@ def analyze_convex_prism_cut(bm, prism):
         if not should_process_face(face, any_faces_selected):
             continue
 
-        # Check if ALL vertices are inside the prism
-        if all(prism.point_inside(vert.co) for vert in face.verts):
+        # The all-vertices implication is valid only for a convex volume. A
+        # concave prism can leave the face interior outside even when every
+        # face vertex is inside, so those faces go through reconstruction.
+        if (
+                classify_fully_inside_faces
+                and all(prism.point_inside(vert.co) for vert in face.verts)):
             faces_fully_inside.add(face)
             debug_log(
                 f"[CubeCut] Face {face.index} has all vertices inside prism "
@@ -226,7 +238,7 @@ def analyze_convex_prism_cut(bm, prism):
         )
     )
 
-    return CubeCutAnalysis(
+    return ProfileCutAnalysis(
         prism,
         any_faces_selected,
         faces_fully_inside,
@@ -597,7 +609,7 @@ def _add_candidate_vertex(unique_points, unique_markers, point, face_normal):
     marker_key = point_key + _face_plane_key(normalized_normal)
     unique_markers.setdefault(
         marker_key,
-        CubeCutCandidateMarker(point.copy(), normalized_normal.copy()),
+        ProfileCutCandidateMarker(point.copy(), normalized_normal.copy()),
     )
 
 

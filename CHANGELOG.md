@@ -1,6 +1,7 @@
 # Anvil Level Design Changelog
 
 # 1.8.7
+- Add PRISM CUT with concave profile support
 - Add CYLINDER CUT
 - Hold ALT to view cut intersections for cylinder and cube cut
 - Added reconstruct as ngons cut mode

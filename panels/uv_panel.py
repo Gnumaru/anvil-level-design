@@ -261,9 +261,9 @@ class LEVELDESIGN_PT_status_panel(Panel):
         )
         _draw_status_tool_button(
             cutters,
-            "leveldesign.future_shape_tool",
-            'MESH_CIRCLE',
-            False,
+            "leveldesign.prism_cut",
+            'MOD_TRIANGULATE',
+            True,
         )
 
         _draw_status_tool_button(

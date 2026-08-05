@@ -10,8 +10,8 @@ from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProp
 from mathutils import Matrix, Vector
 
 from . import geometry
-from .analysis import analyze_convex_prism_cut
 from .prism import build_cube_cut_prism
+from ..mesh_cut.analysis import analyze_convex_prism_cut
 from ..modal_draw.base_operator import ModalDrawBase, MIN_RECTANGLE_SIZE
 from ..modal_draw import utils as modal_draw_utils
 from ...core.workspace_check import is_level_design_workspace
