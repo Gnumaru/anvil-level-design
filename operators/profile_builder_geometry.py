@@ -22,12 +22,12 @@ from ..handlers import cache_single_face
 CAP_MODE_NONE = 'NONE'
 CAP_MODE_NGON = 'NGON'
 CAP_MODE_TRIANGLE_FAN = 'TRIANGLE_FAN'
-CAP_MODE_QUADS = 'QUADS'
+CAP_MODE_PREFER_QUADS = 'PREFER_QUADS'
 CAP_MODES = {
     CAP_MODE_NONE,
     CAP_MODE_NGON,
     CAP_MODE_TRIANGLE_FAN,
-    CAP_MODE_QUADS,
+    CAP_MODE_PREFER_QUADS,
 }
 
 
@@ -89,7 +89,7 @@ def execute_profile_builder_edit_mode(
             depth,
             local_z,
         )
-        new_faces, cap_faces_to_quadify, new_vertices = (
+        new_faces, cap_faces_to_process, new_vertices = (
             _create_profile_geometry(bm, prism, is_plane, cap_mode)
         )
     except ValueError as error:
@@ -107,9 +107,9 @@ def execute_profile_builder_edit_mode(
             existing_faces,
         )
 
-    _quadify_cap_faces(
+    _prefer_quads_on_cap_faces(
         bm,
-        [face for face in cap_faces_to_quadify if face in new_faces],
+        [face for face in cap_faces_to_process if face in new_faces],
     )
     new_faces = _faces_from_new_vertices(bm, new_vertices)
     bm.normal_update()
@@ -177,7 +177,7 @@ def execute_profile_builder_object_mode(
             depth,
             local_z,
         )
-        new_faces, cap_faces_to_quadify, new_vertices = (
+        new_faces, cap_faces_to_process, new_vertices = (
             _create_profile_geometry(bm, prism, is_plane, cap_mode)
         )
     except ValueError as error:
@@ -188,7 +188,7 @@ def execute_profile_builder_object_mode(
         bm.free()
         return (False, f"Failed to create {shape_name.lower()} geometry")
 
-    _quadify_cap_faces(bm, cap_faces_to_quadify)
+    _prefer_quads_on_cap_faces(bm, cap_faces_to_process)
     new_faces = _faces_from_new_vertices(bm, new_vertices)
     bm.normal_update()
     data_block_name = _next_box_builder_datablock_name(base_name, name_suffix)
@@ -258,7 +258,7 @@ def _build_profile_prism(matrix_world, profile_vertices, depth, local_z):
 def _create_profile_geometry(bm, prism, is_plane, cap_mode):
     cap_vertices = [bm.verts.new(vertex) for vertex in prism.cap_vertices]
     all_new_vertices = list(cap_vertices)
-    cap_faces_to_quadify = []
+    cap_faces_to_process = []
 
     if is_plane:
         created_caps = _create_cap_faces(
@@ -267,8 +267,8 @@ def _create_profile_geometry(bm, prism, is_plane, cap_mode):
             prism.planes[0][1],
             cap_mode,
         )
-        if cap_mode == CAP_MODE_QUADS:
-            cap_faces_to_quadify.extend(created_caps)
+        if cap_mode == CAP_MODE_PREFER_QUADS:
+            cap_faces_to_process.extend(created_caps)
         all_new_vertices.extend(
             vertex
             for face in created_caps
@@ -307,8 +307,8 @@ def _create_profile_geometry(bm, prism, is_plane, cap_mode):
                 prism.planes[1][1],
                 cap_mode,
             )
-            if cap_mode == CAP_MODE_QUADS:
-                cap_faces_to_quadify.extend(front_faces + back_faces)
+            if cap_mode == CAP_MODE_PREFER_QUADS:
+                cap_faces_to_process.extend(front_faces + back_faces)
             for face in front_faces + back_faces:
                 for vertex in face.verts:
                     if vertex not in all_new_vertices:
@@ -316,28 +316,83 @@ def _create_profile_geometry(bm, prism, is_plane, cap_mode):
 
     return (
         _faces_from_new_vertices(bm, all_new_vertices),
-        cap_faces_to_quadify,
+        cap_faces_to_process,
         all_new_vertices,
     )
 
 
-def _quadify_cap_faces(bm, cap_faces):
-    ngon_faces = [
-        face for face in cap_faces
-        if face.is_valid and len(face.verts) > 4
+def _prefer_quads_on_cap_faces(bm, cap_faces):
+    bm.normal_update()
+    cap_vertex_sets = [
+        set(face.verts)
+        for face in cap_faces
+        if face.is_valid
     ]
-    if not ngon_faces:
+    faces_to_triangulate = [
+        face for face in cap_faces
+        if face.is_valid and (
+            len(face.verts) > 4
+            or _face_is_concave_quad(face)
+        )
+    ]
+    if not faces_to_triangulate:
         return
 
-    result = bmesh.ops.triangulate(bm, faces=ngon_faces)
-    triangles = [face for face in result['faces'] if face.is_valid]
+    result = bmesh.ops.triangulate(
+        bm,
+        faces=faces_to_triangulate,
+        quad_method='BEAUTY',
+        ngon_method='BEAUTY',
+    )
+    triangles = [
+        face for face in result.get('faces', [])
+        if face.is_valid and len(face.verts) == 3
+    ]
     if triangles:
         bmesh.ops.join_triangles(
             bm,
             faces=triangles,
-            angle_face_threshold=3.14159,
-            angle_shape_threshold=3.14159,
+            cmp_seam=False,
+            cmp_sharp=False,
+            cmp_uvs=False,
+            cmp_vcols=False,
+            cmp_materials=False,
+            angle_face_threshold=0.01,
+            angle_shape_threshold=0.698132,
         )
+
+    bm.normal_update()
+    concave_quads = [
+        face for face in bm.faces
+        if face.is_valid and any(
+            set(face.verts) <= cap_vertices
+            for cap_vertices in cap_vertex_sets
+        )
+        if _face_is_concave_quad(face)
+    ]
+    if concave_quads:
+        bmesh.ops.triangulate(
+            bm,
+            faces=concave_quads,
+            quad_method='BEAUTY',
+            ngon_method='BEAUTY',
+        )
+
+
+def _face_is_concave_quad(face):
+    if len(face.verts) != 4:
+        return False
+
+    coordinates = [vertex.co for vertex in face.verts]
+    return any(
+        (
+            coordinates[(index + 1) % 4] - coordinates[index]
+        ).cross(
+            coordinates[(index + 2) % 4]
+            - coordinates[(index + 1) % 4]
+        ).dot(face.normal) < -EPSILON
+        for index in range(4)
+    )
 
 
 def _faces_from_new_vertices(bm, new_vertices):
@@ -351,7 +406,7 @@ def _faces_from_new_vertices(bm, new_vertices):
 def _create_cap_faces(bm, ring_vertices, desired_normal, cap_mode):
     if cap_mode == CAP_MODE_NONE:
         return []
-    if cap_mode in {CAP_MODE_NGON, CAP_MODE_QUADS}:
+    if cap_mode in {CAP_MODE_NGON, CAP_MODE_PREFER_QUADS}:
         return [
             _new_oriented_face(
                 bm,

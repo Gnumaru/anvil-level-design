@@ -39,9 +39,9 @@ class MESH_OT_prism_builder(
         description="Keep prism faces that overlap existing faces",
         default=True,
     )
-    quadify_caps: BoolProperty(
-        name="Quadify Caps",
-        description="Convert cap ngons into quads where possible",
+    prefer_quads: BoolProperty(
+        name="Prefer Quads",
+        description="Join cap triangles into valid quads where possible",
         default=True,
     )
 
@@ -59,7 +59,7 @@ class MESH_OT_prism_builder(
         settings = layout.column(align=True)
         settings.prop(self, "name_suffix")
         settings.prop(self, "keep_anti_parallel_coplanar_faces")
-        settings.prop(self, "quadify_caps")
+        settings.prop(self, "prefer_quads")
 
     def _execute_action(self, context, first_vertex, second_vertex, depth,
                         local_x, local_y, local_z):
@@ -86,7 +86,7 @@ class MESH_OT_prism_builder(
                 depth,
                 local_z,
                 pixels_per_meter,
-                self.quadify_caps,
+                self.prefer_quads,
                 name_suffix,
             )
             return self._finish_object_builder_result(
@@ -105,7 +105,7 @@ class MESH_OT_prism_builder(
             obj,
             pixels_per_meter,
             self.keep_anti_parallel_coplanar_faces,
-            self.quadify_caps,
+            self.prefer_quads,
         )
         return self._finish_edit_builder_result(
             obj,

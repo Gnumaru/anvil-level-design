@@ -2,13 +2,15 @@ import json
 
 import bmesh
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
+from mathutils.geometry import tessellate_polygon
 
 from ..handlers import set_active_image
 from ..operators.prism_builder.geometry import (
     execute_prism_builder_edit_mode,
     execute_prism_builder_object_mode,
 )
+from ..operators.mesh_cut.concave_prism import build_profile_prism
 from .base_test import AnvilTestCase
 from .helpers import _get_context_override, create_vertical_plane, TEXTURE_PATH
 
@@ -36,7 +38,7 @@ class PrismBuilderTest(AnvilTestCase):
             bpy.ops.object.mode_set(mode='EDIT')
         return obj
 
-    def _build_edit_prism(self, obj, keep_overlap_faces, quadify_caps):
+    def _build_edit_prism(self, obj, keep_overlap_faces, prefer_quads):
         ppm = bpy.context.scene.level_design_props.pixels_per_meter
         return execute_prism_builder_edit_mode(
             self._profile(0.0),
@@ -45,7 +47,7 @@ class PrismBuilderTest(AnvilTestCase):
             obj,
             ppm,
             keep_overlap_faces,
-            quadify_caps,
+            prefer_quads,
         )
 
     def _assert_faces_have_material_and_uv_area(self, obj, faces):
@@ -103,8 +105,8 @@ class PrismBuilderTest(AnvilTestCase):
         self.assertEqual(len(bm.faces), 9)
         self._assert_faces_have_material_and_uv_area(obj, list(bm.faces)[1:])
 
-    def test_prism_builder_quadify_caps_replaces_six_sided_ngons(self):
-        obj = self._create_empty_edit_mesh("prism_builder_quadify_caps")
+    def test_prism_builder_prefer_quads_replaces_six_sided_ngons(self):
+        obj = self._create_empty_edit_mesh("prism_builder_prefer_quads")
         result = self._build_edit_prism(obj, True, True)
         self.assertTrue(result[0], result[1])
 
@@ -118,17 +120,16 @@ class PrismBuilderTest(AnvilTestCase):
         self.assertTrue(all(len(face.verts) <= 4 for face in cap_faces))
         self.assertTrue(any(len(face.verts) == 4 for face in cap_faces))
 
-    def test_prism_builder_quadify_caps_preserves_concave_cap_shape(self):
+    def test_prism_builder_prefer_quads_preserves_concave_cap_shape(self):
         obj = self._create_empty_edit_mesh("prism_builder_concave_caps")
         profile = [
+            Vector((0.30, 0.0, 7.52)),
+            Vector((3.92, 0.0, 6.44)),
+            Vector((1.38, 0.0, 5.46)),
+            Vector((1.32, 0.0, 3.12)),
+            Vector((2.44, 0.0, 2.72)),
+            Vector((2.60, 0.0, 1.72)),
             Vector((0.0, 0.0, 0.0)),
-            Vector((3.0, 0.0, 0.0)),
-            Vector((3.0, 0.0, 3.0)),
-            Vector((2.0, 0.0, 3.0)),
-            Vector((2.0, 0.0, 1.0)),
-            Vector((1.0, 0.0, 1.0)),
-            Vector((1.0, 0.0, 3.0)),
-            Vector((0.0, 0.0, 3.0)),
         ]
         ppm = bpy.context.scene.level_design_props.pixels_per_meter
 
@@ -157,10 +158,23 @@ class PrismBuilderTest(AnvilTestCase):
             face for face in cap_faces
             if abs(face.calc_center_median().y - 1.0) < 0.001
         ]
-        self.assertTrue(all(len(face.verts) <= 4 for face in cap_faces))
-        self.assertTrue(any(len(face.verts) == 4 for face in cap_faces))
+        self.assertTrue(all(len(face.verts) in {3, 4} for face in cap_faces))
+        self.assertTrue(any(len(face.verts) == 3 for face in cap_faces))
         self.assertTrue(all(face.normal.y < -0.99 for face in front_cap_faces))
         self.assertTrue(all(face.normal.y > 0.99 for face in back_cap_faces))
+        for face in cap_faces:
+            coordinates = [vertex.co for vertex in face.verts]
+            turns = [
+                (
+                    coordinates[(index + 1) % len(coordinates)]
+                    - coordinates[index]
+                ).cross(
+                    coordinates[(index + 2) % len(coordinates)]
+                    - coordinates[(index + 1) % len(coordinates)]
+                ).dot(face.normal)
+                for index in range(len(coordinates))
+            ]
+            self.assertTrue(all(turn >= -1e-6 for turn in turns))
         front_cap_area = sum(
             face.calc_area()
             for face in front_cap_faces
@@ -169,19 +183,40 @@ class PrismBuilderTest(AnvilTestCase):
             face.calc_area()
             for face in back_cap_faces
         )
-        self.assertAlmostEqual(front_cap_area, 7.0)
-        self.assertAlmostEqual(back_cap_area, 7.0)
-        self.assertFalse(any(
-            1.0 < face.calc_center_median().x < 2.0
-            and face.calc_center_median().z > 1.0
-            for face in front_cap_faces
-        ))
-        self.assertFalse(any(
-            1.0 < ((edge.verts[0].co.x + edge.verts[1].co.x) * 0.5) < 2.0
-            and ((edge.verts[0].co.z + edge.verts[1].co.z) * 0.5) > 1.0
-            for face in front_cap_faces
-            for edge in face.edges
-        ))
+        expected_cap_area = abs(sum(
+            vertex.x * profile[(index + 1) % len(profile)].z
+            - profile[(index + 1) % len(profile)].x * vertex.z
+            for index, vertex in enumerate(profile)
+        )) * 0.5
+        self.assertAlmostEqual(front_cap_area, expected_cap_area, places=5)
+        self.assertAlmostEqual(back_cap_area, expected_cap_area, places=5)
+
+        prism = build_profile_prism(
+            Matrix.Identity(4),
+            profile,
+            Vector((0.0, 1.0, 0.0)),
+        )
+        for face in front_cap_faces:
+            for edge in face.edges:
+                for factor in (0.25, 0.5, 0.75):
+                    point = edge.verts[0].co.lerp(edge.verts[1].co, factor)
+                    self.assertTrue(prism.point_inside(point))
+            face_coordinates = [
+                vertex.co.copy() for vertex in face.verts
+            ]
+            triangles = tessellate_polygon([face_coordinates])
+            for triangle in triangles:
+                if triangle and isinstance(triangle[0], int):
+                    triangle_coordinates = [
+                        face_coordinates[index] for index in triangle
+                    ]
+                else:
+                    triangle_coordinates = triangle
+                center = sum(
+                    (Vector(vertex) for vertex in triangle_coordinates),
+                    Vector((0.0, 0.0, 0.0)),
+                ) / 3.0
+                self.assertTrue(prism.point_inside(center))
 
         def edge_coordinates(edge):
             return frozenset(
@@ -268,7 +303,7 @@ class PrismBuilderTest(AnvilTestCase):
         ]
         self.assertEqual(anti_parallel_caps, [])
 
-    def test_prism_builder_remove_overlap_faces_removes_quadified_end_caps(self):
+    def test_prism_builder_remove_overlap_faces_removes_preferred_quad_end_caps(self):
         profile = [
             Vector((0.0, 0.0, 0.0)),
             Vector((2.0, 0.0, 0.0)),
@@ -366,7 +401,7 @@ class PrismBuilderTest(AnvilTestCase):
                 action_was_edit_mode=True,
                 action_object_name=obj.name,
                 keep_anti_parallel_coplanar_faces=True,
-                quadify_caps=False,
+                prefer_quads=False,
                 name_suffix="",
             )
         self.assertIn('FINISHED', result)
@@ -383,7 +418,7 @@ class PrismBuilderTest(AnvilTestCase):
                 "Keep Overlap Faces",
                 True,
             ),
-            "quadify_caps": ("Quadify Caps", True),
+            "prefer_quads": ("Prefer Quads", True),
         }
         for identifier, (name, default) in expected.items():
             prop = properties[identifier]
