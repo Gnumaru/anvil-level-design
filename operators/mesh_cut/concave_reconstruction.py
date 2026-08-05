@@ -35,10 +35,10 @@ class CanonicalCutGraph:
     """Canonical cutter intersection segments shared by all source faces."""
 
     def __init__(
-            self, edges_by_face, edges, suppressed_cap_indices, epsilon):
+            self, edges_by_face, edges, suppressed_caps_by_face, epsilon):
         self._edges_by_face = edges_by_face
         self._edges = edges
-        self.suppressed_cap_indices = suppressed_cap_indices
+        self._suppressed_caps_by_face = suppressed_caps_by_face
         self.epsilon = epsilon
         self._bmesh_boundary_edges = set()
 
@@ -69,11 +69,15 @@ class CanonicalCutGraph:
             and node.anchor_vertex.is_valid
         })
 
-    def point_inside(self, point, prism):
+    def suppressed_cap_indices_for_face(self, face):
+        """Return cap planes suppressed only while rebuilding one face."""
+        return set(self._suppressed_caps_by_face.get(face, set()))
+
+    def point_inside(self, point, prism, suppressed_cap_indices):
         """Classify a reconstruction cell using the normalised graph caps."""
         return prism.point_inside_ignoring_caps(
             point,
-            self.suppressed_cap_indices,
+            suppressed_cap_indices,
         )
 
     def canonical_point(self, point):
@@ -105,7 +109,7 @@ def build_canonical_cut_graph(
     epsilon = _canonical_graph_epsilon(valid_faces, prism)
     canonical_epsilon = max(
         epsilon,
-        _prism_coordinate_scale(prism) * 6e-7,
+        _prism_extent_scale(prism) * 6e-7,
     )
     face_neighbors = _face_neighbors(valid_faces)
     split_verts_set = set(split_verts)
@@ -174,7 +178,7 @@ def build_canonical_cut_graph(
             face_edges.append(graph_edge)
         edges_by_face[face] = face_edges
 
-    suppressed_cap_indices = _remove_redundant_cap_paths(
+    suppressed_caps_by_face = _remove_redundant_cap_paths(
         list(graph_edges.values()),
         prism,
     )
@@ -218,7 +222,7 @@ def build_canonical_cut_graph(
     return CanonicalCutGraph(
         edges_by_face,
         list(graph_edges.values()),
-        suppressed_cap_indices,
+        suppressed_caps_by_face,
         canonical_epsilon,
     )
 
@@ -243,7 +247,7 @@ def _remove_redundant_cap_paths(edges, prism):
         and edge.supporting_planes <= cap_indices
     }
     visited = set()
-    suppressed_cap_indices = set()
+    suppressed_caps_by_face = {}
 
     for starting_edge in cap_only_edges:
         if starting_edge in visited:
@@ -280,12 +284,21 @@ def _remove_redundant_cap_paths(edges, prism):
             continue
         for edge in component_edges:
             edge.active = False
-            suppressed_cap_indices.update(edge.supporting_planes)
+            for face in edge.faces:
+                suppressed_caps_by_face.setdefault(face, set()).update(
+                    edge.supporting_planes
+                )
+        affected_faces = {
+            face.index: sorted(suppressed_caps_by_face[face])
+            for edge in component_edges
+            for face in edge.faces
+        }
         debug_log(
             f"[PrismCut] Removed redundant cap path with "
-            f"{len(component_edges)} graph edges"
+            f"{len(component_edges)} graph edges from source faces "
+            f"{affected_faces}"
         )
-    return suppressed_cap_indices
+    return suppressed_caps_by_face
 
 
 def _graph_node_edges(edges):
@@ -459,12 +472,9 @@ def _canonical_graph_epsilon(faces, prism):
     )
 
 
-def _prism_coordinate_scale(prism):
-    return max(
-        abs(component)
-        for vertex in prism.vertices
-        for component in vertex
-    )
+def _prism_extent_scale(prism):
+    """Return a translation-independent scale for intersection precision."""
+    return max(prism.cap_extent, prism.extrusion.length)
 
 
 def _face_neighbors(faces):
@@ -559,7 +569,7 @@ def _nearest_compatible_graph_node(
 
 def reconstruct_concave_prism_face(
         bm, source_face_verts, cut_candidate_verts, face_normal, prism,
-        cut_segments_3d, cut_graph):
+        cut_segments_3d, suppressed_cap_indices, cut_graph):
     """Rebuild one source face from a constrained planar subdivision."""
     if len(source_face_verts) < 3:
         return ([], [])
@@ -645,7 +655,8 @@ def reconstruct_concave_prism_face(
         if not _point_in_polygon_2d(
                 centroid_2d, source_loop_2d, epsilon, True):
             continue
-        if cut_graph.point_inside(unproject(centroid_2d), prism):
+        if cut_graph.point_inside(
+                unproject(centroid_2d), prism, suppressed_cap_indices):
             continue
         subdivision_faces.append(output_face)
         subdivision_output_indices.update(output_face)

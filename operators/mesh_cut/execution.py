@@ -283,15 +283,30 @@ def execute_prism_cut_with_face_reconstruction(
         host_edges = list(face.edges)
 
         cut_segments = None
+        suppressed_cap_indices = set()
         if canonical_cut_graph is not None:
             cut_segments = canonical_cut_graph.segments_for_face(face)
+            suppressed_cap_indices = (
+                canonical_cut_graph.suppressed_cap_indices_for_face(face)
+            )
             new_verts.extend(
                 vertex
                 for vertex in canonical_cut_graph.vertices_for_face(face)
                 if vertex not in new_verts
             )
 
-        face_data_list.append((new_verts, verts_on_original_exterior, verts_in_original_interior, original_face_verts, face_normal, uv_projections, material_index, host_edges, cut_segments))
+        face_data_list.append((
+            new_verts,
+            verts_on_original_exterior,
+            verts_in_original_interior,
+            original_face_verts,
+            face_normal,
+            uv_projections,
+            material_index,
+            host_edges,
+            cut_segments,
+            suppressed_cap_indices,
+        ))
         faces_to_delete.append(face)
         debug_log(f"[CubeCut] Captured data for face {face.index}: {len(new_verts)} new_verts, {len(verts_on_original_exterior)} exterior, {len(verts_in_original_interior)} interior, uv_layers={len(uv_projections)}")
 
@@ -305,7 +320,18 @@ def execute_prism_cut_with_face_reconstruction(
     bm.edges.ensure_lookup_table()
 
     newly_created_faces = []
-    for new_verts, verts_on_original_exterior, verts_in_original_interior, original_face_verts, face_normal, uv_projections, material_index, host_edges, cut_segments in face_data_list:
+    for (
+            new_verts,
+            verts_on_original_exterior,
+            verts_in_original_interior,
+            original_face_verts,
+            face_normal,
+            uv_projections,
+            material_index,
+            host_edges,
+            cut_segments,
+            suppressed_cap_indices,
+            ) in face_data_list:
         if face_reconstruction_function is None:
             new_faces, connector_edges = _verts_to_faces(
                 bm, new_verts, verts_on_original_exterior,
@@ -320,6 +346,7 @@ def execute_prism_cut_with_face_reconstruction(
                 face_normal,
                 prism,
                 cut_segments,
+                suppressed_cap_indices,
                 canonical_cut_graph,
             )
         if reconstruction_mode == RECONSTRUCTION_MODE_NGONS:

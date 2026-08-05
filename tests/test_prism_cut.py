@@ -722,6 +722,7 @@ class PrismCutTest(AnvilTestCase):
             ),
         ]
         bm.faces.new(marker_vertices)
+        bm.normal_update()
         bm.select_mode = {'FACE'}
         for face in bm.faces:
             face.select = True
