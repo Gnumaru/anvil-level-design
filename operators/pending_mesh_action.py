@@ -683,7 +683,7 @@ def store_prism_from_edge_selection(
     debug_log(f"[ContextAction] Stored prism {kind} on '{obj.name}'")
 
 
-def store_from_box_builder(obj, new_face_vert_positions):
+def store_from_shape_builder(obj, new_face_vert_positions):
     if obj is None or obj.type != 'MESH' or not obj.data.is_editmode:
         return
     bm = bmesh.from_edit_mesh(obj.data)
@@ -704,11 +704,16 @@ def store_from_box_builder(obj, new_face_vert_positions):
     _arm(obj, 'INVERT', False, bm)
 
 
-def store_from_box_builder_object_mode(obj):
+def store_from_shape_builder_object_mode(obj):
     if obj is None or obj.type != 'MESH' or obj.data is None:
         return
     obj.data[_OBJECT_MODE_PROP] = 'INVERT'
     _arm(obj, 'INVERT', True, None)
+
+
+# Compatibility names retained for the existing box builder and weld tests.
+store_from_box_builder = store_from_shape_builder
+store_from_box_builder_object_mode = store_from_shape_builder_object_mode
 
 
 def _ranges_overlap(a_min, a_max, b_min, b_max):

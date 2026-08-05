@@ -6,7 +6,7 @@ from bpy.props import EnumProperty, FloatProperty, FloatVectorProperty, IntPrope
 from mathutils import Matrix, Vector
 
 from . import geometry
-from .prism import build_cylinder_cut_prism, build_cylinder_profile
+from .prism import build_cylinder_cut_prism
 from ..mesh_cut.analysis import analyze_convex_prism_cut
 from ..mesh_cut.execution import (
     RECONSTRUCTION_MODE_NGONS,
@@ -14,7 +14,7 @@ from ..mesh_cut.execution import (
 )
 from ..cube_cut.operator import _build_world_cut_vertex_markers
 from ..modal_draw.base_operator import MIN_RECTANGLE_SIZE, ModalDrawBase
-from ..modal_draw import utils as modal_draw_utils
+from ..modal_draw.cylinder_profile import CylinderProfileDrawMixin
 from ..pending_mesh_action import (
     build_cylinder_weld_params,
     store_cylinder_from_edge_selection,
@@ -24,7 +24,8 @@ from ...core.workspace_check import is_level_design_workspace
 from ...handlers.face_cache import cache_face_data_for_objects
 
 
-class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
+class MESH_OT_cylinder_cut(
+        CylinderProfileDrawMixin, ModalDrawBase, bpy.types.Operator):
     """Cut a cylindrical or elliptical polygon-prism void from mesh geometry"""
 
     bl_idname = "leveldesign.cylinder_cut"
@@ -126,56 +127,11 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
         layout.prop(self, "radius_mode")
         layout.prop(self, "reconstruction_mode")
 
-    def invoke(self, context, event):
-        self._side_count = self.side_count
-        self._radius_mode = self.radius_mode
+    def _on_cylinder_profile_invoked(self):
         self._cut_preview_dimensions = None
-        return super().invoke(context, event)
 
-    def modal(self, context, event):
-        if event.value == 'PRESS' and event.type in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
-            target = getattr(self, "_active_view_target", None)
-            if (
-                not getattr(self, "_cancelled", False)
-                and target is not None
-                and target.is_live()
-            ):
-                # Keep registered-property changes in the viewport used by the
-                # draw operation so Blender places Adjust Last Operation there.
-                with context.temp_override(**target.override_kwargs()):
-                    if event.type == 'WHEELUPMOUSE':
-                        self._side_count += 1
-                    else:
-                        self._side_count = max(3, self._side_count - 1)
-                    self.side_count = self._side_count
-                    self._cut_preview_dimensions = None
-                    self._update_shape_preview()
-                    self._update_cut_vertex_preview(context)
-                    self._update_header(context)
-                    modal_draw_utils.tag_redraw_all_3d_views()
-                    return {'RUNNING_MODAL'}
-
-        return super().modal(context, event)
-
-    def _confirm_first_vertex(self, context, event):
-        result = super()._confirm_first_vertex(context, event)
-        self._update_shape_preview()
-        return result
-
-    def _confirm_line_end(self, context, event):
-        result = super()._confirm_line_end(context, event)
-        self._update_shape_preview()
-        self._update_cut_vertex_preview(context)
-        return result
-
-    def _update_second_vertex_preview(self, context, event):
-        super()._update_second_vertex_preview(context, event)
-        self._update_shape_preview()
-        self._update_cut_vertex_preview(context)
-
-    def _update_depth_preview(self, context, event):
-        super()._update_depth_preview(context, event)
-        self._update_shape_preview()
+    def _on_cylinder_profile_changed(self, context):
+        self._cut_preview_dimensions = None
         self._update_cut_vertex_preview(context)
 
     def _on_info_visibility_changed(self, context, visible):
@@ -184,38 +140,6 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
             self._update_cut_vertex_preview(context)
         else:
             self._preview.update_cut_vertex_markers([])
-
-    def _update_shape_preview(self):
-        if self._first_vertex is None or self._second_vertex is None:
-            return
-        if self._local_x is None or self._local_y is None:
-            return
-
-        difference = self._second_vertex - self._first_vertex
-        signed_radius_x = difference.dot(self._local_x)
-        signed_radius_y = difference.dot(self._local_y)
-        radius_x = abs(signed_radius_x)
-        radius_y = abs(signed_radius_y)
-
-        profile = build_cylinder_profile(
-            self._first_vertex,
-            radius_x,
-            radius_y,
-            self._local_x,
-            self._local_y,
-            self._side_count,
-            self._radius_mode,
-        )
-        x_point = self._first_vertex + self._local_x * signed_radius_x
-        y_point = self._first_vertex + self._local_y * signed_radius_y
-        quarter_corner = x_point + self._local_y * signed_radius_y
-        guides = (
-            (self._first_vertex, x_point),
-            (x_point, quarter_corner),
-            (quarter_corner, y_point),
-            (y_point, self._first_vertex),
-        )
-        self._preview.update_custom_profile(profile, guides)
 
     def _update_cut_vertex_preview(self, context):
         if not self._preview.is_info_visible():
@@ -278,15 +202,6 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
             markers = []
 
         self._preview.update_cut_vertex_markers(markers)
-
-    def _get_rectangle_invalid_message(self, local_dx, local_dy):
-        if local_dx < MIN_RECTANGLE_SIZE and local_dy < MIN_RECTANGLE_SIZE:
-            return "Move away from the center"
-        if local_dx < MIN_RECTANGLE_SIZE:
-            return "First radius must be greater than zero"
-        if local_dy < MIN_RECTANGLE_SIZE:
-            return "Second radius must be greater than zero"
-        return None
 
     def _execute_action(self, context, first_vertex, second_vertex, depth,
                         local_x, local_y, local_z):
@@ -425,46 +340,6 @@ class MESH_OT_cylinder_cut(ModalDrawBase, bpy.types.Operator):
 
     def _get_tool_name(self):
         return "Cylinder Cut"
-
-    def _update_header(self, context):
-        sides_hint = f"Sides: {self._side_count} (Wheel)"
-        if self._state == self.STATE_FIRST_VERTEX:
-            lock_hint = (
-                " (Axis Locked)"
-                if self._axis_lock_normal is not None
-                else " | Ctrl to lock axis"
-            )
-            text = (
-                f"Cylinder Cut: Click to set center{lock_hint} | "
-                f"{sides_hint} | ESC to cancel"
-            )
-        elif self._state == self.STATE_LINE_END:
-            if self._invalid_message is not None:
-                prompt = self._invalid_message
-            else:
-                prompt = "Click to set first radius"
-            text = f"Cylinder Cut: {prompt} | {sides_hint} | ESC to cancel"
-        elif self._state == self.STATE_SECOND_VERTEX:
-            if self._invalid_message is not None:
-                prompt = self._invalid_message
-            elif self._line_mode:
-                prompt = "Click to set perpendicular radius"
-            else:
-                prompt = "Click to set quarter profile"
-            text = f"Cylinder Cut: {prompt} | {sides_hint} | ESC to cancel"
-        elif self._state == self.STATE_DEPTH:
-            if self._invalid_message is not None:
-                prompt = f"{self._invalid_message} ({self._depth:.3f})"
-            else:
-                prompt = (
-                    f"Move mouse to set depth ({self._depth:.3f}) | "
-                    "Click to confirm"
-                )
-            text = f"Cylinder Cut: {prompt} | {sides_hint} | ESC to cancel"
-        else:
-            text = f"Cylinder Cut | {sides_hint} | ESC to cancel"
-        context.area.header_text_set(text)
-
 
 def register():
     bpy.utils.register_class(MESH_OT_cylinder_cut)

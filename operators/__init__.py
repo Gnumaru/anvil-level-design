@@ -16,6 +16,8 @@ from . import cube_cut
 from . import cylinder_cut
 from . import prism_cut
 from . import box_builder
+from . import cylinder_builder
+from . import prism_builder
 from . import visible_select
 from . import select_linked
 from . import uv_select_invalid
@@ -52,6 +54,8 @@ def register():
     cylinder_cut.register()
     prism_cut.register()
     box_builder.register()
+    cylinder_builder.register()
+    prism_builder.register()
     visible_select.register()
     select_linked.register()
     uv_select_invalid.register()
@@ -85,6 +89,8 @@ def unregister():
     uv_select_invalid.unregister()
     select_linked.unregister()
     visible_select.unregister()
+    prism_builder.unregister()
+    cylinder_builder.unregister()
     box_builder.unregister()
     prism_cut.unregister()
     cylinder_cut.unregister()

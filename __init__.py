@@ -444,6 +444,8 @@ class LevelDesignPreferences(bpy.types.AddonPreferences):
             "leveldesign.toggle_snap_mode": "Tools",
             "leveldesign.line_mode_activate": "Tools",
             "leveldesign.box_builder": "Tools",
+            "leveldesign.cylinder_builder": "Tools",
+            "leveldesign.prism_builder": "Tools",
             "leveldesign.cube_cut": "Tools",
             "leveldesign.cylinder_cut": "Tools",
             "leveldesign.prism_cut": "Tools",

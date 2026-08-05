@@ -1,11 +1,13 @@
 # Anvil Level Design Changelog
 
 # 1.8.7
-- Add PRISM CUT with concave profile support
+- Add CYLINDER BUILDER
 - Add CYLINDER CUT
-- Hold ALT to view cut intersections for cylinder and cube cut
-- Added reconstruct as ngons cut mode
-- Added creation and cut buttons to the Anvil panel
+- Add PRISM BUILDER
+- Add PRISM CUT (concave cutting!)
+- Hold ALT to view cut intersections for cuts
+- Cut modes support reconstruct ngons
+- Added build and cut buttons to the Anvil panel
 - Rename Face Aligned Project to Box Project (it was never face aligned!)
 - New faces will be selected after cut welds
 - Post action dialogue follows cursor to screen area
