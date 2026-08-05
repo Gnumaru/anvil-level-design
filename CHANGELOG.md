@@ -17,6 +17,7 @@
 - Default material name is now {filename}{extension}
 - Added a new material template {encodedRelativePath}
 - Changing grid cell in UV Transform mode is less sensitive
+- Applying textures in object mode now applies to all objects
 
 # 1.8.6
 - Fix texture browser overlay in Blender 5.2

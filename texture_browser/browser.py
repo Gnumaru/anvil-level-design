@@ -2183,34 +2183,58 @@ class LEVELDESIGN_OT_texture_browser_apply_file(Operator):
         set_active_image(None)
 
         obj = context.object
+        original_active_object = context.view_layer.objects.active
         original_mode = context.mode
-        restore_object_mode = (
-            original_mode == 'OBJECT'
-            and obj is not None
-            and obj.type == 'MESH'
-            and obj.select_get()
-            and not is_library_object(obj)
-        )
-        other_selected_objects = []
+        selected_objects = list(context.selected_objects)
+        object_mode_targets = []
+        if original_mode == 'OBJECT':
+            object_mode_targets = [
+                selected_obj
+                for selected_obj in selected_objects
+                if selected_obj.type == 'MESH'
+                and not is_library_object(selected_obj)
+            ]
+            if obj in object_mode_targets:
+                object_mode_targets.remove(obj)
+                object_mode_targets.insert(0, obj)
+
         mapping_error = None
         image = None
         applied_face_count = 0
 
-        if restore_object_mode:
+        if object_mode_targets:
             # Hotspot application uses Blender's edit-mode UV unwrap operator.
-            # Isolate the active object so other selected meshes are untouched.
-            other_selected_objects = [
-                selected_obj
-                for selected_obj in context.selected_objects
-                if selected_obj != obj
-            ]
-            for selected_obj in other_selected_objects:
+            # Process one mesh at a time so each selected object is affected
+            # without multi-object Edit Mode changing the other meshes.
+            for selected_obj in selected_objects:
                 selected_obj.select_set(False)
 
-        try:
-            if restore_object_mode:
-                bpy.ops.object.mode_set(mode='EDIT')
-
+            try:
+                for target_obj in object_mode_targets:
+                    context.view_layer.objects.active = target_obj
+                    target_obj.select_set(True)
+                    try:
+                        bpy.ops.object.mode_set(mode='EDIT')
+                        applied_image, target_face_count = apply_texture_path_to_selection(
+                            self.filepath,
+                            target_obj,
+                            original_mode,
+                            context.scene,
+                        )
+                        if applied_image is not None:
+                            image = applied_image
+                        applied_face_count += target_face_count
+                    finally:
+                        if context.mode == 'EDIT_MESH':
+                            bpy.ops.object.mode_set(mode='OBJECT')
+                        target_obj.select_set(False)
+            except MaterialMappingConflictError as exc:
+                mapping_error = exc
+            finally:
+                for selected_obj in selected_objects:
+                    selected_obj.select_set(True)
+                context.view_layer.objects.active = original_active_object
+        else:
             try:
                 image, applied_face_count = apply_texture_path_to_selection(
                     self.filepath,
@@ -2220,11 +2244,6 @@ class LEVELDESIGN_OT_texture_browser_apply_file(Operator):
                 )
             except MaterialMappingConflictError as exc:
                 mapping_error = exc
-        finally:
-            if restore_object_mode and context.mode == 'EDIT_MESH':
-                bpy.ops.object.mode_set(mode='OBJECT')
-            for selected_obj in other_selected_objects:
-                selected_obj.select_set(True)
 
         if mapping_error is not None:
             redraw_ui_panels(context)
