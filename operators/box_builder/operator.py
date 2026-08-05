@@ -17,8 +17,8 @@ from ..modal_draw.default_grid_pivot import (
 )
 from ...core.workspace_check import is_level_design_workspace
 from ..pending_mesh_action import (
-    store_from_box_builder,
-    store_from_box_builder_object_mode,
+    store_from_shape_builder,
+    store_from_shape_builder_object_mode,
 )
 
 
@@ -128,7 +128,7 @@ class MESH_OT_box_builder(DefaultGridPivotMixin, ModalDrawBase, bpy.types.Operat
             )
             is_box = result[0] and result[1] == "Box object created"
             if is_box:
-                store_from_box_builder_object_mode(context.active_object)
+                store_from_shape_builder_object_mode(context.active_object)
             return result
 
         obj = self._restore_edit_action_context(context, action_object_name)
@@ -160,7 +160,7 @@ class MESH_OT_box_builder(DefaultGridPivotMixin, ModalDrawBase, bpy.types.Operat
 
         # Arm only after the operator has established its final selection.
         if is_box:
-            store_from_box_builder(obj, new_face_verts)
+            store_from_shape_builder(obj, new_face_verts)
 
         return result
 

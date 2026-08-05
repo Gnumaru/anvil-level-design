@@ -5,7 +5,10 @@ from mathutils import Vector
 from ..handlers import set_active_image
 from ..operators.box_builder.geometry import execute_box_builder
 from ..operators.cube_cut.geometry import execute_cube_cut
-from ..operators.weld import set_weld_from_box_builder, set_weld_from_edge_selection
+from ..operators.pending_mesh_action import (
+    store_from_edge_selection,
+    store_from_shape_builder,
+)
 from ..core.uv_projection import derive_transform_from_uvs
 from .base_test import AnvilTestCase
 from .helpers import get_context_action_kind, wait_for_condition, _get_context_override, TEXTURE_PATH
@@ -89,7 +92,7 @@ class BoxCutDualCorridorTest(AnvilTestCase):
 
         # Weld invert
         face_verts = box_result[2] if len(box_result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
         with bpy.context.temp_override(**ctx):
             bpy.ops.leveldesign.context_weld()
         yield from wait_for_condition(
@@ -117,7 +120,7 @@ class BoxCutDualCorridorTest(AnvilTestCase):
         self.assertTrue(success, msg)
 
         # First corridor weld
-        set_weld_from_edge_selection(
+        store_from_edge_selection(
             obj, 0.75, (0, 1, 0), -0.5,
             Vector((0.25, 0.25, 0.0)), Vector((0.75, 0.25, 0.75)),
             Vector((1, 0, 0)), Vector((0, 0, 1)),
@@ -152,7 +155,7 @@ class BoxCutDualCorridorTest(AnvilTestCase):
         self.assertTrue(success, msg)
 
         # Second corridor weld
-        set_weld_from_edge_selection(
+        store_from_edge_selection(
             obj, 0.25, (-0.0, 1.0, -0.0), 1.25,
             Vector((0.25, 1.0, 0.0)), Vector((0.75, 1.0, 0.25)),
             Vector((1, 0, 0)), Vector((0, 0, 1)),

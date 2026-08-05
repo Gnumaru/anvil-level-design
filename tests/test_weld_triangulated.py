@@ -4,7 +4,7 @@ from mathutils import Vector
 
 from ..core.uv_projection import derive_transform_from_uvs
 from ..operators.cube_cut.geometry import execute_cube_cut
-from ..operators.weld import set_weld_from_edge_selection
+from ..operators.pending_mesh_action import store_from_edge_selection
 from .base_test import AnvilTestCase
 from .helpers import (
     create_textured_cube,
@@ -118,7 +118,7 @@ def _execute_cube_cut_and_set_weld(test_case, ctx):
     back_point = _FIRST_VERTEX + _LOCAL_Z * _DEPTH
     back_plane_offset = back_point.dot(extrude_dir.normalized())
 
-    set_weld_from_edge_selection(
+    store_from_edge_selection(
         bpy.context.active_object, abs(_DEPTH), extrude_dir, back_plane_offset,
         _FIRST_VERTEX, _SECOND_VERTEX, _LOCAL_X, _LOCAL_Y,
         0,

@@ -689,16 +689,16 @@ def store_from_shape_builder(obj, new_face_vert_positions):
     bm = bmesh.from_edit_mesh(obj.data)
     bm.faces.ensure_lookup_table()
     signatures = set(new_face_vert_positions)
-    box_faces = []
+    shape_faces = []
     for face in bm.faces:
         face_verts = frozenset(tuple(vert.co) for vert in face.verts)
         if (face.index, face_verts) in signatures:
-            box_faces.append(face)
-    if not box_faces:
+            shape_faces.append(face)
+    if not shape_faces:
         return
     _set_on_bmesh(
         bm, 'INVERT', 0.0, (0.0, 0.0, 0.0), 0.0,
-        box_faces, None, None, None,
+        shape_faces, None, None, None,
     )
     bmesh.update_edit_mesh(obj.data)
     _arm(obj, 'INVERT', False, bm)
@@ -709,12 +709,6 @@ def store_from_shape_builder_object_mode(obj):
         return
     obj.data[_OBJECT_MODE_PROP] = 'INVERT'
     _arm(obj, 'INVERT', True, None)
-
-
-# Compatibility names retained for the existing box builder and weld tests.
-store_from_box_builder = store_from_shape_builder
-store_from_box_builder_object_mode = store_from_shape_builder_object_mode
-
 
 def _ranges_overlap(a_min, a_max, b_min, b_max):
     return a_min < b_max + _FOLDED_EPSILON and b_min < a_max + _FOLDED_EPSILON

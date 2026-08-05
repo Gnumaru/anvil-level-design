@@ -75,8 +75,8 @@ class WeldUndoStackTest(AnvilTestCase):
         bmesh.update_edit_mesh(obj.data)
 
         # Simulate cube cut setting the weld state
-        from ..operators.weld import set_weld_from_edge_selection
-        set_weld_from_edge_selection(obj, 0.5, (0, 0, -1), -0.5,
+        from ..operators.pending_mesh_action import store_from_edge_selection
+        store_from_edge_selection(obj, 0.5, (0, 0, -1), -0.5,
                                          Vector((0, 0, 0)), Vector((1, 0, 1)),
                                          Vector((1, 0, 0)), Vector((0, 0, 1)),
                                          0)

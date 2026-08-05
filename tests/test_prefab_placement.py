@@ -6,7 +6,7 @@ from mathutils import Vector
 from .base_test import AnvilTestCase, _get_window
 from .helpers import get_context_action_kind, get_undo_context, wait_for_condition
 from ..operators.box_builder.geometry import execute_box_builder_object_mode
-from ..operators import weld as weld_module
+from ..operators.pending_mesh_action import store_from_shape_builder_object_mode
 from ..prefabs.assets import (
     find_existing_linked_object,
     get_prefab_asset_reference,
@@ -87,7 +87,7 @@ def _create_box_builder_object_with_invert():
     if not result[0]:
         raise AssertionError(result[1])
     obj = bpy.context.view_layer.objects.active
-    weld_module.set_weld_from_box_builder_object_mode(obj)
+    store_from_shape_builder_object_mode(obj)
     return obj
 
 

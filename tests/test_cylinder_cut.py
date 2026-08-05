@@ -4,7 +4,7 @@ from mathutils import Vector
 
 from ..core.uv_projection import derive_transform_from_uvs
 from ..operators.cylinder_cut.geometry import execute_cylinder_cut
-from ..operators.weld import set_weld_from_edge_selection
+from ..operators.pending_mesh_action import store_from_edge_selection
 from .base_test import AnvilTestCase
 from .helpers import (
     _get_context_override,
@@ -183,7 +183,7 @@ class CylinderCutTest(AnvilTestCase):
         extrude_direction = -local_z
         back_point = center + local_z * depth
         back_plane_offset = back_point.dot(extrude_direction.normalized())
-        set_weld_from_edge_selection(
+        store_from_edge_selection(
             obj,
             abs(depth),
             extrude_direction,

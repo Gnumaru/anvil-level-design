@@ -5,7 +5,10 @@ from unittest.mock import patch
 
 from ..operators.box_builder.geometry import execute_box_builder
 from ..operators import context_action, pending_mesh_action, weld_actions
-from ..operators.weld import set_weld_from_edge_selection, set_weld_from_box_builder
+from ..operators.pending_mesh_action import (
+    store_from_edge_selection,
+    store_from_shape_builder,
+)
 from .base_test import AnvilTestCase
 from .helpers import (
     create_textured_cube,
@@ -37,7 +40,7 @@ def _create_pending_corridor(name):
         edge.select = all(vert.co.z > 0.9 for vert in edge.verts)
     bm.select_flush_mode()
     bmesh.update_edit_mesh(obj.data)
-    set_weld_from_edge_selection(
+    store_from_edge_selection(
         obj, 0.5, (0, 0, -1), -0.5,
         Vector((0, 0, 0)), Vector((1, 0, 1)),
         Vector((1, 0, 0)), Vector((0, 0, 1)),
@@ -67,7 +70,7 @@ def _create_pending_bridge(name):
     with bpy.context.temp_override(**ctx):
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.mesh.select_all(action='SELECT')
-    set_weld_from_edge_selection(
+    store_from_edge_selection(
         obj, 0.0, (0, 1, 0), 1.0,
         Vector((0, 0, 0)), Vector((1, 0, 1)),
         Vector((1, 0, 0)), Vector((0, 0, 1)),
@@ -119,7 +122,7 @@ class CorridorWeldUndoTest(AnvilTestCase):
         bmesh.update_edit_mesh(obj.data)
 
         # Set weld state (stored in BMesh layers)
-        set_weld_from_edge_selection(obj, 0.5, (0, 0, -1), -0.5,
+        store_from_edge_selection(obj, 0.5, (0, 0, -1), -0.5,
                                      Vector((0, 0, 0)), Vector((1, 0, 1)),
                                      Vector((1, 0, 0)), Vector((0, 0, 1)),
                                      0)
@@ -196,7 +199,7 @@ class CorridorWeldUndoTest(AnvilTestCase):
             edge.select = all(vert.co.z > 0.9 for vert in edge.verts)
         bm.select_flush_mode()
         bmesh.update_edit_mesh(obj.data)
-        set_weld_from_edge_selection(
+        store_from_edge_selection(
             obj, 0.5, (0, 0, -1), -0.5,
             Vector((0, 0, 0)), Vector((1, 0, 1)),
             Vector((1, 0, 0)), Vector((0, 0, 1)),
@@ -304,7 +307,7 @@ class BridgeWeldUndoTest(AnvilTestCase):
         bm.select_flush_mode()
         bmesh.update_edit_mesh(obj.data)
 
-        set_weld_from_edge_selection(obj, 1.0, (0, 1, 0), 1.0,
+        store_from_edge_selection(obj, 1.0, (0, 1, 0), 1.0,
                                      Vector((0, 0, 0)), Vector((1, 0, 1)),
                                      Vector((1, 0, 0)), Vector((0, 0, 1)),
                                      0)
@@ -413,7 +416,7 @@ class InvertWeldUndoTest(AnvilTestCase):
         self.assertTrue(result[0], result[1])
 
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         yield
 

@@ -5,7 +5,10 @@ from mathutils import Vector
 from ..handlers import set_active_image
 from ..operators.box_builder.geometry import execute_box_builder
 from ..operators.cube_cut.geometry import execute_cube_cut
-from ..operators.weld import set_weld_from_box_builder, set_weld_from_edge_selection
+from ..operators.pending_mesh_action import (
+    store_from_edge_selection,
+    store_from_shape_builder,
+)
 from ..core.uv_projection import derive_transform_from_uvs
 from .base_test import AnvilTestCase
 from .helpers import (
@@ -67,7 +70,7 @@ class BoxCutCorridorTest(AnvilTestCase):
 
         # -- Step 2: Weld invert --
         face_verts = box_result[2] if len(box_result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'INVERT',
@@ -139,7 +142,7 @@ class BoxCutCorridorTest(AnvilTestCase):
         # back_point = first_vertex + local_z * depth
         #            = (0.25, 0.25, 0.0) + (0, -0.75, 0) = (0.25, -0.5, 0.0)
         # back_plane_offset = back_point · extrude_dir = -0.5
-        set_weld_from_edge_selection(
+        store_from_edge_selection(
             obj, 0.75, (0, 1, 0), -0.5,
             Vector((0.25, 0.25, 0.0)), Vector((0.75, 0.25, 0.75)),
             Vector((1, 0, 0)), Vector((0, 0, 1)),

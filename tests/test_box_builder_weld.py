@@ -15,9 +15,9 @@ from .helpers import (
 )
 
 from ..operators.box_builder.geometry import execute_box_builder, execute_box_builder_object_mode
-from ..operators.weld import (
-    set_weld_from_box_builder,
-    set_weld_from_box_builder_object_mode,
+from ..operators.pending_mesh_action import (
+    store_from_shape_builder,
+    store_from_shape_builder_object_mode,
 )
 
 
@@ -263,7 +263,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         bm.faces.ensure_lookup_table()
         self.assertEqual(len(bm.faces), 7)
 
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'INVERT')
@@ -327,7 +327,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         self.assertTrue(success, msg)
 
         # Production path: the box owns the pending Invert action.
-        set_weld_from_box_builder_object_mode(bpy.context.active_object)
+        store_from_shape_builder_object_mode(bpy.context.active_object)
         self.assertEqual(get_context_action_kind(), 'INVERT',
                          "Object-mode standalone box should be INVERT")
 
@@ -353,7 +353,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         bpy.context.collection.objects.link(other_obj)
         bpy.context.view_layer.objects.active = box_obj
         box_obj.select_set(True)
-        set_weld_from_box_builder_object_mode(box_obj)
+        store_from_shape_builder_object_mode(box_obj)
         self.assertEqual(get_context_action_kind(), 'INVERT')
 
         box_obj.select_set(False)
@@ -382,7 +382,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         bpy.context.collection.objects.link(first_obj)
         bpy.context.view_layer.objects.active = first_obj
         first_obj.select_set(True)
-        set_weld_from_box_builder_object_mode(first_obj)
+        store_from_shape_builder_object_mode(first_obj)
         self.assertEqual(get_context_action_kind(), 'INVERT')
 
         second_mesh = bpy.data.meshes.new("replaced_action_second_mesh")
@@ -394,7 +394,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
 
         # Arm B before Blender has an event-loop tick in which it could dismiss
         # A merely because the active object changed.
-        set_weld_from_box_builder_object_mode(second_obj)
+        store_from_shape_builder_object_mode(second_obj)
         self.assertEqual(get_context_action_kind(), 'INVERT')
         self.assertNotIn(
             "_aw_mode",
@@ -444,7 +444,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         self.assertTrue(success, message)
         box_obj = bpy.context.active_object
         box_name = box_obj.name
-        set_weld_from_box_builder_object_mode(box_obj)
+        store_from_shape_builder_object_mode(box_obj)
 
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo_push(message="After object-mode box")
@@ -582,10 +582,10 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
         self.assertTrue(result[0], result[1])
 
-        # Production path: operator calls set_weld_from_box_builder after
+        # Production path: operator stores the shape action after
         # execute_box_builder in edit mode
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'INVERT',
@@ -615,7 +615,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         face_verts = result[2] if len(result) > 2 else []
         self.assertEqual(len(face_verts), 6,
                          "Default box build should keep all 6 box faces")
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'INVERT',
@@ -681,7 +681,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         self.assertTrue(result[0], result[1])
 
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'INVERT',
@@ -707,7 +707,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         self.assertTrue(result[0], result[1])
 
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'INVERT',
@@ -728,7 +728,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
         self.assertTrue(result[0], result[1])
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
         self.assertEqual(get_context_action_kind(), 'INVERT')
 
         with bpy.context.temp_override(**_get_context_override()):
@@ -755,7 +755,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
         self.assertTrue(result[0], result[1])
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
         self.assertEqual(get_context_action_kind(), 'INVERT')
 
         with bpy.context.temp_override(**ctx):
@@ -819,7 +819,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
         self.assertTrue(result[0], result[1])
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         yield
 
@@ -880,7 +880,7 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
         self.assertTrue(result[0], result[1])
         face_verts = result[2] if len(result) > 2 else []
-        set_weld_from_box_builder(obj, face_verts)
+        store_from_shape_builder(obj, face_verts)
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'INVERT',

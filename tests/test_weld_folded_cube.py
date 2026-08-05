@@ -3,7 +3,10 @@ import bpy
 from mathutils import Vector
 
 from ..operators.cube_cut.geometry import execute_cube_cut
-from ..operators.weld import set_weld_from_edge_selection, snapshot_coplanar_sides
+from ..operators.pending_mesh_action import (
+    snapshot_coplanar_sides,
+    store_from_edge_selection,
+)
 from .base_test import AnvilTestCase
 from .helpers import (
     create_textured_cube,
@@ -77,7 +80,7 @@ def _snapshot_and_cut_and_set_weld(test_case, ctx, obj, v1, v2, depth, lx, ly, l
     back_point = v1 + lz * depth
     back_plane_offset = back_point.dot(extrude_dir.normalized())
 
-    set_weld_from_edge_selection(
+    store_from_edge_selection(
         obj, abs(depth), extrude_dir, back_plane_offset,
         v1, v2, lx, ly, coplanar_blocked,
     )
