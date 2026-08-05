@@ -8,8 +8,10 @@ from mathutils import Vector
 from .base_test import AnvilTestCase
 from ..handlers.lifecycle import get_undo_in_progress
 from .helpers import (
+    edit_mesh_cache_is_current,
     get_context_action_kind,
     get_undo_context,
+    modal_operator_running,
     wait_for_condition,
     _get_context_override,
 )
@@ -95,14 +97,36 @@ class BoxBuilderWeldTest(AnvilTestCase):
         rv3d = view_ctx["region_data"]
         center = (first_vertex + second_vertex) * 0.5
 
+        view_rotation_before = rv3d.view_rotation.copy()
         with bpy.context.temp_override(**view_ctx):
             bpy.ops.view3d.view_axis(type=view_type, align_active=False)
-        yield 0.05
+        yield from wait_for_condition(
+            lambda: (
+                rv3d.view_perspective == 'ORTHO'
+                and rv3d.view_rotation.rotation_difference(
+                    view_rotation_before).angle > 0.001
+            ),
+            f"Viewport did not switch to {view_type} orthographic view",
+        )
 
+        view_matrix_before = rv3d.view_matrix.copy()
         rv3d.view_location = center
         rv3d.view_distance = 8.0
         rv3d.view_perspective = 'ORTHO'
-        yield 0.05
+        yield from wait_for_condition(
+            lambda: (
+                (rv3d.view_location - center).length < 0.001
+                and abs(rv3d.view_distance - 8.0) < 0.001
+                and rv3d.view_perspective == 'ORTHO'
+                and any(
+                    abs(rv3d.view_matrix[row][column]
+                        - view_matrix_before[row][column]) > 1e-6
+                    for row in range(4)
+                    for column in range(4)
+                )
+            ),
+            "Viewport did not settle on the requested box-building view",
+        )
 
         first_x, first_y = self._window_point_for_world(view_ctx, first_vertex)
         second_x, second_y = self._window_point_for_world(view_ctx, second_vertex)
@@ -112,7 +136,10 @@ class BoxBuilderWeldTest(AnvilTestCase):
         with bpy.context.temp_override(**view_ctx):
             result = bpy.ops.leveldesign.box_builder('INVOKE_DEFAULT')
         self.assertEqual(result, {'RUNNING_MODAL'})
-        yield 0.05
+        yield from wait_for_condition(
+            lambda: modal_operator_running('LEVELDESIGN_OT_box_builder'),
+            "Box Builder did not enter modal state",
+        )
 
         yield from self._simulate_left_click(window, first_x, first_y)
         yield from self._simulate_left_click(window, second_x, second_y)
@@ -120,7 +147,13 @@ class BoxBuilderWeldTest(AnvilTestCase):
         window.event_simulate(type='MOUSEMOVE', value='NOTHING', x=depth_x, y=depth_y)
         yield
         yield from self._simulate_left_click(window, depth_x, depth_y)
-        yield 0.2
+        yield from wait_for_condition(
+            lambda: (
+                not modal_operator_running('LEVELDESIGN_OT_box_builder')
+                and edit_mesh_cache_is_current()
+            ),
+            "Box Builder did not finish updating its mesh",
+        )
 
     def _create_mesh_with_plane(self, name, verts):
         """Create a mesh object with a single quad face and enter edit mode.
@@ -541,13 +574,29 @@ class BoxBuilderWeldTest(AnvilTestCase):
         with bpy.context.temp_override(**self._get_3d_view_context()):
             result = bpy.ops.ed.undo()
         self.assertIn('FINISHED', result)
-        yield 0.2
+        yield from wait_for_condition(
+            lambda: (
+                obj_name in bpy.data.objects
+                and bpy.context.mode == 'EDIT_MESH'
+                and len(bmesh.from_edit_mesh(
+                    bpy.data.objects[obj_name].data).faces) == 1
+            ),
+            "Undo did not restore the original single-face mesh",
+        )
 
         with bpy.context.temp_override(**self._get_3d_view_context()):
             bpy.ops.object.mode_set(mode='OBJECT')
             result = bpy.ops.leveldesign.box_builder('EXEC_DEFAULT', **redo_kwargs)
         self.assertIn('FINISHED', result)
-        yield 0.2
+        yield from wait_for_condition(
+            lambda: (
+                obj_name in bpy.data.objects
+                and bpy.context.mode == 'EDIT_MESH'
+                and len(bmesh.from_edit_mesh(
+                    bpy.data.objects[obj_name].data).faces) == 6
+            ),
+            "Action-property replay did not finish rebuilding the box",
+        )
 
         self.assertIn(
             obj_name,

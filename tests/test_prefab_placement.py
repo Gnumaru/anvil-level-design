@@ -168,7 +168,13 @@ class PrefabPlacementUndoTest(AnvilTestCase):
         window.event_simulate(type='ESC', value='PRESS', x=mx, y=my)
         yield
         window.event_simulate(type='ESC', value='RELEASE', x=mx, y=my)
-        yield 0.2
+        yield from wait_for_condition(
+            lambda: not any(
+                operator.bl_idname == "LEVELDESIGN_OT_prefab_instantiate"
+                for operator in _get_window().modal_operators
+            ),
+            "Repeat Prefab placement did not cancel",
+        )
 
     def test_context_action_panel_summary_does_not_link_unselected_prefab_assets(self):
         """Repeated panel reads inspect loaded data without linking more assets."""
@@ -225,14 +231,26 @@ class PrefabPlacementUndoTest(AnvilTestCase):
             )
         self.assertEqual(result, {'RUNNING_MODAL'})
 
-        yield 0.05
+        yield from wait_for_condition(
+            lambda: any(
+                operator.bl_idname == "LEVELDESIGN_OT_prefab_instantiate"
+                for operator in _get_window().modal_operators
+            ),
+            "Prefab placement did not enter modal state",
+        )
 
         window = _get_window()
         mx, my = self._get_3d_viewport_center()
         window.event_simulate(type='ESC', value='PRESS', x=mx, y=my)
         yield
         window.event_simulate(type='ESC', value='RELEASE', x=mx, y=my)
-        yield 0.2
+        yield from wait_for_condition(
+            lambda: not any(
+                operator.bl_idname == "LEVELDESIGN_OT_prefab_instantiate"
+                for operator in _get_window().modal_operators
+            ),
+            "Prefab placement did not cancel",
+        )
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'PREFAB')
@@ -247,7 +265,10 @@ class PrefabPlacementUndoTest(AnvilTestCase):
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.undo()
 
-        yield 0.3
+        yield from wait_for_condition(
+            lambda: not _scene_has_object_name(box_name),
+            "Undo did not remove the box builder object",
+        )
 
         self.assertFalse(_scene_has_object_name(box_name))
         self.assertNotEqual(
@@ -259,7 +280,10 @@ class PrefabPlacementUndoTest(AnvilTestCase):
         with bpy.context.temp_override(**undo_ctx):
             bpy.ops.ed.redo()
 
-        yield 0.3
+        yield from wait_for_condition(
+            lambda: _scene_has_object_name(box_name),
+            "Redo did not restore the box builder object",
+        )
 
         self.assertTrue(_scene_has_object_name(box_name))
         self.assertEqual(get_context_action_kind(), 'INVERT')

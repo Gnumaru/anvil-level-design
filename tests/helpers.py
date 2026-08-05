@@ -40,6 +40,44 @@ def wait_for_condition(predicate, failure_message):
     raise AssertionError(failure_message)
 
 
+def modal_operator_running(bl_idname):
+    """Return whether Blender currently has the named modal operator running."""
+    window = bpy.context.window or bpy.context.window_manager.windows[0]
+    return any(
+        operator.bl_idname == bl_idname
+        for operator in window.modal_operators
+    )
+
+
+def edit_mesh_cache_is_current():
+    """Return whether Anvil has processed the current Edit Mode topology."""
+    from ..handlers import face_cache
+
+    face_count = 0
+    vertex_count = 0
+    edit_mesh_count = 0
+    seen_meshes = set()
+    for obj in bpy.context.view_layer.objects:
+        if (
+                obj.type != 'MESH'
+                or obj.data is None
+                or not obj.data.is_editmode
+                or obj.data.name in seen_meshes):
+            continue
+        seen_meshes.add(obj.data.name)
+        bm = bmesh.from_edit_mesh(obj.data)
+        face_count += len(bm.faces)
+        vertex_count += len(bm.verts)
+        edit_mesh_count += 1
+
+    return (
+        edit_mesh_count > 0
+        and face_cache.last_face_count == face_count
+        and face_cache.last_vertex_count == vertex_count
+        and len(face_cache.face_data_cache) == face_count
+    )
+
+
 def get_context_action():
     """Resolve the authoritative action and captured payload used by W."""
     from ..operators.context_action import resolve_context_action

@@ -18,6 +18,7 @@ from ..handlers.face_cache import cache_face_data
 from .base_test import AnvilTestCase
 from .helpers import (
     create_vertical_plane,
+    edit_mesh_cache_is_current,
     get_context_action_kind,
     wait_for_condition,
     _get_context_override,
@@ -178,7 +179,10 @@ class CorridorWeldVerticalTest(AnvilTestCase):
             )
         self.assertTrue(success, msg)
 
-        yield 0.1
+        yield from wait_for_condition(
+            edit_mesh_cache_is_current,
+            "Vertical-plane cube cut topology did not finish",
+        )
 
         # Set up weld state (simulating what the cube cut operator does)
         # back_plane_offset = 0.5 (back plane at y=0.5 projected onto (0,1,0))
@@ -383,7 +387,10 @@ class CorridorWeldSlopedTest(AnvilTestCase):
             )
         self.assertTrue(success, msg)
 
-        yield 0.1
+        yield from wait_for_condition(
+            edit_mesh_cache_is_current,
+            "Sloped-plane cube cut topology did not finish",
+        )
 
         # Set up weld state
         # back_plane_offset = 1.0 (back plane at y=1.0 projected onto (0,1,0))

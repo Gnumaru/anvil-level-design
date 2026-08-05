@@ -12,6 +12,7 @@ from ..operators.pending_mesh_action import (
 from ..core.uv_projection import derive_transform_from_uvs
 from .base_test import AnvilTestCase
 from .helpers import (
+    edit_mesh_cache_is_current,
     get_context_action_kind,
     wait_for_condition,
     _get_context_override,
@@ -118,7 +119,14 @@ class BoxCutCorridorTest(AnvilTestCase):
             )
         self.assertTrue(success, msg)
 
-        yield 0.1
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) == 10
+                and len(bmesh.from_edit_mesh(obj.data).verts) == 12
+            ),
+            "Edge-aligned cube cut topology did not finish",
+        )
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()

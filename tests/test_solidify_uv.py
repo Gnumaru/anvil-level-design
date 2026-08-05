@@ -8,7 +8,10 @@ import bpy
 from ..core.uv_projection import derive_transform_from_uvs
 from ..handlers.lifecycle import on_undo_post, on_undo_pre
 from .base_test import AnvilTestCase
-from .helpers import create_vertical_plane, get_undo_context
+from .helpers import (
+    create_vertical_plane, edit_mesh_cache_is_current,
+    get_undo_context, wait_for_condition,
+)
 
 
 def _read_face_uv_transforms(obj):
@@ -114,7 +117,15 @@ class SolidifyFacesRedoUVTest(AnvilTestCase):
                 thickness=0.125,
             )
         self.assertIn('FINISHED', result)
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) == 6
+                and bpy.context.active_operator is not None
+                and bpy.context.active_operator.bl_idname == "MESH_OT_solidify"
+            ),
+            "Initial Solidify Faces result did not finish",
+        )
 
         _assert_all_faces_keep_anvil_uv_scale(self, obj, 1.0)
         self.assertEqual(bpy.context.active_operator.bl_idname, "MESH_OT_solidify")
@@ -128,6 +139,15 @@ class SolidifyFacesRedoUVTest(AnvilTestCase):
         )
         self.assertIn('FINISHED', undo_result)
         self.assertIn('FINISHED', redo_result)
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) == 6
+                and bpy.context.active_operator is not None
+                and bpy.context.active_operator.bl_idname == "MESH_OT_solidify"
+                and abs(bpy.context.active_operator.thickness - 0.126) < 1e-6
+            ),
+            "Adjusted Solidify Faces result did not finish",
+        )
 
         _assert_all_faces_keep_anvil_uv_scale(self, obj, 1.0)

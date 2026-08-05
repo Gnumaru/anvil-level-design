@@ -84,17 +84,26 @@ def main():
 
 
 def _setup_workspace():
-    """Ensure Level Design workspace exists and queue a switch to it.
-
-    The workspace switch is deferred until Blender's next event loop cycle,
-    so tests are scheduled to run in a later timer.
-    """
+    """Ensure Level Design workspace exists and queue a switch to it."""
     from anvil_level_design.tests.base_test import activate_level_design_workspace
     activate_level_design_workspace()
+    bpy.app.timers.register(_start_when_workspace_ready, first_interval=0.0)
 
 
-# Set up workspace, then run tests. The workspace switch queued by
-# _setup_workspace takes effect between the two timer callbacks when
-# Blender processes its event loop.
-bpy.app.timers.register(_setup_workspace, first_interval=0.5)
-bpy.app.timers.register(main, first_interval=1.0)
+def _start_when_workspace_ready():
+    """Start the suite on the first event-loop tick with the workspace active."""
+    from anvil_level_design.core.workspace_check import (
+        LEVEL_DESIGN_WORKSPACE_NAME,
+    )
+
+    window = bpy.context.window or bpy.context.window_manager.windows[0]
+    if window.workspace.name != LEVEL_DESIGN_WORKSPACE_NAME:
+        return 0.01
+
+    main()
+    return None
+
+
+# Activate on Blender's first available timer tick, then begin on the first
+# tick where Blender exposes that workspace as active.
+bpy.app.timers.register(_setup_workspace, first_interval=0.0)

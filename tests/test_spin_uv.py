@@ -15,7 +15,10 @@ import bpy
 
 from ..core.uv_projection import apply_uv_to_face, derive_transform_from_uvs
 from .base_test import AnvilTestCase
-from .helpers import create_vertical_plane, _get_context_override
+from .helpers import (
+    create_vertical_plane, edit_mesh_cache_is_current,
+    modal_operator_running, wait_for_condition, _get_context_override,
+)
 from .test_uv_extend import (
     _setup_cube_and_select_top_face,
     _read_all_face_transforms,
@@ -35,6 +38,20 @@ def _select_all_faces(obj):
 def _zero_area_face_indices(obj):
     bm = bmesh.from_edit_mesh(obj.data)
     return [f.index for f in bm.faces if f.calc_area() < 1e-8]
+
+
+def _face_with_uv_scale_exists(obj, scale):
+    bm = bmesh.from_edit_mesh(obj.data)
+    uv_layer = bm.loops.layers.uv[0]
+    ppm = bpy.context.scene.level_design_props.pixels_per_meter
+    for face in bm.faces:
+        transform = derive_transform_from_uvs(
+            face, uv_layer, ppm, obj.data)
+        if (
+                abs(transform['scale_u'] - scale) < 0.001
+                and abs(transform['scale_v'] - scale) < 0.001):
+            return True
+    return False
 
 
 class SpinDegenerateWallCleanupTest(AnvilTestCase):
@@ -68,7 +85,11 @@ class SpinDegenerateWallCleanupTest(AnvilTestCase):
                 center=(0.0, 0.0, 0.0),
                 axis=(0.0, 0.0, 1.0),
             )
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: edit_mesh_cache_is_current()
+            and not _zero_area_face_indices(obj),
+            "Spin cleanup did not remove its zero-area faces",
+        )
 
         zero_area = _zero_area_face_indices(obj)
         self.assertEqual(
@@ -129,7 +150,11 @@ class SpinPreservesUVScaleTest(AnvilTestCase):
                 center=(1.0, 1.0, 0.0),
                 axis=(0.0, 0.0, 1.0),
             )
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: edit_mesh_cache_is_current()
+            and _face_with_uv_scale_exists(obj, 3.0),
+            "Spin did not finish projecting its scale-3 end cap",
+        )
 
         transforms = _read_all_face_transforms(obj, 0)
         scale_3 = [t for t in transforms
@@ -187,7 +212,11 @@ class SpinThenExtrudeCapTest(AnvilTestCase):
                 center=(1.0, 1.0, 0.0),
                 axis=(0.0, 0.0, 1.0),
             )
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: edit_mesh_cache_is_current()
+            and _face_with_uv_scale_exists(obj, 3.0),
+            "Spin did not finish projecting its scale-3 end cap",
+        )
 
         # Select only the end cap (scale-3 UV face).
         bm = bmesh.from_edit_mesh(obj.data)
@@ -224,7 +253,15 @@ class SpinThenExtrudeCapTest(AnvilTestCase):
         yield
         yield from self._simulate_number(1)
         yield from self._simulate_key_tap('RET')
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                not modal_operator_running('TRANSFORM_OT_translate')
+                and edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).verts)
+                == verts_before + 4
+            ),
+            "Cap extrusion did not finish with four new vertices",
+        )
 
         verts_after = len(bmesh.from_edit_mesh(obj.data).verts)
 

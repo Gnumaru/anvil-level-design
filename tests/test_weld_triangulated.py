@@ -162,7 +162,10 @@ class FoldedPlaneWeldTest(AnvilTestCase):
 
         _execute_cube_cut_and_set_weld(self, ctx)
 
-        yield 0.1
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'FOLDED_PLANE',
+            "Cube cut did not arm the Folded Plane action",
+        )
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE',
@@ -383,7 +386,10 @@ class FoldedPlaneWeldUndoTest(AnvilTestCase):
 
         _execute_cube_cut_and_set_weld(self, ctx)
 
-        yield 0.1
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'FOLDED_PLANE',
+            "Cube cut did not arm the Folded Plane action",
+        )
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE',

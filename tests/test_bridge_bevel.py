@@ -6,7 +6,10 @@ from mathutils import Vector
 from ..operators.cube_cut.geometry import execute_cube_cut
 from ..core.uv_projection import derive_transform_from_uvs
 from .base_test import AnvilTestCase
-from .helpers import create_vertical_plane, _get_context_override
+from .helpers import (
+    create_vertical_plane, edit_mesh_cache_is_current,
+    modal_operator_running, wait_for_condition, _get_context_override,
+)
 
 
 def _select_edges_by_filter(bm, me, edge_filter):
@@ -30,6 +33,28 @@ def _select_edges_by_filter(bm, me, edge_filter):
     bm.select_flush_mode()
     bmesh.update_edit_mesh(me)
     return count
+
+
+def _cut_holes_are_ready(plane_a, plane_b):
+    return (
+        len(plane_a.data.polygons) == 4
+        and len(plane_b.data.polygons) == 4
+    )
+
+
+def _corridor_is_ready(obj):
+    return (
+        edit_mesh_cache_is_current()
+        and len(bmesh.from_edit_mesh(obj.data).faces) == 12
+    )
+
+
+def _bevel_is_finished(obj):
+    return (
+        not modal_operator_running('MESH_OT_bevel')
+        and edit_mesh_cache_is_current()
+        and len(bmesh.from_edit_mesh(obj.data).faces) > 12
+    )
 
 
 class BridgeBevelCorridorTest(AnvilTestCase):
@@ -95,7 +120,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
             with bpy.context.temp_override(**ctx):
                 bpy.ops.object.mode_set(mode='OBJECT')
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _cut_holes_are_ready(plane_a, plane_b),
+            "Corridor hole cuts did not finish",
+        )
 
         # 3. Join both planes into one object
         plane_a.select_set(True)
@@ -137,7 +165,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.bridge_edge_loops()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _corridor_is_ready(obj),
+            "Corridor bridge topology and UV projection did not finish",
+        )
 
         # 5. Select the top two edges of the corridor for beveling
         # The hole top is at z=0.75, corridor runs along Y from y=0 to y=2
@@ -163,7 +194,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
                 affect='EDGES',
             )
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _bevel_is_finished(obj),
+            "Three-segment corridor bevel did not finish",
+        )
 
         # 7. Assert UV transforms on all faces
         bm = bmesh.from_edit_mesh(obj.data)
@@ -328,7 +362,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
             with bpy.context.temp_override(**ctx):
                 bpy.ops.object.mode_set(mode='OBJECT')
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _cut_holes_are_ready(plane_a, plane_b),
+            "Corridor hole cuts did not finish",
+        )
 
         # 3. Join both planes into one object
         plane_a.select_set(True)
@@ -367,7 +404,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.bridge_edge_loops()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _corridor_is_ready(obj),
+            "Corridor bridge topology and UV projection did not finish",
+        )
 
         # 5. Select the top two edges of the corridor for beveling
         bm = bmesh.from_edit_mesh(obj.data)
@@ -392,7 +432,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
                 affect='EDGES',
             )
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _bevel_is_finished(obj),
+            "One-segment corridor bevel did not finish",
+        )
 
         # No assertions - visual inspection only
 
@@ -448,7 +491,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
             with bpy.context.temp_override(**ctx):
                 bpy.ops.object.mode_set(mode='OBJECT')
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _cut_holes_are_ready(plane_a, plane_b),
+            "Corridor hole cuts did not finish",
+        )
 
         plane_a.select_set(True)
         plane_b.select_set(True)
@@ -484,7 +530,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.bridge_edge_loops()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _corridor_is_ready(obj),
+            "Corridor bridge topology and UV projection did not finish",
+        )
 
         # 5. Select top corridor edges and bevel with 2 segments
         bm = bmesh.from_edit_mesh(obj.data)
@@ -505,7 +554,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
                 affect='EDGES',
             )
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _bevel_is_finished(obj),
+            "Two-segment corridor bevel did not finish",
+        )
 
         # 6. Dump face transforms
         bm = bmesh.from_edit_mesh(obj.data)
@@ -574,7 +626,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
             with bpy.context.temp_override(**ctx):
                 bpy.ops.object.mode_set(mode='OBJECT')
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _cut_holes_are_ready(plane_a, plane_b),
+            "Corridor hole cuts did not finish",
+        )
 
         # 3. Join
         plane_a.select_set(True)
@@ -612,7 +667,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.bridge_edge_loops()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _corridor_is_ready(obj),
+            "Corridor bridge topology and UV projection did not finish",
+        )
 
         # 5. Select the top two corridor edges
         bm = bmesh.from_edit_mesh(obj.data)
@@ -647,7 +705,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         # Type exact value and confirm
         yield from self._simulate_number(0.1)
         yield from self._simulate_key_tap('RET')
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _bevel_is_finished(obj),
+            "Interactive corridor bevel did not finish",
+        )
 
         # 7. Dump face transforms
         self._dump_face_transforms(obj)
@@ -705,7 +766,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
             with bpy.context.temp_override(**ctx):
                 bpy.ops.object.mode_set(mode='OBJECT')
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _cut_holes_are_ready(plane_a, plane_b),
+            "Corridor hole cuts did not finish",
+        )
 
         # 3. Join
         plane_a.select_set(True)
@@ -743,7 +807,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.bridge_edge_loops()
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _corridor_is_ready(obj),
+            "Corridor bridge topology and UV projection did not finish",
+        )
 
         # 5. Select the top two corridor edges
         bm = bmesh.from_edit_mesh(obj.data)
@@ -779,10 +846,18 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         yield
 
         # Scroll wheel up to add a segment (1 -> 2) — this changes topology
+        face_count_before_scroll = len(bmesh.from_edit_mesh(obj.data).faces)
         window.event_simulate(type='WHEELUPMOUSE', value='PRESS', x=mx + 20, y=my)
         yield
         window.event_simulate(type='WHEELUPMOUSE', value='RELEASE', x=mx + 20, y=my)
-        yield 0.1
+        yield from wait_for_condition(
+            lambda: (
+                modal_operator_running('MESH_OT_bevel')
+                and len(bmesh.from_edit_mesh(obj.data).faces)
+                != face_count_before_scroll
+            ),
+            "Interactive bevel did not apply the segment-count change",
+        )
 
         # Continue dragging after segment change (triggers multiple depsgraph
         # updates with the new topology)
@@ -793,7 +868,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         # Type exact value and confirm
         yield from self._simulate_number(0.1)
         yield from self._simulate_key_tap('RET')
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _bevel_is_finished(obj),
+            "Interactive two-segment corridor bevel did not finish",
+        )
 
         # 7. Dump face transforms
         self._dump_face_transforms(obj)
@@ -937,7 +1015,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         modal triggers restore/re-apply cycles that can corrupt UVs.
         """
         obj, ctx = self._setup_corridor("1e1s_int")
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _corridor_is_ready(obj),
+            "Single-edge corridor setup did not finish",
+        )
         self._select_single_top_edge(obj)
 
         window = bpy.context.window or bpy.context.window_manager.windows[0]
@@ -958,7 +1039,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
             yield
         yield from self._simulate_number(0.1)
         yield from self._simulate_key_tap('RET')
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _bevel_is_finished(obj),
+            "Interactive single-edge bevel did not finish",
+        )
 
         # Expected values from the non-interactive 1-segment single-edge test
         expected = {
@@ -1041,7 +1125,10 @@ class BridgeBevelCorridorTest(AnvilTestCase):
         Generates reference transforms for the interactive 3-segment test.
         """
         obj, ctx = self._setup_corridor("1e3s_api")
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _corridor_is_ready(obj),
+            "Single-edge corridor setup did not finish",
+        )
         self._select_single_bottom_edge(obj)
 
         with bpy.context.temp_override(**ctx):
@@ -1052,6 +1139,9 @@ class BridgeBevelCorridorTest(AnvilTestCase):
                 affect='EDGES',
             )
 
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: _bevel_is_finished(obj),
+            "Non-interactive single-edge bevel did not finish",
+        )
         self._dump_face_transforms(obj)
 

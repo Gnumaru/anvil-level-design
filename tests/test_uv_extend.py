@@ -11,6 +11,7 @@ from ..hotspot_mapping.json_storage import add_texture_as_hotspottable
 from .base_test import AnvilTestCase
 from .helpers import (
     create_vertical_plane, create_textured_cube, add_uv_layer,
+    edit_mesh_cache_is_current, wait_for_condition,
     _get_context_override, TEXTURE_PATH,
 )
 
@@ -299,7 +300,17 @@ class ExtrudeConnectedFaceMaterialTest(AnvilTestCase):
         bm = bmesh.from_edit_mesh(obj.data)
         extrude_direction = bm.faces.active.normal.copy()
         _extrude_selected_region(Vector((0, 0, 0)))
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) == 6
+                and any(
+                    face.calc_area() < 1e-8
+                    for face in bmesh.from_edit_mesh(obj.data).faces
+                )
+            ),
+            "Zero-distance extrusion topology did not finish",
+        )
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
@@ -335,7 +346,20 @@ class ExtrudeConnectedFaceMaterialTest(AnvilTestCase):
 
         moved_face_indices = {face.index for face in zero_area_faces}
         _move_selected_region(extrude_direction)
-        yield 0.5
+        def moved_faces_are_ready():
+            moved_bm = bmesh.from_edit_mesh(obj.data)
+            moved_bm.faces.ensure_lookup_table()
+            return all(
+                moved_bm.faces[index].calc_area() >= 1e-8
+                and _face_material_name(obj.data, moved_bm.faces[index])
+                == dev_mat_name
+                for index in moved_face_indices
+            )
+
+        yield from wait_for_condition(
+            moved_faces_are_ready,
+            "Moved extrusion walls did not finish updating",
+        )
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
@@ -483,8 +507,10 @@ class UVExtendToolTest(_UVExtendBase):
             bpy.ops.mesh.extrude_region_move(
                 TRANSFORM_OT_translate={"value": direction}
             )
-        # Yield to let Blender process depsgraph updates / handler callbacks
-        yield 0.5
+        yield from wait_for_condition(
+            edit_mesh_cache_is_current,
+            "Non-modal extrusion topology and UV projection did not finish",
+        )
 
     def test_uv_extend_up(self):
         obj = _setup_plane_and_select_edge(

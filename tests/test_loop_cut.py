@@ -5,7 +5,10 @@ from mathutils import Vector
 from ..core.uv_projection import apply_uv_to_face
 from ..core.uv_projection import derive_transform_from_uvs
 from .base_test import AnvilTestCase
-from .helpers import create_vertical_plane, _get_context_override
+from .helpers import (
+    create_vertical_plane, edit_mesh_cache_is_current,
+    wait_for_condition, _get_context_override,
+)
 
 
 def _create_two_face_plane(name):
@@ -109,7 +112,10 @@ class LoopCutTest(AnvilTestCase):
         Expected: 4 faces -- two with rotation~0, two with rotation~45.
         """
         obj = _create_two_face_plane("loopcut_rot")
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: len(obj.data.polygons) == 2,
+            "Two-face plane setup did not finish",
+        )
 
         # Deform the right face: move the 2 outside verts (x=2) inward 0.25 on Z
         ctx = _get_context_override()
@@ -125,7 +131,14 @@ class LoopCutTest(AnvilTestCase):
         bmesh.update_edit_mesh(obj.data)
         with bpy.context.temp_override(**ctx):
             bpy.ops.object.mode_set(mode='OBJECT')
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                len(obj.data.polygons) == 2
+                and sum(abs(vertex.co.x - 2.0) < 1e-5
+                        for vertex in obj.data.vertices) == 2
+            ),
+            "Plane deformation did not finish",
+        )
 
         # Apply rotation=0 to left face (center x~0.5), rotation=45 to right
         # (center x~1.5) after the setup deformation is already in place.
@@ -176,7 +189,13 @@ class LoopCutTest(AnvilTestCase):
         # Subdivide selected edges (this is what loop cut does internally)
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.subdivide(number_cuts=1)
-        yield 0.5  # Let depsgraph handler process topology change
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) >= 4
+            ),
+            "Loop cut topology and UV projection did not finish",
+        )
 
         # Verify: should now have 4 faces
         bm = bmesh.from_edit_mesh(obj.data)

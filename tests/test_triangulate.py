@@ -4,7 +4,10 @@ import bpy
 from ..core.uv_projection import derive_transform_from_uvs
 from ..core.uv_projection import apply_uv_to_face
 from .base_test import AnvilTestCase
-from .helpers import _get_context_override, TEXTURE_PATH
+from .helpers import (
+    edit_mesh_cache_is_current, wait_for_condition,
+    _get_context_override, TEXTURE_PATH,
+)
 
 
 def _create_three_face_horizontal_plane(name, rot_left, rot_center, rot_right):
@@ -97,7 +100,13 @@ class TriangulateTest(AnvilTestCase):
         # Enter edit mode and let cache build
         with bpy.context.temp_override(**ctx):
             bpy.ops.object.mode_set(mode='EDIT')
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) == 3
+            ),
+            "Edit Mode face cache did not initialize",
+        )
 
         # Select all faces and triangulate
         bm = bmesh.from_edit_mesh(obj.data)
@@ -110,7 +119,13 @@ class TriangulateTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.quads_convert_to_tris(quad_method='BEAUTY',
                                                ngon_method='BEAUTY')
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) == 6
+            ),
+            "Triangulation topology and UV projection did not finish",
+        )
 
         # Read transforms
         ppm = bpy.context.scene.level_design_props.pixels_per_meter

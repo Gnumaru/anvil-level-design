@@ -4,7 +4,10 @@ from mathutils import Vector
 
 from ..core.uv_projection import derive_transform_from_uvs
 from .base_test import AnvilTestCase
-from .helpers import create_vertical_plane, _get_context_override
+from .helpers import (
+    create_vertical_plane, edit_mesh_cache_is_current,
+    wait_for_condition, _get_context_override,
+)
 
 
 def _select_edge_by_vert_filter(bm, me, vert_filter):
@@ -51,7 +54,13 @@ class BevelTest(AnvilTestCase):
             bpy.ops.mesh.extrude_region_move(
                 TRANSFORM_OT_translate={"value": Vector((0, 1, 0))}
             )
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) == 2
+            ),
+            "Corner extrusion topology and UV projection did not finish",
+        )
 
         # 3. Select the middle edge (the shared corner edge at x=1, y=0)
         bm = bmesh.from_edit_mesh(obj.data)
@@ -68,7 +77,13 @@ class BevelTest(AnvilTestCase):
                 segments=8,
                 affect='EDGES',
             )
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) > 2
+            ),
+            "Eight-segment bevel topology and UV projection did not finish",
+        )
 
         # 5. Verify all faces have scale (1, 1)
         bm = bmesh.from_edit_mesh(obj.data)

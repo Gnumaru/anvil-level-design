@@ -112,7 +112,10 @@ class FoldedPlaneWeldCubeTest(AnvilTestCase):
             _LOCAL_X, _LOCAL_Y, _LOCAL_Z,
         )
 
-        yield 0.1
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'FOLDED_PLANE',
+            "Cube cut did not arm the Folded Plane action",
+        )
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE',
@@ -222,7 +225,10 @@ class FoldedPlaneWeldCubeDoubleTest(AnvilTestCase):
             first_v1, first_v2, first_depth, lx, ly, lz,
         )
 
-        yield 0.1
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() == 'FOLDED_PLANE',
+            "First cube cut did not arm the Folded Plane action",
+        )
 
         props = bpy.context.scene.level_design_props
         self.assertEqual(get_context_action_kind(), 'FOLDED_PLANE')
@@ -255,7 +261,10 @@ class FoldedPlaneWeldCubeDoubleTest(AnvilTestCase):
             second_v1, second_v2, second_depth, lx, ly, lz,
         )
 
-        yield 0.1
+        yield from wait_for_condition(
+            lambda: get_context_action_kind() in ('BRIDGE', 'FOLDED_PLANE'),
+            "Second cube cut did not arm a weld action",
+        )
 
         # Diagnostic: inspect boundary edges after second cut
         bm = bmesh.from_edit_mesh(obj.data)

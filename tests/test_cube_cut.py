@@ -8,6 +8,8 @@ from .base_test import AnvilTestCase
 from .helpers import (
     create_textured_cube,
     add_uv_layer_box_project,
+    edit_mesh_cache_is_current,
+    wait_for_condition,
     _get_context_override,
     _apply_material_box_project,
 )
@@ -200,8 +202,13 @@ class CubeCutTest(AnvilTestCase):
         with bpy.context.temp_override(**ctx):
             bpy.ops.mesh.bridge_edge_loops()
 
-        # Let depsgraph handler fire to apply UVs to the bridged faces
-        yield 0.5
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(bmesh.from_edit_mesh(obj.data).faces) == 16
+            ),
+            "Bridge topology and UV projection did not finish",
+        )
 
         bm = bmesh.from_edit_mesh(obj.data)
         uv_layer = bm.loops.layers.uv[0]

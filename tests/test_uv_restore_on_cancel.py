@@ -2,8 +2,12 @@ import bmesh
 import bpy
 
 from ..core.uv_projection import derive_transform_from_uvs
+from ..handlers.face_cache import get_last_selected_face_indices
 from .base_test import AnvilTestCase, _get_window
-from .helpers import create_textured_cube, _get_context_override
+from .helpers import (
+    create_textured_cube, edit_mesh_cache_is_current,
+    modal_operator_running, wait_for_condition, _get_context_override,
+)
 
 
 def _face_key(face):
@@ -17,6 +21,18 @@ def _snapshot_all_face_transforms(bm, uv_layer, ppm, me):
     for face in bm.faces:
         out[_face_key(face)] = derive_transform_from_uvs(face, uv_layer, ppm, me)
     return out
+
+
+def _geometry_matches_snapshot(obj, verts_by_face, tolerance):
+    bm = bmesh.from_edit_mesh(obj.data)
+    bm.faces.ensure_lookup_table()
+    for face in bm.faces:
+        original_verts = verts_by_face[_face_key(face)]
+        if any(
+                (vert.co - original).length >= tolerance
+                for original, vert in zip(original_verts, face.verts)):
+            return False
+    return True
 
 
 class WorldScaleUVRestoreTest(AnvilTestCase):
@@ -41,7 +57,15 @@ class WorldScaleUVRestoreTest(AnvilTestCase):
         target.select_set(True)
         bmesh.update_edit_mesh(obj.data)
 
-        yield 0.3
+        yield from wait_for_condition(
+            lambda: (
+                edit_mesh_cache_is_current()
+                and len(get_last_selected_face_indices()) == 1
+                and sum(face.select for face in
+                        bmesh.from_edit_mesh(obj.data).faces) == 1
+            ),
+            "Edit Mode selection did not finish updating",
+        )
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
@@ -57,17 +81,34 @@ class WorldScaleUVRestoreTest(AnvilTestCase):
         window = _get_window()
         mx, my = self._get_3d_viewport_center()
 
-        yield from self._simulate_key_tap('G')
+        with bpy.context.temp_override(**self._get_3d_view_context()):
+            result = bpy.ops.transform.translate('INVOKE_DEFAULT')
+        self.assertEqual(result, {'RUNNING_MODAL'})
+        yield from wait_for_condition(
+            lambda: modal_operator_running('TRANSFORM_OT_translate'),
+            "Grab did not enter modal state",
+        )
         window.event_simulate(type='MOUSEMOVE', value='NOTHING', x=mx, y=my)
-        yield 0.05
+        yield
         yield from self._simulate_key_tap('X')
         yield from self._simulate_number(2)
-        yield 0.2
+        yield from wait_for_condition(
+            lambda: not _geometry_matches_snapshot(
+                obj, orig_verts_by_key, 1e-4),
+            "Grab did not move the selected geometry",
+        )
 
         window.event_simulate(type='ESC', value='PRESS', x=mx, y=my)
         yield
         window.event_simulate(type='ESC', value='RELEASE', x=mx, y=my)
-        yield 0.3
+        yield from wait_for_condition(
+            lambda: (
+                not modal_operator_running('TRANSFORM_OT_translate')
+                and _geometry_matches_snapshot(
+                    obj, orig_verts_by_key, 1e-4)
+            ),
+            "Cancelling Grab did not restore the original geometry",
+        )
 
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
