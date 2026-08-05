@@ -5,6 +5,7 @@
 - Add CYLINDER CUT
 - Add PRISM BUILDER
 - Add PRISM CUT (concave cutting!)
+- Add STAIR BUILDER
 - Hold ALT to view cut intersections for cuts
 - Cut modes support reconstruct ngons
 - Added build and cut buttons to the Anvil panel

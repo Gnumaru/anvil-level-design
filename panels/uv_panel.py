@@ -268,9 +268,9 @@ class LEVELDESIGN_PT_status_panel(Panel):
 
         _draw_status_tool_button(
             builders,
-            "leveldesign.future_shape_tool",
+            "leveldesign.stair_builder",
             'IPO_CONSTANT',
-            False,
+            True,
         )
         _draw_status_tool_button(
             cutters,

@@ -81,6 +81,13 @@ class ModalDrawPreview:
         self._custom_profile_guides = []
         self._custom_profile_closed = True
 
+        # Optional arbitrary wire preview used by shapes whose outline cannot
+        # be represented as a single extruded profile, such as Stair Builder.
+        self._custom_wire_vertices = None
+        self._custom_wire_edges = []
+        self._custom_wire_measurements = []
+        self._custom_wire_valid = True
+
         # Prefab placement ghost data
         self._prefab_ghost = None
         self._ghost_matrix = None
@@ -182,6 +189,30 @@ class ModalDrawPreview:
         self._custom_profile_guides = []
         self._custom_profile_closed = False
 
+    def update_custom_wire(self, vertices, edges, measurements, valid):
+        """Set an arbitrary world-space wire preview and measurement edges."""
+        self._custom_wire_vertices = [
+            Vector(vertex).copy()
+            for vertex in vertices
+        ]
+        self._custom_wire_edges = list(edges)
+        self._custom_wire_measurements = [
+            (
+                Vector(start).copy(),
+                Vector(end).copy(),
+                label,
+            )
+            for start, end, label in measurements
+        ]
+        self._custom_wire_valid = valid
+
+    def clear_custom_wire(self):
+        """Clear the arbitrary wire preview without disturbing draw state."""
+        self._custom_wire_vertices = None
+        self._custom_wire_edges = []
+        self._custom_wire_measurements = []
+        self._custom_wire_valid = True
+
     def set_prefab_ghost(self, prefab_ghost):
         """Set local-space albedo data for the prefab placement ghost."""
         self._prefab_ghost = prefab_ghost
@@ -235,6 +266,10 @@ class ModalDrawPreview:
         self._custom_profile_vertices = None
         self._custom_profile_guides = []
         self._custom_profile_closed = True
+        self._custom_wire_vertices = None
+        self._custom_wire_edges = []
+        self._custom_wire_measurements = []
+        self._custom_wire_valid = True
         self._prefab_ghost = None
         self._ghost_matrix = None
 
@@ -261,13 +296,33 @@ class ModalDrawPreview:
                 self._draw_snap_point()
                 self._draw_line_preview()
             elif self._state == 'SECOND_VERTEX':
-                if self._custom_profile_vertices is not None:
+                if self._custom_wire_vertices is not None:
+                    self._draw_edges(
+                        self._custom_wire_vertices,
+                        self._custom_wire_edges,
+                        (
+                            self._get_candidate_color(COLOR_RECTANGLE)
+                            if self._custom_wire_valid
+                            else COLOR_INVALID
+                        ),
+                    )
+                elif self._custom_profile_vertices is not None:
                     self._draw_custom_profile_preview()
                 else:
                     self._draw_rectangle_preview()
                 self._draw_cut_vertex_markers()
             elif self._state == 'DEPTH':
-                if self._custom_profile_vertices is not None:
+                if self._custom_wire_vertices is not None:
+                    self._draw_edges(
+                        self._custom_wire_vertices,
+                        self._custom_wire_edges,
+                        (
+                            self._get_candidate_color(COLOR_CUBOID)
+                            if self._custom_wire_valid
+                            else COLOR_INVALID
+                        ),
+                    )
+                elif self._custom_profile_vertices is not None:
                     self._draw_custom_prism_preview()
                 else:
                     self._draw_cuboid_preview()
@@ -686,6 +741,8 @@ class ModalDrawPreview:
             return [(self._first_vertex, self._line_end, None)]
 
         if self._state == 'SECOND_VERTEX':
+            if self._custom_wire_vertices is not None:
+                return list(self._custom_wire_measurements)
             if self._custom_profile_vertices is not None:
                 return list(self._custom_profile_guides)
             if self._first_vertex is None or self._second_vertex is None:
@@ -697,6 +754,8 @@ class ModalDrawPreview:
             return measurement_labels.segments_from_loop(corners)
 
         if self._state == 'DEPTH':
+            if self._custom_wire_vertices is not None:
+                return list(self._custom_wire_measurements)
             if self._custom_profile_vertices is not None:
                 segments = list(self._custom_profile_guides)
                 if self._custom_profile_vertices:

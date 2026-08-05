@@ -119,6 +119,10 @@ class ModalDrawBase:
         """Return the display name for header text (e.g. 'Cube Cut', 'Box')."""
         raise NotImplementedError
 
+    def _get_header_suffix(self, context):
+        """Return optional tool-specific controls appended to modal headers."""
+        return ""
+
     # --- Hook methods (may override) ---
 
     def _on_info_visibility_changed(self, context, visible):
@@ -928,6 +932,8 @@ class ModalDrawBase:
                 text = f"{tool_name}: Move mouse to set depth ({self._depth:.3f}) | Click to confirm | ESC to cancel"
         else:
             text = f"{tool_name} | ESC to cancel"
+
+        text += self._get_header_suffix(context)
 
         if context.area is not None:
             context.area.header_text_set(text)
