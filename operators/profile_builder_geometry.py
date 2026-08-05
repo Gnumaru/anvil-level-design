@@ -89,7 +89,9 @@ def execute_profile_builder_edit_mode(
             depth,
             local_z,
         )
-        new_faces = _create_profile_geometry(bm, prism, is_plane, cap_mode)
+        new_faces, cap_faces_to_quadify, new_vertices = (
+            _create_profile_geometry(bm, prism, is_plane, cap_mode)
+        )
     except ValueError as error:
         return (False, f"Invalid {shape_name.lower()} geometry: {error}")
 
@@ -104,6 +106,13 @@ def execute_profile_builder_edit_mode(
             new_faces,
             existing_faces,
         )
+
+    _quadify_cap_faces(
+        bm,
+        [face for face in cap_faces_to_quadify if face in new_faces],
+    )
+    new_faces = _faces_from_new_vertices(bm, new_vertices)
+    bm.normal_update()
 
     _apply_material_and_uvs(
         bm,
@@ -168,7 +177,9 @@ def execute_profile_builder_object_mode(
             depth,
             local_z,
         )
-        new_faces = _create_profile_geometry(bm, prism, is_plane, cap_mode)
+        new_faces, cap_faces_to_quadify, new_vertices = (
+            _create_profile_geometry(bm, prism, is_plane, cap_mode)
+        )
     except ValueError as error:
         bm.free()
         return (False, f"Invalid {shape_name.lower()} geometry: {error}")
@@ -177,6 +188,8 @@ def execute_profile_builder_object_mode(
         bm.free()
         return (False, f"Failed to create {shape_name.lower()} geometry")
 
+    _quadify_cap_faces(bm, cap_faces_to_quadify)
+    new_faces = _faces_from_new_vertices(bm, new_vertices)
     bm.normal_update()
     data_block_name = _next_box_builder_datablock_name(base_name, name_suffix)
     me = bpy.data.meshes.new(data_block_name)
@@ -301,23 +314,34 @@ def _create_profile_geometry(bm, prism, is_plane, cap_mode):
                     if vertex not in all_new_vertices:
                         all_new_vertices.append(vertex)
 
-    if cap_faces_to_quadify:
-        ngon_faces = [
-            face for face in cap_faces_to_quadify
-            if face.is_valid and len(face.verts) > 4
-        ]
-        if ngon_faces:
-            result = bmesh.ops.triangulate(bm, faces=ngon_faces)
-            triangles = [face for face in result['faces'] if face.is_valid]
-            if triangles:
-                bmesh.ops.join_triangles(
-                    bm,
-                    faces=triangles,
-                    angle_face_threshold=3.14159,
-                    angle_shape_threshold=3.14159,
-                )
+    return (
+        _faces_from_new_vertices(bm, all_new_vertices),
+        cap_faces_to_quadify,
+        all_new_vertices,
+    )
 
-    new_vertex_set = set(all_new_vertices)
+
+def _quadify_cap_faces(bm, cap_faces):
+    ngon_faces = [
+        face for face in cap_faces
+        if face.is_valid and len(face.verts) > 4
+    ]
+    if not ngon_faces:
+        return
+
+    result = bmesh.ops.triangulate(bm, faces=ngon_faces)
+    triangles = [face for face in result['faces'] if face.is_valid]
+    if triangles:
+        bmesh.ops.join_triangles(
+            bm,
+            faces=triangles,
+            angle_face_threshold=3.14159,
+            angle_shape_threshold=3.14159,
+        )
+
+
+def _faces_from_new_vertices(bm, new_vertices):
+    new_vertex_set = set(new_vertices)
     return [
         face for face in bm.faces
         if face.is_valid and set(face.verts) <= new_vertex_set

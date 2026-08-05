@@ -118,6 +118,99 @@ class PrismBuilderTest(AnvilTestCase):
         self.assertTrue(all(len(face.verts) <= 4 for face in cap_faces))
         self.assertTrue(any(len(face.verts) == 4 for face in cap_faces))
 
+    def test_prism_builder_quadify_caps_preserves_concave_cap_shape(self):
+        obj = self._create_empty_edit_mesh("prism_builder_concave_caps")
+        profile = [
+            Vector((0.0, 0.0, 0.0)),
+            Vector((3.0, 0.0, 0.0)),
+            Vector((3.0, 0.0, 3.0)),
+            Vector((2.0, 0.0, 3.0)),
+            Vector((2.0, 0.0, 1.0)),
+            Vector((1.0, 0.0, 1.0)),
+            Vector((1.0, 0.0, 3.0)),
+            Vector((0.0, 0.0, 3.0)),
+        ]
+        ppm = bpy.context.scene.level_design_props.pixels_per_meter
+
+        result = execute_prism_builder_edit_mode(
+            profile,
+            1.0,
+            Vector((0.0, 1.0, 0.0)),
+            obj,
+            ppm,
+            True,
+            True,
+        )
+        self.assertTrue(result[0], result[1])
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.normal_update()
+        cap_faces = [
+            face for face in bm.faces
+            if abs(face.normal.y) > 0.99
+        ]
+        front_cap_faces = [
+            face for face in cap_faces
+            if abs(face.calc_center_median().y) < 0.001
+        ]
+        back_cap_faces = [
+            face for face in cap_faces
+            if abs(face.calc_center_median().y - 1.0) < 0.001
+        ]
+        self.assertTrue(all(len(face.verts) <= 4 for face in cap_faces))
+        self.assertTrue(any(len(face.verts) == 4 for face in cap_faces))
+        self.assertTrue(all(face.normal.y < -0.99 for face in front_cap_faces))
+        self.assertTrue(all(face.normal.y > 0.99 for face in back_cap_faces))
+        front_cap_area = sum(
+            face.calc_area()
+            for face in front_cap_faces
+        )
+        back_cap_area = sum(
+            face.calc_area()
+            for face in back_cap_faces
+        )
+        self.assertAlmostEqual(front_cap_area, 7.0)
+        self.assertAlmostEqual(back_cap_area, 7.0)
+        self.assertFalse(any(
+            1.0 < face.calc_center_median().x < 2.0
+            and face.calc_center_median().z > 1.0
+            for face in front_cap_faces
+        ))
+        self.assertFalse(any(
+            1.0 < ((edge.verts[0].co.x + edge.verts[1].co.x) * 0.5) < 2.0
+            and ((edge.verts[0].co.z + edge.verts[1].co.z) * 0.5) > 1.0
+            for face in front_cap_faces
+            for edge in face.edges
+        ))
+
+        def edge_coordinates(edge):
+            return frozenset(
+                (round(vertex.co.x, 5), round(vertex.co.z, 5))
+                for vertex in edge.verts
+            )
+
+        front_cap_face_set = set(front_cap_faces)
+        actual_boundary = {
+            edge_coordinates(edge)
+            for face in front_cap_faces
+            for edge in face.edges
+            if sum(
+                linked_face in front_cap_face_set
+                for linked_face in edge.link_faces
+            ) == 1
+        }
+        expected_boundary = {
+            frozenset((
+                (round(vertex.x, 5), round(vertex.z, 5)),
+                (
+                    round(profile[(index + 1) % len(profile)].x, 5),
+                    round(profile[(index + 1) % len(profile)].z, 5),
+                ),
+            ))
+            for index, vertex in enumerate(profile)
+        }
+        self.assertEqual(actual_boundary, expected_boundary)
+
     def test_prism_builder_remove_overlap_faces_removes_anti_parallel_cap(self):
         mesh = bpy.data.meshes.new("prism_builder_overlap")
         bm_object = bmesh.new()
@@ -174,6 +267,65 @@ class PrismBuilderTest(AnvilTestCase):
             and abs(face.calc_center_median().y) < 0.001
         ]
         self.assertEqual(anti_parallel_caps, [])
+
+    def test_prism_builder_remove_overlap_faces_removes_quadified_end_caps(self):
+        profile = [
+            Vector((0.0, 0.0, 0.0)),
+            Vector((2.0, 0.0, 0.0)),
+            Vector((2.0, 0.0, 1.0)),
+            Vector((1.0, 0.0, 1.0)),
+            Vector((1.0, 0.0, 2.0)),
+            Vector((0.0, 0.0, 2.0)),
+        ]
+        mesh = bpy.data.meshes.new("prism_builder_quadified_overlap")
+        bm_object = bmesh.new()
+        front_vertices = [
+            bm_object.verts.new(vertex) for vertex in reversed(profile)
+        ]
+        back_vertices = [
+            bm_object.verts.new(vertex + Vector((0.0, 1.0, 0.0)))
+            for vertex in profile
+        ]
+        bm_object.faces.new(front_vertices)
+        bm_object.faces.new(back_vertices)
+        bm_object.to_mesh(mesh)
+        bm_object.free()
+        obj = bpy.data.objects.new("prism_builder_quadified_overlap", mesh)
+        bpy.context.collection.objects.link(obj)
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+        with bpy.context.temp_override(**_get_context_override()):
+            bpy.ops.object.mode_set(mode='EDIT')
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        for face in bm.faces:
+            face.select = False
+        bm.faces.active = None
+        bmesh.update_edit_mesh(obj.data)
+        ppm = bpy.context.scene.level_design_props.pixels_per_meter
+
+        result = execute_prism_builder_edit_mode(
+            profile,
+            1.0,
+            Vector((0.0, 1.0, 0.0)),
+            obj,
+            ppm,
+            False,
+            True,
+        )
+        self.assertTrue(result[0], result[1])
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        new_faces = [bm.faces[index] for index, _positions in result[2]]
+        overlapping_end_caps = [
+            face for face in new_faces
+            if (
+                all(abs(vertex.co.y) < 0.001 for vertex in face.verts)
+                or all(abs(vertex.co.y - 1.0) < 0.001 for vertex in face.verts)
+            )
+        ]
+        self.assertEqual(overlapping_end_caps, [])
 
     def test_prism_builder_object_mode_suffix_uses_blender_numbering(self):
         ppm = bpy.context.scene.level_design_props.pixels_per_meter
