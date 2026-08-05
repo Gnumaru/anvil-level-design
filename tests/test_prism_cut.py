@@ -349,19 +349,117 @@ class PrismCutTest(AnvilTestCase):
         self.assertIn('FINISHED', result)
         bm = bmesh.from_edit_mesh(obj.data)
         selected_edges = [edge for edge in bm.edges if edge.select]
-        self.assertEqual(
-            len(selected_edges),
-            45,
-            "The reproduced cut should retain its visible boundary selection",
-        )
+        selected_vertex_degrees = {}
         for edge in selected_edges:
             self.assertEqual(
                 len(edge.link_faces),
                 1,
                 "Every selected cut edge should be an open boundary edge",
             )
+            for vertex in edge.verts:
+                selected_vertex_degrees[vertex] = (
+                    selected_vertex_degrees.get(vertex, 0) + 1
+                )
+        unexpected_degrees = [
+            (tuple(vertex.co), degree)
+            for vertex, degree in selected_vertex_degrees.items()
+            if degree != 2
+        ]
+        self.assertTrue(
+            all(
+                degree == 2
+                for degree in selected_vertex_degrees.values()
+            ),
+            "Every selected cut boundary should be an unbranched loop; "
+            f"unexpected degrees: {unexpected_degrees}",
+        )
         self.assertEqual(
             get_context_action_kind(),
             'BRIDGE',
             "A through Prism Cut should offer Bridge for its two openings",
+        )
+
+    def test_prism_cut_concave_t_profile_into_triangulated_sphere_bisects_crossed_edges(self):
+        context_override = _get_context_override()
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.mesh.primitive_ico_sphere_add(
+                subdivisions=3,
+                radius=4.0,
+            )
+        obj = bpy.context.active_object
+        obj.name = "prism_cut_concave_t_triangulated_sphere"
+
+        with bpy.context.temp_override(**context_override):
+            bpy.ops.object.mode_set(mode='EDIT')
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.select_mode = {'FACE'}
+        for face in bm.faces:
+            face.select = True
+        bmesh.update_edit_mesh(obj.data)
+
+        profile = [
+            Vector((-2.10, -3.35, 1.55)),
+            Vector((2.10, -3.35, 1.55)),
+            Vector((2.10, -3.35, 0.55)),
+            Vector((0.62, -3.35, 0.55)),
+            Vector((0.62, -3.35, -1.75)),
+            Vector((-0.62, -3.35, -1.75)),
+            Vector((-0.62, -3.35, 0.55)),
+            Vector((-2.10, -3.35, 0.55)),
+        ]
+        profile_json = json.dumps([list(vertex) for vertex in profile])
+        with bpy.context.temp_override(**context_override):
+            result = bpy.ops.leveldesign.prism_cut(
+                action_profile_json=profile_json,
+                action_depth=1.6,
+                action_local_z=(0.0, 1.0, 0.0),
+                reconstruction_mode=RECONSTRUCTION_MODE_QUADS,
+            )
+
+        self.assertIn('FINISHED', result)
+        bm = bmesh.from_edit_mesh(obj.data)
+        selected_vertices = {
+            vertex
+            for edge in bm.edges
+            if edge.select
+            for vertex in edge.verts
+        }
+        self.assertTrue(
+            selected_vertices,
+            "The concave T profile should produce a selected cut boundary",
+        )
+
+        tolerance = 0.0001
+        unbisected_edges = []
+        for vertex in selected_vertices:
+            for edge in bm.edges:
+                if vertex in edge.verts:
+                    continue
+                edge_start = edge.verts[0].co
+                edge_vector = edge.verts[1].co - edge_start
+                edge_length_squared = edge_vector.length_squared
+                if edge_length_squared <= tolerance * tolerance:
+                    continue
+                edge_fraction = (
+                    (vertex.co - edge_start).dot(edge_vector)
+                    / edge_length_squared
+                )
+                endpoint_margin = tolerance / edge_vector.length
+                if not (
+                        endpoint_margin < edge_fraction
+                        < 1.0 - endpoint_margin):
+                    continue
+                closest_point = edge_start + edge_vector * edge_fraction
+                if (closest_point - vertex.co).length <= tolerance:
+                    unbisected_edges.append((
+                        tuple(vertex.co),
+                        tuple(edge.verts[0].co),
+                        tuple(edge.verts[1].co),
+                    ))
+
+        self.assertEqual(
+            unbisected_edges,
+            [],
+            "Every cut-boundary vertex on an existing edge should bisect "
+            f"that edge; unbisected intersections: {unbisected_edges}",
         )
