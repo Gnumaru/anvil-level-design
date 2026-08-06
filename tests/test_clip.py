@@ -644,8 +644,6 @@ class ClipModalTest(AnvilTestCase):
         )
         yield
 
-        yield from self._simulate_key_tap('E')
-
         second_x, second_y = window_points[1]
         window.event_simulate(
             type='MOUSEMOVE', value='NOTHING', x=second_x, y=second_y,
@@ -656,6 +654,18 @@ class ClipModalTest(AnvilTestCase):
         self.assertTrue(all(
             abs(vertex.x) <= 1e-5
             for vertex in preview._clip_plane_vertices
+        ))
+        self.assertEqual(preview._clip_removed_side_vertices, [])
+
+        yield from self._simulate_key_tap('E')
+        self.assertEqual(len(preview._clip_removed_side_vertices), 4)
+        self.assertTrue(all(
+            vertex.x <= 1e-5
+            for vertex in preview._clip_removed_side_vertices
+        ))
+        self.assertTrue(any(
+            vertex.x < -1e-5
+            for vertex in preview._clip_removed_side_vertices
         ))
         window.event_simulate(
             type='LEFTMOUSE', value='PRESS', x=second_x, y=second_y,
@@ -675,6 +685,7 @@ class ClipModalTest(AnvilTestCase):
         )
         self.assertFalse(get_preview()._clip_line_extension_enabled)
         self.assertEqual(get_preview()._clip_plane_vertices, [])
+        self.assertEqual(get_preview()._clip_removed_side_vertices, [])
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertEqual(len(bm.faces), 1)
         self.assertTrue(all(vert.co.x >= -1e-5 for vert in bm.verts))

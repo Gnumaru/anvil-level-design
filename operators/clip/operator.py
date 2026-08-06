@@ -92,9 +92,9 @@ class MESH_OT_clip(ModalDrawBase, bpy.types.Operator):
     def invoke(self, context, event):
         result = super().invoke(context, event)
         if 'RUNNING_MODAL' in result:
-            self._preview.update_clip_removal_segments([])
             self._preview.set_clip_line_extension_enabled(True)
             self._preview.update_clip_plane([])
+            self._preview.update_clip_removed_side([])
         return result
 
     def _is_line_mode_key_held(self, context, event):
@@ -108,12 +108,12 @@ class MESH_OT_clip(ModalDrawBase, bpy.types.Operator):
     def _update_line_end_preview(self, context, event):
         super()._update_line_end_preview(context, event)
         self._refresh_clip_plane(context)
-        self._refresh_removal_indicator(context)
+        self._refresh_removed_side(context)
 
     def _confirm_first_vertex(self, context, event):
         result = super()._confirm_first_vertex(context, event)
         self._refresh_clip_plane(context)
-        self._refresh_removal_indicator(context)
+        self._refresh_removed_side(context)
         return result
 
     def _refresh_clip_plane(self, context):
@@ -173,6 +173,66 @@ class MESH_OT_clip(ModalDrawBase, bpy.types.Operator):
             + grid_normal * normal_max,
         ))
 
+    def _refresh_removed_side(self, context):
+        if (
+                self.clip_mode == geometry.CLIP_MODE_BISECT
+                or getattr(self, "_first_vertex", None) is None
+                or getattr(self, "_line_end", None) is None
+                or getattr(self, "_local_z", None) is None):
+            self._preview.update_clip_removed_side([])
+            return
+
+        line = self._line_end - self._first_vertex
+        if line.length < MIN_RECTANGLE_SIZE:
+            self._preview.update_clip_removed_side([])
+            return
+
+        line_direction = line.normalized()
+        side_direction = self._local_z.normalized().cross(line_direction)
+        if self.clip_mode == geometry.CLIP_MODE_REMOVE_BELOW:
+            side_direction = -side_direction
+        if side_direction.length < MIN_RECTANGLE_SIZE:
+            self._preview.update_clip_removed_side([])
+            return
+        side_direction.normalize()
+
+        world_corners = [
+            context.active_object.matrix_world @ Vector(corner)
+            for corner in context.active_object.bound_box
+        ]
+        relative_corners = [
+            corner - self._first_vertex
+            for corner in world_corners
+        ]
+        line_distances = [0.0, line.length] + [
+            corner.dot(line_direction)
+            for corner in relative_corners
+        ]
+        side_distances = [
+            corner.dot(side_direction)
+            for corner in relative_corners
+        ]
+        margin = max(
+            modal_draw_utils.get_grid_size(context),
+            max(
+                max(line_distances) - min(line_distances),
+                max(side_distances) - min(side_distances),
+            ) * 0.1,
+        )
+        line_min = min(line_distances) - margin
+        line_max = max(line_distances) + margin
+        side_max = max(0.0, max(side_distances)) + margin
+        self._preview.update_clip_removed_side((
+            self._first_vertex + line_direction * line_min,
+            self._first_vertex + line_direction * line_max,
+            self._first_vertex
+            + line_direction * line_max
+            + side_direction * side_max,
+            self._first_vertex
+            + line_direction * line_min
+            + side_direction * side_max,
+        ))
+
     def _confirm_line_end(self, context, event):
         if self._first_vertex is None or self._line_end is None:
             return {'RUNNING_MODAL'}
@@ -214,52 +274,11 @@ class MESH_OT_clip(ModalDrawBase, bpy.types.Operator):
                 self.clip_mode = _MODE_ORDER[
                     (current_index + direction) % len(_MODE_ORDER)
                 ]
-                self._refresh_removal_indicator(context)
+                self._refresh_removed_side(context)
                 self._update_header(context)
                 modal_draw_utils.tag_redraw_all_3d_views()
                 return {'RUNNING_MODAL'}
         return super().modal(context, event)
-
-    def _refresh_removal_indicator(self, context):
-        if (
-                self.clip_mode == geometry.CLIP_MODE_BISECT
-                or getattr(self, "_first_vertex", None) is None
-                or getattr(self, "_line_end", None) is None
-                or getattr(self, "_local_z", None) is None):
-            if hasattr(self, "_preview"):
-                self._preview.update_clip_removal_segments([])
-            return
-
-        line = self._line_end - self._first_vertex
-        if line.length < MIN_RECTANGLE_SIZE:
-            self._preview.update_clip_removal_segments([])
-            return
-        line_direction = line.normalized()
-        side_direction = self._local_z.normalized().cross(line_direction)
-        if self.clip_mode == geometry.CLIP_MODE_REMOVE_BELOW:
-            side_direction = -side_direction
-        if side_direction.length < MIN_RECTANGLE_SIZE:
-            self._preview.update_clip_removal_segments([])
-            return
-        side_direction.normalize()
-
-        grid_size = modal_draw_utils.get_grid_size(context)
-        arrow_length = min(
-            line.length * 0.22,
-            max(grid_size * 0.5, line.length * 0.08),
-        )
-        segments = []
-        for factor in (0.25, 0.5, 0.75):
-            base = self._first_vertex + line * factor
-            tip = base + side_direction * arrow_length
-            wing_offset = line_direction * arrow_length * 0.28
-            wing_back = side_direction * arrow_length * 0.36
-            segments.extend((
-                (base, tip),
-                (tip, tip - wing_back + wing_offset),
-                (tip, tip - wing_back - wing_offset),
-            ))
-        self._preview.update_clip_removal_segments(segments)
 
     def _execute_action(self, context, first_vertex, second_vertex, depth,
                         local_x, local_y, local_z):

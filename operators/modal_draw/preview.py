@@ -23,9 +23,9 @@ COLOR_DEPTH_INDICATOR = (0.0, 1.0, 0.5, 0.9)  # Green - depth direction
 COLOR_GRID_POINT = (0.7, 0.7, 0.7)            # Light grey (no alpha - set per-point)
 COLOR_INVALID = (1.0, 0.05, 0.0, 0.95)        # Red - invalid candidate
 COLOR_CUT_VERTEX = (1.0, 1.0, 1.0, 1.0)       # White - predicted cut vertex
-COLOR_CLIP_REMOVAL = (0.45, 0.45, 0.45, 0.9)  # Grey - side removed by Clip
 COLOR_CLIP_LINE_EXTENSION = (0.7, 0.7, 0.7, 0.75)
 COLOR_CLIP_PLANE = (0.3, 0.55, 0.75, 0.12)
+COLOR_CLIP_REMOVED_SIDE = (1.0, 0.08, 0.02, 0.14)
 
 POINT_SIZE = 10.0
 LINE_WIDTH = 2.0
@@ -93,10 +93,9 @@ class ModalDrawPreview:
         self._custom_wire_measurements = []
         self._custom_wire_valid = True
 
-        # Simple directional arrows on the side removed by the Clip tool.
-        self._clip_removal_segments = []
         self._clip_line_extension_enabled = False
         self._clip_plane_vertices = []
+        self._clip_removed_side_vertices = []
 
         # Prefab placement ghost data
         self._prefab_ghost = None
@@ -223,13 +222,6 @@ class ModalDrawPreview:
         self._custom_wire_measurements = []
         self._custom_wire_valid = True
 
-    def update_clip_removal_segments(self, segments):
-        """Replace the grey directional segments used by the Clip preview."""
-        self._clip_removal_segments = [
-            (Vector(start).copy(), Vector(end).copy())
-            for start, end in segments
-        ]
-
     def set_clip_line_extension_enabled(self, enabled):
         """Show dim continuation rays beyond the Clip input points."""
         self._clip_line_extension_enabled = enabled
@@ -237,6 +229,13 @@ class ModalDrawPreview:
     def update_clip_plane(self, vertices):
         """Replace the translucent quad representing the Clip plane."""
         self._clip_plane_vertices = [
+            Vector(vertex).copy()
+            for vertex in vertices
+        ]
+
+    def update_clip_removed_side(self, vertices):
+        """Replace the translucent grid-plane quad on the removed side."""
+        self._clip_removed_side_vertices = [
             Vector(vertex).copy()
             for vertex in vertices
         ]
@@ -298,9 +297,9 @@ class ModalDrawPreview:
         self._custom_wire_edges = []
         self._custom_wire_measurements = []
         self._custom_wire_valid = True
-        self._clip_removal_segments = []
         self._clip_line_extension_enabled = False
         self._clip_plane_vertices = []
+        self._clip_removed_side_vertices = []
         self._prefab_ghost = None
         self._ghost_matrix = None
 
@@ -325,12 +324,9 @@ class ModalDrawPreview:
             elif self._state == 'LINE_END':
                 self._draw_face_grid()
                 self._draw_snap_point()
+                self._draw_clip_removed_side()
                 self._draw_clip_plane()
                 self._draw_line_preview()
-                self._draw_segments(
-                    self._clip_removal_segments,
-                    COLOR_CLIP_REMOVAL,
-                )
             elif self._state == 'SECOND_VERTEX':
                 if self._custom_wire_vertices is not None:
                     self._draw_edges(
@@ -931,17 +927,31 @@ class ModalDrawPreview:
 
     def _draw_clip_plane(self):
         """Draw the simple translucent wall representing the Clip plane."""
-        if len(self._clip_plane_vertices) != 4:
+        self._draw_translucent_quad(
+            self._clip_plane_vertices,
+            COLOR_CLIP_PLANE,
+        )
+
+    def _draw_clip_removed_side(self):
+        """Draw a red grid-plane panel over the side Clip will remove."""
+        self._draw_translucent_quad(
+            self._clip_removed_side_vertices,
+            COLOR_CLIP_REMOVED_SIDE,
+        )
+
+    def _draw_translucent_quad(self, vertices, color):
+        """Draw one translucent world-space quad."""
+        if len(vertices) != 4:
             return
 
         try:
             shader = gpu.shader.from_builtin('UNIFORM_COLOR')
             shader.bind()
-            shader.uniform_float("color", COLOR_CLIP_PLANE)
+            shader.uniform_float("color", color)
             batch = batch_for_shader(
                 shader,
                 'TRIS',
-                {"pos": [vertex[:] for vertex in self._clip_plane_vertices]},
+                {"pos": [vertex[:] for vertex in vertices]},
                 indices=((0, 1, 2), (0, 2, 3)),
             )
             batch.draw(shader)
