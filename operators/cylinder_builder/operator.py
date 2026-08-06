@@ -97,6 +97,7 @@ class MESH_OT_cylinder_builder(
     action_local_x: FloatVectorProperty(size=3)
     action_local_y: FloatVectorProperty(size=3)
     action_local_z: FloatVectorProperty(size=3)
+    action_view_forward: FloatVectorProperty(size=3)
     action_had_selection: BoolProperty()
     action_was_edit_mode: BoolProperty()
     action_object_name: StringProperty()
@@ -121,6 +122,7 @@ class MESH_OT_cylinder_builder(
         difference = second_vertex - first_vertex
         radius_x = abs(difference.dot(local_x))
         radius_y = abs(difference.dot(local_y))
+        view_forward = context.region_data.view_rotation @ Vector((0, 0, -1))
         return self._execute_cylinder_builder(
             context,
             first_vertex,
@@ -130,6 +132,7 @@ class MESH_OT_cylinder_builder(
             local_x,
             local_y,
             local_z,
+            view_forward,
             self._side_count,
             self._radius_mode,
             context.mode == 'EDIT_MESH',
@@ -139,8 +142,8 @@ class MESH_OT_cylinder_builder(
 
     def _execute_cylinder_builder(
             self, context, center, radius_x, radius_y, depth, local_x,
-            local_y, local_z, side_count, radius_mode, action_was_edit_mode,
-            action_object_name, name_suffix):
+            local_y, local_z, view_forward, side_count, radius_mode,
+            action_was_edit_mode, action_object_name, name_suffix):
         pixels_per_meter = context.scene.level_design_props.pixels_per_meter
 
         if not action_was_edit_mode:
@@ -152,6 +155,7 @@ class MESH_OT_cylinder_builder(
                 local_x,
                 local_y,
                 local_z,
+                view_forward,
                 side_count,
                 radius_mode,
                 pixels_per_meter,
@@ -176,6 +180,7 @@ class MESH_OT_cylinder_builder(
             local_x,
             local_y,
             local_z,
+            view_forward,
             side_count,
             radius_mode,
             obj,
@@ -199,6 +204,9 @@ class MESH_OT_cylinder_builder(
         self.action_local_x = local_x
         self.action_local_y = local_y
         self.action_local_z = local_z
+        self.action_view_forward = (
+            context.region_data.view_rotation @ Vector((0, 0, -1))
+        )
         self.action_had_selection = self._had_selection
         self.action_was_edit_mode = context.mode == 'EDIT_MESH'
         active_object = context.active_object
@@ -219,6 +227,7 @@ class MESH_OT_cylinder_builder(
             Vector(self.action_local_x),
             Vector(self.action_local_y),
             Vector(self.action_local_z),
+            Vector(self.action_view_forward),
             self.side_count,
             self.radius_mode,
             self.action_was_edit_mode,

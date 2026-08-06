@@ -48,6 +48,7 @@ class MESH_OT_prism_builder(
     action_profile_json: StringProperty()
     action_depth: FloatProperty()
     action_local_z: FloatVectorProperty(size=3)
+    action_view_forward: FloatVectorProperty(size=3)
     action_had_selection: BoolProperty()
     action_was_edit_mode: BoolProperty()
     action_object_name: StringProperty()
@@ -63,18 +64,20 @@ class MESH_OT_prism_builder(
 
     def _execute_action(self, context, first_vertex, second_vertex, depth,
                         local_x, local_y, local_z):
+        view_forward = context.region_data.view_rotation @ Vector((0, 0, -1))
         return self._execute_prism_builder(
             context,
             self._profile_vertices,
             depth,
             local_z,
+            view_forward,
             context.mode == 'EDIT_MESH',
             context.active_object.name if context.active_object is not None else "",
             self.name_suffix,
         )
 
     def _execute_prism_builder(
-            self, context, profile_vertices, depth, local_z,
+            self, context, profile_vertices, depth, local_z, view_forward,
             action_was_edit_mode, action_object_name, name_suffix):
         if not profile_vertices:
             return (False, "Prism profile must contain at least three points")
@@ -85,6 +88,7 @@ class MESH_OT_prism_builder(
                 profile_vertices,
                 depth,
                 local_z,
+                view_forward,
                 pixels_per_meter,
                 self.prefer_quads,
                 name_suffix,
@@ -102,6 +106,7 @@ class MESH_OT_prism_builder(
             profile_vertices,
             depth,
             local_z,
+            view_forward,
             obj,
             pixels_per_meter,
             self.keep_anti_parallel_coplanar_faces,
@@ -118,6 +123,9 @@ class MESH_OT_prism_builder(
         self.action_profile_json = profile_to_json(self._profile_vertices)
         self.action_depth = depth
         self.action_local_z = local_z
+        self.action_view_forward = (
+            context.region_data.view_rotation @ Vector((0, 0, -1))
+        )
         self.action_had_selection = self._had_selection
         self.action_was_edit_mode = context.mode == 'EDIT_MESH'
         active_object = context.active_object
@@ -137,6 +145,7 @@ class MESH_OT_prism_builder(
                 profile_vertices,
                 self.action_depth,
                 Vector(self.action_local_z),
+                Vector(self.action_view_forward),
                 self.action_was_edit_mode,
                 self.action_object_name,
                 self.name_suffix,

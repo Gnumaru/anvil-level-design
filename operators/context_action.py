@@ -24,8 +24,9 @@ class ContextAction:
 _MESH_ACTION_PRESENTATION = {
     'BRIDGE': ("Bridge Edge Loops", 'AUTOMERGE_ON', "leveldesign.weld_bridge"),
     'CORRIDOR': ("Create Corridor", 'AUTOMERGE_ON', "leveldesign.weld_corridor"),
-    'INVERT': ("Invert Box", 'NORMALS_FACE', "leveldesign.weld_invert"),
+    'INVERT': ("Invert", 'NORMALS_FACE', "leveldesign.weld_invert"),
     'FOLDED_PLANE': ("Complete Folded Plane", 'AUTOMERGE_ON', "leveldesign.weld_folded_plane"),
+    'FILL_LOOPS': ("Fill Clip Loops", 'FACESEL', "leveldesign.weld_fill_loops"),
 }
 _queued_action = None
 
@@ -169,6 +170,8 @@ def _run_queued_action():
                         coplanar_blocked=pending.coplanar_blocked,
                         is_cylinder=False,
                     )
+            elif action.kind == 'FILL_LOOPS':
+                result = bpy.ops.leveldesign.weld_fill_loops()
             if 'FINISHED' in result:
                 bpy.ops.ed.undo_push(message=action.label)
     except (ReferenceError, RuntimeError) as exc:

@@ -109,21 +109,6 @@ def _draw_status_tool_header(layout, text):
     header.label(text=text)
 
 
-class LEVELDESIGN_OT_future_shape_tool(Operator):
-    """Placeholder for a planned Anvil shape tool"""
-
-    bl_idname = "leveldesign.future_shape_tool"
-    bl_label = "Future Shape Tool"
-
-    @classmethod
-    def poll(cls, context):
-        return is_level_design_workspace()
-
-    def execute(self, context):
-        self.report({'INFO'}, "This Anvil shape tool is coming in a future update")
-        return {'FINISHED'}
-
-
 class LEVELDESIGN_PT_status_panel(Panel):
     """Status Panel"""
 
@@ -274,9 +259,9 @@ class LEVELDESIGN_PT_status_panel(Panel):
         )
         _draw_status_tool_button(
             cutters,
-            "leveldesign.future_shape_tool",
-            'BLANK1',
-            False,
+            "leveldesign.clip",
+            'MOD_BOOLEAN',
+            True,
         )
 
 
@@ -1274,7 +1259,6 @@ class LEVELDESIGN_PT_debug_panel(Panel):
 # order in Blender is locked in by the order each category is first
 # encountered during registration.
 materials_classes = (
-    LEVELDESIGN_OT_future_shape_tool,
     LEVELDESIGN_PT_status_panel,
     LEVELDESIGN_OT_set_active_render_uv,
     LEVELDESIGN_OT_toggle_uv_lock,

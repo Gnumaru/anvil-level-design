@@ -15,6 +15,7 @@ from . import modal_draw
 from . import cube_cut
 from . import cylinder_cut
 from . import prism_cut
+from . import clip
 from . import box_builder
 from . import cylinder_builder
 from . import prism_builder
@@ -54,6 +55,7 @@ def register():
     cube_cut.register()
     cylinder_cut.register()
     prism_cut.register()
+    clip.register()
     box_builder.register()
     cylinder_builder.register()
     prism_builder.register()
@@ -95,6 +97,7 @@ def unregister():
     prism_builder.unregister()
     cylinder_builder.unregister()
     box_builder.unregister()
+    clip.unregister()
     prism_cut.unregister()
     cylinder_cut.unregister()
     cube_cut.unregister()

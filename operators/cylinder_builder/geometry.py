@@ -11,6 +11,7 @@ from ..profile_builder_geometry import (
 
 def execute_cylinder_builder_edit_mode(
         center, radius_x, radius_y, depth, local_x, local_y, local_z,
+        view_forward,
         side_count, radius_mode, obj, ppm, skip_caps, cap_fill):
     if radius_x < MIN_RECTANGLE_SIZE or radius_y < MIN_RECTANGLE_SIZE:
         return (False, "Cylinder radii must be greater than zero")
@@ -28,6 +29,7 @@ def execute_cylinder_builder_edit_mode(
         profile_vertices,
         depth,
         local_z,
+        view_forward,
         obj,
         ppm,
         cap_mode,
@@ -38,6 +40,7 @@ def execute_cylinder_builder_edit_mode(
 
 def execute_cylinder_builder_object_mode(
         center, radius_x, radius_y, depth, local_x, local_y, local_z,
+        view_forward,
         side_count, radius_mode, ppm, skip_caps, cap_fill, name_suffix):
     if radius_x < MIN_RECTANGLE_SIZE or radius_y < MIN_RECTANGLE_SIZE:
         return (False, "Cylinder radii must be greater than zero")
@@ -55,6 +58,7 @@ def execute_cylinder_builder_object_mode(
         profile_vertices,
         depth,
         local_z,
+        view_forward,
         ppm,
         cap_mode,
         "Anvil.Cylinder",

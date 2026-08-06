@@ -256,11 +256,72 @@ class LEVELDESIGN_OT_weld_bridge(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class LEVELDESIGN_OT_weld_fill_loops(bpy.types.Operator):
+    """Fill the closed edge loops left by a removal Clip operation"""
+
+    bl_idname = "leveldesign.weld_fill_loops"
+    bl_label = "Fill Clip Loops"
+    bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            is_level_design_workspace()
+            and _edit_action_poll(
+                context.active_object, context.mode, 'FILL_LOOPS',
+            )
+        )
+
+    def execute(self, context):
+        obj = context.active_object
+        bm = bmesh.from_edit_mesh(obj.data)
+        action = _resolve_edit_action(
+            obj, context.mode, bm, 'FILL_LOOPS',
+        )
+        if action is None:
+            return {'CANCELLED'}
+
+        existing_faces = _snapshot_existing_faces(bm)
+        from .clip.geometry import fill_selected_edge_loops
+        try:
+            fill_selected_edge_loops(bm, action.prefer_quads)
+        except (RuntimeError, ValueError) as exc:
+            self.report({'ERROR'}, f"Fill Clip Loops failed: {exc}")
+            return {'CANCELLED'}
+
+        created_faces = [
+            face
+            for face in bm.faces
+            if face.is_valid and face not in existing_faces
+        ]
+        if not created_faces:
+            self.report({'ERROR'}, "No clip loops could be filled")
+            return {'CANCELLED'}
+
+        from ..handlers.new_face_projection import project_new_faces_for_object
+        from ..handlers.face_cache import cache_face_data_for_objects
+        pixels_per_meter = context.scene.level_design_props.pixels_per_meter
+        project_new_faces_for_object(obj, pixels_per_meter, bm)
+        cache_face_data_for_objects(
+            context.view_layer.objects,
+            pixels_per_meter,
+        )
+        _select_new_faces(bm, existing_faces)
+        context.tool_settings.mesh_select_mode = (False, False, True)
+        complete_pending_action(obj, action, bm)
+        bmesh.update_edit_mesh(obj.data)
+        self.report(
+            {'INFO'},
+            f"Filled {len(created_faces)} clip loop faces",
+        )
+        return {'FINISHED'}
+
+
 class LEVELDESIGN_OT_weld_invert(bpy.types.Operator):
-    """Invert the box faces captured by the pending action"""
+    """Invert the faces captured by the pending action"""
 
     bl_idname = "leveldesign.weld_invert"
-    bl_label = "Invert Box"
+    bl_label = "Invert"
     bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
 
     face_indices: StringProperty(options={'HIDDEN', 'SKIP_SAVE'})
@@ -664,6 +725,7 @@ class LEVELDESIGN_OT_weld_folded_plane(bpy.types.Operator):
 
 _CLASSES = (
     LEVELDESIGN_OT_weld_bridge,
+    LEVELDESIGN_OT_weld_fill_loops,
     LEVELDESIGN_OT_weld_invert,
     LEVELDESIGN_OT_weld_corridor,
     LEVELDESIGN_OT_weld_folded_plane,

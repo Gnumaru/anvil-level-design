@@ -38,6 +38,7 @@ _CYLINDER_LAYERS = (
 _CYLINDER_SIDE_COUNT_LAYER = "_aw_csc"
 _CYLINDER_RADIUS_MODE_LAYER = "_aw_crm"
 _COPLANAR_LAYER = "_aw_copl"
+_PREFER_QUADS_LAYER = "_aw_pq"
 _OBJECT_MODE_PROP = "_aw_mode"
 _MODE_TO_INT = {
     'NONE': 0,
@@ -45,6 +46,7 @@ _MODE_TO_INT = {
     'CORRIDOR': 2,
     'INVERT': 3,
     'FOLDED_PLANE': 4,
+    'FILL_LOOPS': 5,
 }
 _INT_TO_MODE = {value: key for key, value in _MODE_TO_INT.items()}
 _RADIUS_MODE_TO_INT = {'EDGES': 1, 'FACES': 2}
@@ -62,6 +64,7 @@ class PendingMeshAction:
     cuboid_params: object
     cylinder_params: object
     coplanar_blocked: int
+    prefer_quads: bool
     object_mode: bool
 
 
@@ -156,7 +159,8 @@ def _set_on_bmesh(
         box_faces,
         cuboid_params,
         cylinder_params,
-        coplanar_blocked):
+        coplanar_blocked,
+        prefer_quads):
     box_indices = {face.index for face in box_faces} if box_faces is not None else None
     mode_layer = bm.verts.layers.int.get(_MODE_LAYER) or bm.verts.layers.int.new(_MODE_LAYER)
     depth_layer = bm.verts.layers.float.get(_DEPTH_LAYER) or bm.verts.layers.float.new(_DEPTH_LAYER)
@@ -195,6 +199,12 @@ def _set_on_bmesh(
             bm.verts.layers.int.get(_COPLANAR_LAYER)
             or bm.verts.layers.int.new(_COPLANAR_LAYER)
         )
+    prefer_quads_layer = None
+    if prefer_quads is not None:
+        prefer_quads_layer = (
+            bm.verts.layers.int.get(_PREFER_QUADS_LAYER)
+            or bm.verts.layers.int.new(_PREFER_QUADS_LAYER)
+        )
 
     # Creating any custom-data layer can invalidate existing element refs.
     bm.verts.ensure_lookup_table()
@@ -232,6 +242,8 @@ def _set_on_bmesh(
 
     if coplanar_blocked is not None:
         first_vert[coplanar_layer] = coplanar_blocked
+    if prefer_quads is not None:
+        first_vert[prefer_quads_layer] = 1 if prefer_quads else 0
 
 
 def _read_from_bmesh(bm):
@@ -285,6 +297,11 @@ def _read_from_bmesh(bm):
             )
     coplanar_layer = bm.verts.layers.int.get(_COPLANAR_LAYER)
     coplanar_blocked = first_vert[coplanar_layer] if coplanar_layer is not None else 0
+    prefer_quads_layer = bm.verts.layers.int.get(_PREFER_QUADS_LAYER)
+    prefer_quads = (
+        bool(first_vert[prefer_quads_layer])
+        if prefer_quads_layer is not None else True
+    )
     face_layer = bm.faces.layers.int.get(_FACE_LAYER)
     face_indices = ()
     if face_layer is not None:
@@ -299,6 +316,7 @@ def _read_from_bmesh(bm):
         cuboid_params,
         cylinder_params,
         coplanar_blocked,
+        prefer_quads,
         False,
     )
 
@@ -323,7 +341,8 @@ def clear_on_bmesh(bm):
                 first_vert[layer] = 0.0
         for name in (
                 _CYLINDER_SIDE_COUNT_LAYER,
-                _CYLINDER_RADIUS_MODE_LAYER):
+                _CYLINDER_RADIUS_MODE_LAYER,
+                _PREFER_QUADS_LAYER):
             layer = bm.verts.layers.int.get(name)
             if layer is not None:
                 first_vert[layer] = 0
@@ -344,7 +363,7 @@ def _read_object_mode(obj):
     if kind not in _MODE_TO_INT or kind == 'NONE':
         return None
     return PendingMeshAction(
-        kind, 0.0, (0.0, 0.0, 0.0), 0.0, (), None, None, 0, True,
+        kind, 0.0, (0.0, 0.0, 0.0), 0.0, (), None, None, 0, True, True,
     )
 
 
@@ -614,7 +633,7 @@ def store_from_edge_selection(
     stored_coplanar = coplanar_blocked if kind == 'FOLDED_PLANE' else None
     _set_on_bmesh(
         bm, kind, effective_depth, tuple(direction), back_plane_offset,
-        None, stored_cuboid, None, stored_coplanar,
+        None, stored_cuboid, None, stored_coplanar, None,
     )
     bmesh.update_edit_mesh(obj.data)
     if kind == 'NONE':
@@ -648,6 +667,7 @@ def store_cylinder_from_edge_selection(
         None,
         stored_cylinder,
         None,
+        None,
     )
     bmesh.update_edit_mesh(obj.data)
     if kind == 'NONE':
@@ -674,6 +694,7 @@ def store_prism_from_edge_selection(
         None,
         None,
         None,
+        None,
     )
     bmesh.update_edit_mesh(obj.data)
     if kind == 'NONE':
@@ -681,6 +702,35 @@ def store_prism_from_edge_selection(
     else:
         _arm(obj, kind, False, bm)
     debug_log(f"[ContextAction] Stored prism {kind} on '{obj.name}'")
+
+
+def store_clip_fill_from_edge_selection(
+        obj, removal_mode, prefer_quads):
+    """Arm Fill Clip Loops when a removal clip leaves a selected loop."""
+    if obj is None or obj.type != 'MESH' or not obj.data.is_editmode:
+        return
+    bm = bmesh.from_edit_mesh(obj.data)
+    from .clip.geometry import find_selected_edge_loops
+    edge_loops = find_selected_edge_loops(bm) if removal_mode else []
+    kind = 'FILL_LOOPS' if edge_loops else 'NONE'
+    _set_on_bmesh(
+        bm,
+        kind,
+        0.0,
+        (0.0, 0.0, 0.0),
+        0.0,
+        None,
+        None,
+        None,
+        None,
+        prefer_quads if kind == 'FILL_LOOPS' else None,
+    )
+    bmesh.update_edit_mesh(obj.data)
+    if kind == 'NONE':
+        reset_runtime_state()
+    else:
+        _arm(obj, kind, False, bm)
+    debug_log(f"[ContextAction] Stored clip {kind} on '{obj.name}'")
 
 
 def store_from_shape_builder(obj, new_face_vert_positions):
@@ -698,7 +748,7 @@ def store_from_shape_builder(obj, new_face_vert_positions):
         return
     _set_on_bmesh(
         bm, 'INVERT', 0.0, (0.0, 0.0, 0.0), 0.0,
-        shape_faces, None, None, None,
+        shape_faces, None, None, None, None,
     )
     bmesh.update_edit_mesh(obj.data)
     _arm(obj, 'INVERT', False, bm)

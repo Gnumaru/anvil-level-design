@@ -1,6 +1,7 @@
 from array import array
 
 import blf
+import bmesh
 import bpy
 import gpu
 import imbuf
@@ -53,6 +54,9 @@ _REQUIRED_OPERATORS = [
 
 
 class APIAvailabilityTest(AnvilTestCase):
+
+    def test_mesh_plane_bisect_api_is_available_for_clip_tool(self):
+        self.assertTrue(hasattr(bmesh.ops, "bisect_plane"))
 
     def test_operator_property_keyword_export_api_is_available_for_modal_view_handoff(self):
         self.assertTrue(hasattr(bpy.types.Operator, "as_keywords"))

@@ -831,6 +831,15 @@ def get_best_neighbor_face(face, excluded_faces, id_layer, allow_fallback=True):
 
 
 def project_new_faces(context, bm):
+    """Compatibility entry point for existing handler and operator callers."""
+    project_new_faces_for_object(
+        context.object,
+        context.scene.level_design_props.pixels_per_meter,
+        bm,
+    )
+
+
+def project_new_faces_for_object(obj, ppm, bm):
     """Apply UV projection to newly created faces after topology changes.
 
     Uses a BFS approach to handle both new faces and existing faces displaced
@@ -844,14 +853,10 @@ def project_new_faces(context, bm):
     """
     from ..operators.texture_apply import set_uv_from_other_face, set_uv_from_source_params
 
-    obj = context.object
     me = obj.data
     unlocked_layers = get_unlocked_uv_layers(bm, obj, me)
     if not unlocked_layers:
         return
-
-    props = context.scene.level_design_props
-    ppm = props.pixels_per_meter
 
     id_layer = get_face_id_layer(bm)
 

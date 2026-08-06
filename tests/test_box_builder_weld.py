@@ -377,19 +377,19 @@ class BoxBuilderWeldTest(AnvilTestCase):
         self.assertEqual(get_context_action_kind(), 'NONE',
                          "Weld mode should be NONE after executing invert")
 
-    def test_object_mode_invert_selecting_another_object_consumes_next_weld_and_reselecting_box_does_not_restore_it(self):
-        box_mesh = bpy.data.meshes.new("transient_invert_box_mesh")
-        box_obj = bpy.data.objects.new("transient_invert_box", box_mesh)
-        bpy.context.collection.objects.link(box_obj)
+    def test_object_mode_invert_selecting_another_object_consumes_next_weld_and_reselecting_shape_does_not_restore_it(self):
+        shape_mesh = bpy.data.meshes.new("transient_invert_shape_mesh")
+        shape_obj = bpy.data.objects.new("transient_invert_shape", shape_mesh)
+        bpy.context.collection.objects.link(shape_obj)
         other_mesh = bpy.data.meshes.new("transient_invert_other_mesh")
         other_obj = bpy.data.objects.new("transient_invert_other", other_mesh)
         bpy.context.collection.objects.link(other_obj)
-        bpy.context.view_layer.objects.active = box_obj
-        box_obj.select_set(True)
-        store_from_shape_builder_object_mode(box_obj)
+        bpy.context.view_layer.objects.active = shape_obj
+        shape_obj.select_set(True)
+        store_from_shape_builder_object_mode(shape_obj)
         self.assertEqual(get_context_action_kind(), 'INVERT')
 
-        box_obj.select_set(False)
+        shape_obj.select_set(False)
         other_obj.select_set(True)
         bpy.context.view_layer.objects.active = other_obj
         yield from wait_for_condition(
@@ -398,15 +398,15 @@ class BoxBuilderWeldTest(AnvilTestCase):
         )
 
         other_obj.select_set(False)
-        box_obj.select_set(True)
-        bpy.context.view_layer.objects.active = box_obj
+        shape_obj.select_set(True)
+        bpy.context.view_layer.objects.active = shape_obj
         yield
         self.assertEqual(
             get_context_action_kind(),
             'NONE',
-            "Reselecting an old box must not restore its consumed Invert weld",
+            "Reselecting an old shape must not restore its consumed Invert weld",
         )
-        self.assertNotIn("_aw_mode", box_mesh)
+        self.assertNotIn("_aw_mode", shape_mesh)
 
     def test_object_mode_pending_action_replacement_save_and_reload_does_not_restore_first_object_action(self):
         """Replacing A with B prevents A's pending action returning after reload."""

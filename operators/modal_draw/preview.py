@@ -23,6 +23,7 @@ COLOR_DEPTH_INDICATOR = (0.0, 1.0, 0.5, 0.9)  # Green - depth direction
 COLOR_GRID_POINT = (0.7, 0.7, 0.7)            # Light grey (no alpha - set per-point)
 COLOR_INVALID = (1.0, 0.05, 0.0, 0.95)        # Red - invalid candidate
 COLOR_CUT_VERTEX = (1.0, 1.0, 1.0, 1.0)       # White - predicted cut vertex
+COLOR_CLIP_REMOVAL = (0.45, 0.45, 0.45, 0.9)  # Grey - side removed by Clip
 
 POINT_SIZE = 10.0
 LINE_WIDTH = 2.0
@@ -87,6 +88,9 @@ class ModalDrawPreview:
         self._custom_wire_edges = []
         self._custom_wire_measurements = []
         self._custom_wire_valid = True
+
+        # Simple directional arrows on the side removed by the Clip tool.
+        self._clip_removal_segments = []
 
         # Prefab placement ghost data
         self._prefab_ghost = None
@@ -213,6 +217,13 @@ class ModalDrawPreview:
         self._custom_wire_measurements = []
         self._custom_wire_valid = True
 
+    def update_clip_removal_segments(self, segments):
+        """Replace the grey directional segments used by the Clip preview."""
+        self._clip_removal_segments = [
+            (Vector(start).copy(), Vector(end).copy())
+            for start, end in segments
+        ]
+
     def set_prefab_ghost(self, prefab_ghost):
         """Set local-space albedo data for the prefab placement ghost."""
         self._prefab_ghost = prefab_ghost
@@ -270,6 +281,7 @@ class ModalDrawPreview:
         self._custom_wire_edges = []
         self._custom_wire_measurements = []
         self._custom_wire_valid = True
+        self._clip_removal_segments = []
         self._prefab_ghost = None
         self._ghost_matrix = None
 
@@ -295,6 +307,10 @@ class ModalDrawPreview:
                 self._draw_face_grid()
                 self._draw_snap_point()
                 self._draw_line_preview()
+                self._draw_segments(
+                    self._clip_removal_segments,
+                    COLOR_CLIP_REMOVAL,
+                )
             elif self._state == 'SECOND_VERTEX':
                 if self._custom_wire_vertices is not None:
                     self._draw_edges(

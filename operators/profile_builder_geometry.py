@@ -32,7 +32,7 @@ CAP_MODES = {
 
 
 def execute_profile_builder_edit_mode(
-        profile_vertices, depth, local_z, obj, ppm, cap_mode,
+        profile_vertices, depth, local_z, view_forward, obj, ppm, cap_mode,
         keep_anti_parallel_coplanar_faces, shape_name):
     """Add a captured profile prism to an existing edit-mode mesh."""
     if obj is None or obj.type != 'MESH':
@@ -89,8 +89,19 @@ def execute_profile_builder_edit_mode(
             depth,
             local_z,
         )
+        plane_normal = (
+            _view_facing_normal(obj.matrix_world, view_forward)
+            if is_plane
+            else None
+        )
         new_faces, cap_faces_to_process, new_vertices = (
-            _create_profile_geometry(bm, prism, is_plane, cap_mode)
+            _create_profile_geometry(
+                bm,
+                prism,
+                is_plane,
+                cap_mode,
+                plane_normal,
+            )
         )
     except ValueError as error:
         return (False, f"Invalid {shape_name.lower()} geometry: {error}")
@@ -146,7 +157,7 @@ def execute_profile_builder_edit_mode(
 
 
 def execute_profile_builder_object_mode(
-        profile_vertices, depth, local_z, ppm, cap_mode, base_name,
+        profile_vertices, depth, local_z, view_forward, ppm, cap_mode, base_name,
         name_suffix, origin_world, shape_name):
     """Create a new object from a captured world-space profile prism."""
     matrix_world = Matrix.Identity(4)
@@ -177,8 +188,19 @@ def execute_profile_builder_object_mode(
             depth,
             local_z,
         )
+        plane_normal = (
+            _view_facing_normal(matrix_world, view_forward)
+            if is_plane
+            else None
+        )
         new_faces, cap_faces_to_process, new_vertices = (
-            _create_profile_geometry(bm, prism, is_plane, cap_mode)
+            _create_profile_geometry(
+                bm,
+                prism,
+                is_plane,
+                cap_mode,
+                plane_normal,
+            )
         )
     except ValueError as error:
         bm.free()
@@ -255,7 +277,17 @@ def _build_profile_prism(matrix_world, profile_vertices, depth, local_z):
     return (prism, is_plane)
 
 
-def _create_profile_geometry(bm, prism, is_plane, cap_mode):
+def _view_facing_normal(matrix_world, view_forward):
+    """Return the object-local normal that points back toward the camera."""
+    world_to_local_rotation = matrix_world.inverted().to_3x3()
+    local_view_forward = world_to_local_rotation @ Vector(view_forward)
+    if local_view_forward.length <= EPSILON:
+        raise ValueError("View direction must have non-zero length")
+    return -local_view_forward.normalized()
+
+
+def _create_profile_geometry(
+        bm, prism, is_plane, cap_mode, plane_normal):
     cap_vertices = [bm.verts.new(vertex) for vertex in prism.cap_vertices]
     all_new_vertices = list(cap_vertices)
     cap_faces_to_process = []
@@ -264,7 +296,7 @@ def _create_profile_geometry(bm, prism, is_plane, cap_mode):
         created_caps = _create_cap_faces(
             bm,
             cap_vertices,
-            prism.planes[0][1],
+            plane_normal,
             cap_mode,
         )
         if cap_mode == CAP_MODE_PREFER_QUADS:
