@@ -1,6 +1,6 @@
 # Anvil Level Design Changelog
 
-# 1.8.7
+# 1.9.0
 - Add CYLINDER BUILDER
 - Add CYLINDER CUT
 - Add PRISM BUILDER
@@ -19,6 +19,7 @@
 - Added a new material template {encodedRelativePath}
 - Changing grid cell in UV Transform mode is less sensitive
 - Applying textures in object mode now applies to all objects
+- Improve UVs on inverted shapes
 
 # 1.8.6
 - Fix texture browser overlay in Blender 5.2

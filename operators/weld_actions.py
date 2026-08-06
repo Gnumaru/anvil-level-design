@@ -10,7 +10,10 @@ from mathutils import Vector
 from ..core.face_id import get_face_id_layer
 from ..core.geometry import compute_normal_from_verts
 from ..core.logging import debug_log
+from ..core.uv_layers import get_render_active_uv_layer
+from ..core.uv_projection import box_project
 from ..core.workspace_check import is_level_design_workspace
+from ..handlers import cache_single_face
 from .pending_mesh_action import (
     build_cylinder_weld_profile,
     complete_pending_action,
@@ -58,6 +61,36 @@ def _clear_selection(bm):
     for vert in bm.verts:
         vert.select = False
     bm.select_flush(False)
+
+
+def _reproject_face_uvs_after_invert(
+        obj, bm, face_indices, pixels_per_meter):
+    """Give inverted builder faces the same projection as newly built faces."""
+    uv_layer = get_render_active_uv_layer(bm, obj.data)
+    if uv_layer is None:
+        uv_layer = bm.loops.layers.uv.active
+    if uv_layer is None:
+        return
+
+    # Ensure cache_single_face cannot invalidate the face references below by
+    # creating this custom-data layer during the loop.
+    get_face_id_layer(bm)
+    bm.faces.ensure_lookup_table()
+    bm.normal_update()
+
+    for index in face_indices:
+        if index >= len(bm.faces):
+            continue
+        face = bm.faces[index]
+        if not face.is_valid:
+            continue
+        material = (
+            obj.data.materials[face.material_index]
+            if face.material_index < len(obj.data.materials)
+            else None
+        )
+        box_project(face, uv_layer, material, pixels_per_meter, 1.0)
+        cache_single_face(face, bm, pixels_per_meter, obj.data)
 
 
 def _snapshot_existing_faces(bm):
@@ -377,6 +410,20 @@ class LEVELDESIGN_OT_weld_invert(bpy.types.Operator):
                 bpy.ops.object.mode_set(mode='OBJECT')
             self.report({'ERROR'}, f"Invert failed: {exc}")
             return {'CANCELLED'}
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        inverted_face_indices = (
+            tuple(range(len(bm.faces)))
+            if entered_edit
+            else target_indices
+        )
+        pixels_per_meter = context.scene.level_design_props.pixels_per_meter
+        _reproject_face_uvs_after_invert(
+            obj,
+            bm,
+            inverted_face_indices,
+            pixels_per_meter,
+        )
 
         if entered_edit:
             bpy.ops.object.mode_set(mode='OBJECT')
