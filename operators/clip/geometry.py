@@ -38,7 +38,34 @@ def _clear_selection(bm):
     bm.select_flush(False)
 
 
-def quadrangulate_faces(bm, faces):
+def _face_components_without_protected_edges(faces, protected_edges):
+    remaining = {
+        face
+        for face in faces
+        if face.is_valid
+    }
+    components = []
+    while remaining:
+        seed = remaining.pop()
+        component = {seed}
+        queue = [seed]
+        while queue:
+            face = queue.pop()
+            neighbours = {
+                linked_face
+                for edge in face.edges
+                if edge not in protected_edges
+                for linked_face in edge.link_faces
+                if linked_face in remaining
+            }
+            remaining.difference_update(neighbours)
+            component.update(neighbours)
+            queue.extend(neighbours)
+        components.append(component)
+    return components
+
+
+def quadrangulate_faces(bm, faces, protected_edges):
     """Replace n-gons with triangles and merge suitable pairs into quads."""
     ngons = [
         face
@@ -57,17 +84,19 @@ def quadrangulate_faces(bm, faces):
     if not triangles:
         return
 
-    bmesh.ops.join_triangles(
-        bm,
-        faces=triangles,
-        cmp_seam=False,
-        cmp_sharp=False,
-        cmp_uvs=False,
-        cmp_vcols=False,
-        cmp_materials=False,
-        angle_face_threshold=3.14159,
-        angle_shape_threshold=3.14159,
-    )
+    for component in _face_components_without_protected_edges(
+            triangles, set(protected_edges)):
+        bmesh.ops.join_triangles(
+            bm,
+            faces=list(component),
+            cmp_seam=False,
+            cmp_sharp=False,
+            cmp_uvs=False,
+            cmp_vcols=False,
+            cmp_materials=False,
+            angle_face_threshold=3.14159,
+            angle_shape_threshold=3.14159,
+        )
 
 
 def _face_crosses_plane(face, plane_co, plane_no):
@@ -182,20 +211,12 @@ def execute_clip(
         clear_inner=clear_inner,
     )
 
-    affected_faces = [
-        face
-        for face in bm.faces
-        if face.is_valid and face[target_layer] == 2
-    ]
-    if prefer_quads:
-        quadrangulate_faces(bm, affected_faces)
-
     cut_result_edges = {
         element
         for element in result.get('geom_cut', [])
         if isinstance(element, bmesh.types.BMEdge) and element.is_valid
     }
-    selected_edges = []
+    clip_plane_edges = set()
     for edge in bm.edges:
         if not edge.is_valid or not _edge_is_in_plane(edge, plane_co, plane_no):
             continue
@@ -204,7 +225,21 @@ def execute_clip(
             for face in edge.link_faces
         )
         if edge in cut_result_edges or belongs_to_target:
-            selected_edges.append(edge)
+            clip_plane_edges.add(edge)
+
+    affected_faces = [
+        face
+        for face in bm.faces
+        if face.is_valid and face[target_layer] == 2
+    ]
+    if prefer_quads:
+        quadrangulate_faces(bm, affected_faces, clip_plane_edges)
+
+    selected_edges = [
+        edge
+        for edge in clip_plane_edges
+        if edge.is_valid
+    ]
 
     _clear_selection(bm)
     bm.select_mode = {'EDGE'}
@@ -275,6 +310,6 @@ def fill_selected_edge_loops(bm, prefer_quads):
         )
 
     if prefer_quads:
-        quadrangulate_faces(bm, created_faces)
+        quadrangulate_faces(bm, created_faces, set())
     bm.normal_update()
     return created_faces

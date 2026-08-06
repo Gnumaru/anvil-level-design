@@ -1,6 +1,7 @@
 import bmesh
 import bpy
 from bpy_extras.view3d_utils import location_3d_to_region_2d
+from math import cos, pi, sin
 from mathutils import Vector
 
 from ..operators.clip.geometry import (
@@ -334,6 +335,44 @@ class ClipGeometryTest(AnvilTestCase):
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertGreater(len(bm.faces), 2)
         self.assertTrue(all(len(face.verts) <= 4 for face in bm.faces))
+
+    def test_clip_bisect_circle_ngon_prefer_quads_preserves_bisection_edge(self):
+        vertex_count = 16
+        vertices = tuple(
+            (
+                cos(index * 2.0 * pi / vertex_count),
+                sin(index * 2.0 * pi / vertex_count),
+                0.0,
+            )
+            for index in range(vertex_count)
+        )
+        obj, _context_override = _create_edit_mesh(
+            "clip_circle_ngon_quads",
+            vertices,
+            (tuple(range(vertex_count)),),
+        )
+        success, message = _execute_clip(
+            obj,
+            (0, -2, 0),
+            (0, 2, 0),
+            (0, 0, 1),
+            CLIP_MODE_BISECT,
+            True,
+        )
+        self.assertTrue(success, message)
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        bisect_edges = [
+            edge
+            for edge in bm.edges
+            if all(abs(vert.co.x) <= 1e-5 for vert in edge.verts)
+        ]
+        self.assertEqual(len(bisect_edges), 1)
+        self.assertEqual(
+            sorted(round(vert.co.y, 5) for vert in bisect_edges[0].verts),
+            [-1.0, 1.0],
+        )
+        self.assertTrue(bisect_edges[0].select)
 
     def test_clip_concave_result_can_leave_ngons(self):
         obj, _context_override = _create_edit_mesh(
