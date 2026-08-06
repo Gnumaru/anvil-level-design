@@ -24,12 +24,16 @@ COLOR_GRID_POINT = (0.7, 0.7, 0.7)            # Light grey (no alpha - set per-p
 COLOR_INVALID = (1.0, 0.05, 0.0, 0.95)        # Red - invalid candidate
 COLOR_CUT_VERTEX = (1.0, 1.0, 1.0, 1.0)       # White - predicted cut vertex
 COLOR_CLIP_REMOVAL = (0.45, 0.45, 0.45, 0.9)  # Grey - side removed by Clip
+COLOR_CLIP_LINE_EXTENSION = (0.7, 0.7, 0.7, 0.75)
+COLOR_CLIP_PLANE = (0.3, 0.55, 0.75, 0.12)
 
 POINT_SIZE = 10.0
 LINE_WIDTH = 2.0
 GRID_LINE_WIDTH = 1.5
 CUT_VERTEX_LINE_WIDTH = 1.5
 CUT_VERTEX_CROSS_SIZE = 0.06
+CLIP_LINE_EXTENSION_DISTANCE = 100000.0
+CLIP_LINE_EXTENSION_SCALE = 10000.0
 
 # Grid overlay settings
 GRID_FADE_RADIUS = 5  # Number of grid cells before fully faded
@@ -91,6 +95,8 @@ class ModalDrawPreview:
 
         # Simple directional arrows on the side removed by the Clip tool.
         self._clip_removal_segments = []
+        self._clip_line_extension_enabled = False
+        self._clip_plane_vertices = []
 
         # Prefab placement ghost data
         self._prefab_ghost = None
@@ -224,6 +230,17 @@ class ModalDrawPreview:
             for start, end in segments
         ]
 
+    def set_clip_line_extension_enabled(self, enabled):
+        """Show dim continuation rays beyond the Clip input points."""
+        self._clip_line_extension_enabled = enabled
+
+    def update_clip_plane(self, vertices):
+        """Replace the translucent quad representing the Clip plane."""
+        self._clip_plane_vertices = [
+            Vector(vertex).copy()
+            for vertex in vertices
+        ]
+
     def set_prefab_ghost(self, prefab_ghost):
         """Set local-space albedo data for the prefab placement ghost."""
         self._prefab_ghost = prefab_ghost
@@ -282,6 +299,8 @@ class ModalDrawPreview:
         self._custom_wire_measurements = []
         self._custom_wire_valid = True
         self._clip_removal_segments = []
+        self._clip_line_extension_enabled = False
+        self._clip_plane_vertices = []
         self._prefab_ghost = None
         self._ghost_matrix = None
 
@@ -306,6 +325,7 @@ class ModalDrawPreview:
             elif self._state == 'LINE_END':
                 self._draw_face_grid()
                 self._draw_snap_point()
+                self._draw_clip_plane()
                 self._draw_line_preview()
                 self._draw_segments(
                     self._clip_removal_segments,
@@ -455,6 +475,29 @@ class ModalDrawPreview:
                 LINE_WIDTH
             )
             return
+
+        line = self._line_end - self._first_vertex
+        if self._clip_line_extension_enabled and line.length_squared >= 1e-10:
+            line_direction = line.normalized()
+            extension_distance = max(
+                CLIP_LINE_EXTENSION_DISTANCE,
+                line.length * CLIP_LINE_EXTENSION_SCALE,
+            )
+            self._draw_segments(
+                (
+                    (
+                        self._first_vertex
+                        - line_direction * extension_distance,
+                        self._first_vertex,
+                    ),
+                    (
+                        self._line_end,
+                        self._line_end
+                        + line_direction * extension_distance,
+                    ),
+                ),
+                COLOR_CLIP_LINE_EXTENSION,
+            )
 
         line_points = [self._first_vertex[:], self._line_end[:]]
 
@@ -885,6 +928,25 @@ class ModalDrawPreview:
                 batch.draw(shader)
             except Exception:
                 pass
+
+    def _draw_clip_plane(self):
+        """Draw the simple translucent wall representing the Clip plane."""
+        if len(self._clip_plane_vertices) != 4:
+            return
+
+        try:
+            shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+            shader.bind()
+            shader.uniform_float("color", COLOR_CLIP_PLANE)
+            batch = batch_for_shader(
+                shader,
+                'TRIS',
+                {"pos": [vertex[:] for vertex in self._clip_plane_vertices]},
+                indices=((0, 1, 2), (0, 2, 3)),
+            )
+            batch.draw(shader)
+        except Exception:
+            pass
 
     def _draw_segments(self, segments, color):
         """Draw independent world-space line segments."""

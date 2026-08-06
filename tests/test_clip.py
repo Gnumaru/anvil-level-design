@@ -9,6 +9,7 @@ from ..operators.clip.geometry import (
     CLIP_MODE_REMOVE_BELOW,
     execute_clip,
 )
+from ..operators.modal_draw.preview import get_preview
 from ..operators.pending_mesh_action import store_clip_fill_from_edge_selection
 from .base_test import AnvilTestCase
 from .helpers import (
@@ -580,7 +581,7 @@ class ClipFillLoopsUndoTest(AnvilTestCase):
 
 class ClipModalTest(AnvilTestCase):
 
-    def test_clip_modal_second_click_executes_and_next_mode_hotkey_removes_indicated_side(self):
+    def test_clip_modal_preview_wall_clears_after_second_click_and_next_mode_removes_indicated_side(self):
         obj, _context_override = _create_edit_mesh(
             "clip_modal_two_click",
             ((-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)),
@@ -627,6 +628,7 @@ class ClipModalTest(AnvilTestCase):
             lambda: modal_operator_running('LEVELDESIGN_OT_clip'),
             "Clip did not enter modal state",
         )
+        self.assertTrue(get_preview()._clip_line_extension_enabled)
 
         first_x, first_y = window_points[0]
         window.event_simulate(
@@ -649,6 +651,12 @@ class ClipModalTest(AnvilTestCase):
             type='MOUSEMOVE', value='NOTHING', x=second_x, y=second_y,
         )
         yield
+        preview = get_preview()
+        self.assertEqual(len(preview._clip_plane_vertices), 4)
+        self.assertTrue(all(
+            abs(vertex.x) <= 1e-5
+            for vertex in preview._clip_plane_vertices
+        ))
         window.event_simulate(
             type='LEFTMOUSE', value='PRESS', x=second_x, y=second_y,
         )
@@ -665,6 +673,8 @@ class ClipModalTest(AnvilTestCase):
             ),
             "Clip did not execute on the second click",
         )
+        self.assertFalse(get_preview()._clip_line_extension_enabled)
+        self.assertEqual(get_preview()._clip_plane_vertices, [])
         bm = bmesh.from_edit_mesh(obj.data)
         self.assertEqual(len(bm.faces), 1)
         self.assertTrue(all(vert.co.x >= -1e-5 for vert in bm.verts))
