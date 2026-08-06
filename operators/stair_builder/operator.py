@@ -20,6 +20,9 @@ from ..modal_draw import utils as modal_draw_utils
 from ..shape_builder_operator import ShapeBuilderOperatorMixin
 
 
+DEFAULT_BORDER_WIDTH = 0.2
+
+
 def _format_length(unit_settings, length):
     if unit_settings.system != 'NONE':
         try:
@@ -175,7 +178,7 @@ class MESH_OT_stair_builder(
     border_width: FloatProperty(
         name="Border Width",
         description="Width of each enabled sloping border",
-        default=0.2,
+        default=DEFAULT_BORDER_WIDTH,
         min=MIN_RECTANGLE_SIZE,
         soft_max=10.0,
         subtype='DISTANCE',
@@ -241,7 +244,7 @@ class MESH_OT_stair_builder(
     )
 
     def _calculated_layout(self):
-        return geometry.calculate_stair_layout(
+        return self._calculate_layout_for_frame(
             Vector(self.action_first_vertex),
             Vector(self.action_second_vertex),
             self.action_depth,
@@ -249,6 +252,19 @@ class MESH_OT_stair_builder(
             Vector(self.action_local_y),
             Vector(self.action_local_z),
             self.orientation,
+        )
+
+    def _calculate_layout_for_frame(
+            self, first_vertex, second_vertex, depth, local_x, local_y,
+            local_z, orientation):
+        return geometry.calculate_stair_layout(
+            first_vertex,
+            second_vertex,
+            depth,
+            local_x,
+            local_y,
+            local_z,
+            orientation,
             self.sizing_mode,
             self.step_count,
             self.target_step_height,
@@ -258,6 +274,35 @@ class MESH_OT_stair_builder(
             self.right_border,
             self.border_width,
         )
+
+    def _reset_borders_if_too_wide(
+            self, first_vertex, second_vertex, depth, local_x, local_y,
+            local_z):
+        if not self.left_border and not self.right_border:
+            return
+
+        footprint_orientations = (
+            geometry.ORIENTATION_AXIS_1_POSITIVE,
+            geometry.ORIENTATION_AXIS_2_POSITIVE,
+        )
+        for orientation in footprint_orientations:
+            try:
+                self._calculate_layout_for_frame(
+                    first_vertex,
+                    second_vertex,
+                    depth,
+                    local_x,
+                    local_y,
+                    local_z,
+                    orientation,
+                )
+            except geometry.StairBordersTooWideError:
+                self.border_width = DEFAULT_BORDER_WIDTH
+                self.left_border = False
+                self.right_border = False
+                return
+            except ValueError:
+                continue
 
     def draw(self, context):
         layout = self.layout
@@ -371,6 +416,14 @@ class MESH_OT_stair_builder(
 
     def _update_full_stair_wire(self):
         try:
+            self._reset_borders_if_too_wide(
+                self._first_vertex,
+                self._second_vertex,
+                self._depth,
+                self._local_x,
+                self._local_y,
+                self._local_z,
+            )
             vertices, edges, measurements = geometry.build_stair_preview(
                 self._first_vertex,
                 self._second_vertex,
@@ -469,6 +522,14 @@ class MESH_OT_stair_builder(
             self, context, first_vertex, second_vertex, depth, local_x,
             local_y, local_z, action_was_edit_mode, action_object_name,
             name_suffix, uv_random_seed):
+        self._reset_borders_if_too_wide(
+            first_vertex,
+            second_vertex,
+            depth,
+            local_x,
+            local_y,
+            local_z,
+        )
         pixels_per_meter = context.scene.level_design_props.pixels_per_meter
         common_parameters = (
             first_vertex,

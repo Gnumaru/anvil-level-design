@@ -61,6 +61,10 @@ BORDER_ALIGN_STEP_TIPS = 'STEP_TIPS'
 MAX_STEP_COUNT = 10000
 
 
+class StairBordersTooWideError(ValueError):
+    """Raised when enabled borders leave no usable width for the steps."""
+
+
 def _orientation_slot_and_sign(orientation):
     orientation_map = {
         ORIENTATION_AXIS_1_POSITIVE: (0, 1.0),
@@ -246,7 +250,9 @@ def calculate_stair_layout(
     left_border_width = border_width if left_border else 0.0
     right_border_width = border_width if right_border else 0.0
     if left_border_width + right_border_width > frame['width'] - MIN_RECTANGLE_SIZE:
-        raise ValueError("Border widths must leave room for the steps")
+        raise StairBordersTooWideError(
+            "Border widths must leave room for the steps"
+        )
 
     tread_depth = frame['run_length'] / tread_count
     tread_heights = []
